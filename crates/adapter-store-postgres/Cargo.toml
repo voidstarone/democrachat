@@ -11,3 +11,6 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
