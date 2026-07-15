@@ -73,7 +73,7 @@ democrachat is a self-governing chat platform. The security-critical invariants:
   `cap_drop: [ALL]`, `no-new-privileges`, tmpfs `/tmp`, resource limits.
   `Dockerfile`, `docker-compose.yml`.
 - **Edge/proxy** — Caddy is the only published service; TLS via Let's Encrypt; the
-  app's `:3000` is never published. `${VAR:?}` secret gates so the stack won't
+  app's `:3737` is never published. `${VAR:?}` secret gates so the stack won't
   start with a missing secret. `deploy/`.
 - **Topologies** — single-box (`docker-compose.yml`) or a two-host tier split
   (stateless edge ↔ stateful app, `deploy/prod/`). In both, only the proxy is

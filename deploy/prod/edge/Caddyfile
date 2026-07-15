@@ -2,7 +2,7 @@
 #
 # Terminates TLS for the public hostname and forwards to the app host across the
 # LAN. Unlike the single-box Caddyfile (which proxies to the compose service
-# `app:3000`), here the upstream is another machine, injected as APP_UPSTREAM.
+# `app:3737`), here the upstream is another machine, injected as APP_UPSTREAM.
 
 {$SITE_ADDRESS} {
 	encode gzip zstd

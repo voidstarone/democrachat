@@ -32,7 +32,7 @@ services:
     networks: [fed]
     depends_on:
       etcd: { condition: service_healthy }
-    ports: ["5101:3000"]
+    ports: ["5101:3737"]
     environment:
       DEMOCRACHAT_NODE_ID: "1"
       DEMOCRACHAT_NODE_SEED: "1111111111111111111111111111111111111111111111111111111111111111"
@@ -48,7 +48,7 @@ services:
     networks: [fed]
     depends_on:
       etcd: { condition: service_healthy }
-    ports: ["5102:3000"]
+    ports: ["5102:3737"]
     environment:
       DEMOCRACHAT_NODE_ID: "2"
       DEMOCRACHAT_NODE_SEED: "2222222222222222222222222222222222222222222222222222222222222222"

@@ -10,7 +10,7 @@
 
 	# Forward everything (including the /ws WebSocket upgrade, which Caddy proxies
 	# transparently) to the app.
-	reverse_proxy app:3000
+	reverse_proxy app:3737
 
 	# Defense-in-depth headers at the edge, in addition to the app's own.
 	header {

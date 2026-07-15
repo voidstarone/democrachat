@@ -12,7 +12,7 @@ project you bring up independently.
                    ▼
         ┌──────── edge host ────────┐         ┌──────── app host ────────┐
         │ caddy :80/:443 (TLS)       │  LAN    │ democrachat  ${APP_BIND}  │
-        │   reverse_proxy ───────────┼────────▶│   :3000  ── /data volume  │
+        │   reverse_proxy ───────────┼────────▶│   :3737  ── /data volume  │
         └────────────────────────────┘         └───────────────────────────┘
              stateless, replaceable                  stateful: the whole DB
 ```
@@ -46,11 +46,11 @@ Then bring the app up:
 cd deploy/prod/app
 cp .env.example .env && $EDITOR .env
 #   DEMOCRACHAT_SESSION_SECRET=$(openssl rand -hex 32)
-#   APP_BIND=192.168.1.5:3000     # this host's PRIVATE address, never 0.0.0.0
+#   APP_BIND=192.168.1.5:3737     # this host's PRIVATE address, never 0.0.0.0
 #   DATA_DIR / MEDIA_DIR          # the two dirs you just created
 #   PUID / PGID                   # your `id -u` / `id -g`
 docker compose up -d --build      # builds arm64 on the Pi (first build is slow)
-curl -fsS http://192.168.1.5:3000/ >/dev/null && echo "app up"   # from the LAN
+curl -fsS http://192.168.1.5:3737/ >/dev/null && echo "app up"   # from the LAN
 ```
 
 The app publishes **only** on `APP_BIND` (a host-IP-scoped port), keeps the DB
@@ -72,7 +72,7 @@ env var in `.env`.
 cd deploy/prod/edge
 cp .env.example .env && $EDITOR .env
 #   SITE_ADDRESS=chat.example.com
-#   APP_UPSTREAM=10.0.0.4:3000     # must equal the app host's APP_BIND
+#   APP_UPSTREAM=10.0.0.4:3737     # must equal the app host's APP_BIND
 docker compose up -d
 ```
 
@@ -90,7 +90,7 @@ just add one site block to your existing `Caddyfile`, pointing at the app host's
 chat.example.com {
 	encode gzip zstd
 	# The /ws WebSocket upgrade proxies transparently — no extra config needed.
-	reverse_proxy 192.168.1.5:3000     # = the app host's APP_BIND
+	reverse_proxy 192.168.1.5:3737     # = the app host's APP_BIND
 	header {
 		Strict-Transport-Security "max-age=63072000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
@@ -112,9 +112,9 @@ Session cookies and messages cross it in the clear, so it must ride a trusted
 path:
 
 - Keep both hosts on a private network and **firewall `APP_BIND` so only the edge
-  host can reach it** — never expose `:3000` to the internet or an untrusted LAN.
+  host can reach it** — never expose `:3737` to the internet or an untrusted LAN.
 - Best: put the hop on a **WireGuard/tailnet** and set `APP_BIND` /
-  `APP_UPSTREAM` to the tunnel addresses (`100.x.x.x:3000`) — then the hop is
+  `APP_UPSTREAM` to the tunnel addresses (`100.x.x.x:3737`) — then the hop is
   encrypted end to end.
 - The app still sets `Secure` cookies + HSTS (the *public* origin is HTTPS at the
   edge); `DEMOCRACHAT_SECURE_COOKIES=1` is already set in the app compose.
@@ -135,7 +135,7 @@ single-node hop leans on a trusted/tunnelled private network instead).
 ## Checklist
 
 - [ ] `DEMOCRACHAT_SESSION_SECRET` is a fresh 32-byte value (app `.env`).
-- [ ] `APP_BIND` is a private address; `:3000` is firewalled to the edge host only.
+- [ ] `APP_BIND` is a private address; `:3737` is firewalled to the edge host only.
 - [ ] The external drive is ext4, in `/etc/fstab` (`nofail`), and mounted **before**
       Docker; `DATA_DIR`/`MEDIA_DIR` exist and are chowned to `PUID:PGID`.
 - [ ] Edge upstream (`APP_UPSTREAM`, or the `reverse_proxy` in your existing Caddy)
