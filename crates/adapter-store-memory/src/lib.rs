@@ -563,34 +563,35 @@ struct Snapshot {
     next_emoji: u64,
 }
 
+#[async_trait]
 impl UserStore for MemoryStore {
-    fn next_user_id(&self) -> Result<UserId, StoreError> {
+    async fn next_user_id(&self) -> Result<UserId, StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.next_user += 1;
         UserId(compose_id(inner.node, inner.next_user))
         })
     }
-    fn insert_user(&self, user: User) -> Result<(), StoreError> {
+    async fn insert_user(&self, user: User) -> Result<(), StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.record("users", ChangeOp::Upsert, to_payload(&user));
         inner.users.insert(user.id, user);
         })
     }
-    fn update_user(&self, user: User) -> Result<(), StoreError> {
+    async fn update_user(&self, user: User) -> Result<(), StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.record("users", ChangeOp::Upsert, to_payload(&user));
         inner.users.insert(user.id, user);
         })
     }
-    fn get_user(&self, id: UserId) -> Result<Option<User>, StoreError> {
+    async fn get_user(&self, id: UserId) -> Result<Option<User>, StoreError> {
         Ok({
         self.0.lock().unwrap().users.get(&id).cloned()
         })
     }
-    fn find_by_handle(&self, handle: &str) -> Result<Option<User>, StoreError> {
+    async fn find_by_handle(&self, handle: &str) -> Result<Option<User>, StoreError> {
         Ok({
         self.0
             .lock()
@@ -601,34 +602,35 @@ impl UserStore for MemoryStore {
             .cloned()
         })
     }
-    fn list_all(&self) -> Result<Vec<User>, StoreError> {
+    async fn list_all(&self) -> Result<Vec<User>, StoreError> {
         Ok({
         self.0.lock().unwrap().users.values().cloned().collect()
         })
     }
 }
 
+#[async_trait]
 impl ServerStore for MemoryStore {
-    fn next_server_id(&self) -> Result<ServerId, StoreError> {
+    async fn next_server_id(&self) -> Result<ServerId, StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.next_server += 1;
         ServerId(compose_id(inner.node, inner.next_server))
         })
     }
-    fn insert_server(&self, server: Server) -> Result<(), StoreError> {
+    async fn insert_server(&self, server: Server) -> Result<(), StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.record("servers", ChangeOp::Upsert, to_payload(&server));
         inner.servers.insert(server.id, server);
         })
     }
-    fn get_server(&self, id: ServerId) -> Result<Option<Server>, StoreError> {
+    async fn get_server(&self, id: ServerId) -> Result<Option<Server>, StoreError> {
         Ok({
         self.0.lock().unwrap().servers.get(&id).cloned()
         })
     }
-    fn find_by_slug(&self, slug: &str) -> Result<Option<Server>, StoreError> {
+    async fn find_by_slug(&self, slug: &str) -> Result<Option<Server>, StoreError> {
         Ok({
         self.0
             .lock()
@@ -639,14 +641,14 @@ impl ServerStore for MemoryStore {
             .cloned()
         })
     }
-    fn update_server(&self, server: Server) -> Result<(), StoreError> {
+    async fn update_server(&self, server: Server) -> Result<(), StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.record("servers", ChangeOp::Upsert, to_payload(&server));
         inner.servers.insert(server.id, server);
         })
     }
-    fn list_all(&self) -> Result<Vec<Server>, StoreError> {
+    async fn list_all(&self) -> Result<Vec<Server>, StoreError> {
         Ok({
         let mut v: Vec<Server> = self.0.lock().unwrap().servers.values().cloned().collect();
         v.sort_by_key(|g| g.id.0);
@@ -655,8 +657,9 @@ impl ServerStore for MemoryStore {
     }
 }
 
+#[async_trait]
 impl MembershipStore for MemoryStore {
-    fn upsert(&self, membership: Membership) -> Result<(), StoreError> {
+    async fn upsert(&self, membership: Membership) -> Result<(), StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.record("memberships", ChangeOp::Upsert, to_payload(&membership));
@@ -665,12 +668,12 @@ impl MembershipStore for MemoryStore {
             .insert((membership.user_id, membership.server_id), membership);
         })
     }
-    fn get(&self, user: UserId, server: ServerId) -> Result<Option<Membership>, StoreError> {
+    async fn get(&self, user: UserId, server: ServerId) -> Result<Option<Membership>, StoreError> {
         Ok({
         self.0.lock().unwrap().memberships.get(&(user, server)).cloned()
         })
     }
-    fn list_for_server(&self, server: ServerId) -> Result<Vec<Membership>, StoreError> {
+    async fn list_for_server(&self, server: ServerId) -> Result<Vec<Membership>, StoreError> {
         Ok({
         self.0
             .lock()
@@ -682,7 +685,7 @@ impl MembershipStore for MemoryStore {
             .collect()
         })
     }
-    fn citizen_count(&self, server: ServerId) -> Result<u64, StoreError> {
+    async fn citizen_count(&self, server: ServerId) -> Result<u64, StoreError> {
         Ok({
         self.0
             .lock()
@@ -693,7 +696,7 @@ impl MembershipStore for MemoryStore {
             .count() as u64
         })
     }
-    fn admitted_since(&self, server: ServerId, since: Timestamp) -> Result<u64, StoreError> {
+    async fn admitted_since(&self, server: ServerId, since: Timestamp) -> Result<u64, StoreError> {
         Ok({
         self.0
             .lock()
@@ -706,27 +709,28 @@ impl MembershipStore for MemoryStore {
     }
 }
 
+#[async_trait]
 impl ChannelStore for MemoryStore {
-    fn next_channel_id(&self) -> Result<ChannelId, StoreError> {
+    async fn next_channel_id(&self) -> Result<ChannelId, StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.next_channel += 1;
         ChannelId(compose_id(inner.node, inner.next_channel))
         })
     }
-    fn insert_channel(&self, channel: Channel) -> Result<(), StoreError> {
+    async fn insert_channel(&self, channel: Channel) -> Result<(), StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.record("channels", ChangeOp::Upsert, to_payload(&channel));
         inner.channels.insert(channel.id, channel);
         })
     }
-    fn get_channel(&self, id: ChannelId) -> Result<Option<Channel>, StoreError> {
+    async fn get_channel(&self, id: ChannelId) -> Result<Option<Channel>, StoreError> {
         Ok({
         self.0.lock().unwrap().channels.get(&id).cloned()
         })
     }
-    fn find_by_name(&self, server: ServerId, name: &str) -> Result<Option<Channel>, StoreError> {
+    async fn find_by_name(&self, server: ServerId, name: &str) -> Result<Option<Channel>, StoreError> {
         Ok({
         self.0
             .lock()
@@ -737,7 +741,7 @@ impl ChannelStore for MemoryStore {
             .cloned()
         })
     }
-    fn list_for_server(&self, server: ServerId) -> Result<Vec<Channel>, StoreError> {
+    async fn list_for_server(&self, server: ServerId) -> Result<Vec<Channel>, StoreError> {
         Ok({
         let mut v: Vec<Channel> = self
             .0
@@ -752,7 +756,7 @@ impl ChannelStore for MemoryStore {
         v
         })
     }
-    fn remove_channel(&self, id: ChannelId) -> Result<bool, StoreError> {
+    async fn remove_channel(&self, id: ChannelId) -> Result<bool, StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         let Some(removed) = inner.channels.remove(&id) else {
@@ -768,34 +772,35 @@ impl ChannelStore for MemoryStore {
     }
 }
 
+#[async_trait]
 impl MessageStore for MemoryStore {
-    fn next_message_id(&self) -> Result<MessageId, StoreError> {
+    async fn next_message_id(&self) -> Result<MessageId, StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.next_message += 1;
         MessageId(compose_id(inner.node, inner.next_message))
         })
     }
-    fn insert_message(&self, message: Message) -> Result<(), StoreError> {
+    async fn insert_message(&self, message: Message) -> Result<(), StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.record("messages", ChangeOp::Upsert, to_payload(&message));
         inner.messages.insert(message.id, message);
         })
     }
-    fn get_message(&self, id: MessageId) -> Result<Option<Message>, StoreError> {
+    async fn get_message(&self, id: MessageId) -> Result<Option<Message>, StoreError> {
         Ok({
         self.0.lock().unwrap().messages.get(&id).cloned()
         })
     }
-    fn update_message(&self, message: Message) -> Result<(), StoreError> {
+    async fn update_message(&self, message: Message) -> Result<(), StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.record("messages", ChangeOp::Upsert, to_payload(&message));
         inner.messages.insert(message.id, message);
         })
     }
-    fn list_for_channel(&self, channel: ChannelId) -> Result<Vec<Message>, StoreError> {
+    async fn list_for_channel(&self, channel: ChannelId) -> Result<Vec<Message>, StoreError> {
         Ok({
         let mut v: Vec<Message> = self
             .0
@@ -812,8 +817,9 @@ impl MessageStore for MemoryStore {
     }
 }
 
+#[async_trait]
 impl ReactionStore for MemoryStore {
-    fn add(&self, reaction: Reaction) -> Result<bool, StoreError> {
+    async fn add(&self, reaction: Reaction) -> Result<bool, StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         let exists = inner.reactions.iter().any(|r| {
@@ -827,7 +833,7 @@ impl ReactionStore for MemoryStore {
         true
         })
     }
-    fn remove(&self, message: MessageId, user: UserId, emoji: &str) -> Result<bool, StoreError> {
+    async fn remove(&self, message: MessageId, user: UserId, emoji: &str) -> Result<bool, StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         let before = inner.reactions.len();
@@ -846,7 +852,7 @@ impl ReactionStore for MemoryStore {
         removed
         })
     }
-    fn list_for_message(&self, message: MessageId) -> Result<Vec<Reaction>, StoreError> {
+    async fn list_for_message(&self, message: MessageId) -> Result<Vec<Reaction>, StoreError> {
         Ok({
         self.0
             .lock()
@@ -858,7 +864,7 @@ impl ReactionStore for MemoryStore {
             .collect()
         })
     }
-    fn user_has_any(&self, message: MessageId, user: UserId) -> Result<bool, StoreError> {
+    async fn user_has_any(&self, message: MessageId, user: UserId) -> Result<bool, StoreError> {
         Ok({
         self.0
             .lock()
@@ -870,34 +876,35 @@ impl ReactionStore for MemoryStore {
     }
 }
 
+#[async_trait]
 impl ProposalStore for MemoryStore {
-    fn next_proposal_id(&self) -> Result<ProposalId, StoreError> {
+    async fn next_proposal_id(&self) -> Result<ProposalId, StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.next_proposal += 1;
         ProposalId(compose_id(inner.node, inner.next_proposal))
         })
     }
-    fn insert_proposal(&self, proposal: Proposal) -> Result<(), StoreError> {
+    async fn insert_proposal(&self, proposal: Proposal) -> Result<(), StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.record("proposals", ChangeOp::Upsert, to_payload(&proposal));
         inner.proposals.insert(proposal.id, proposal);
         })
     }
-    fn get_proposal(&self, id: ProposalId) -> Result<Option<Proposal>, StoreError> {
+    async fn get_proposal(&self, id: ProposalId) -> Result<Option<Proposal>, StoreError> {
         Ok({
         self.0.lock().unwrap().proposals.get(&id).cloned()
         })
     }
-    fn update_proposal(&self, proposal: Proposal) -> Result<(), StoreError> {
+    async fn update_proposal(&self, proposal: Proposal) -> Result<(), StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.record("proposals", ChangeOp::Upsert, to_payload(&proposal));
         inner.proposals.insert(proposal.id, proposal);
         })
     }
-    fn list_for_server(&self, server: ServerId) -> Result<Vec<Proposal>, StoreError> {
+    async fn list_for_server(&self, server: ServerId) -> Result<Vec<Proposal>, StoreError> {
         Ok({
         let mut v: Vec<Proposal> = self
             .0
@@ -914,8 +921,9 @@ impl ProposalStore for MemoryStore {
     }
 }
 
+#[async_trait]
 impl VoteStore for MemoryStore {
-    fn upsert_vote(&self, vote: Vote) -> Result<(), StoreError> {
+    async fn upsert_vote(&self, vote: Vote) -> Result<(), StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner
@@ -925,7 +933,7 @@ impl VoteStore for MemoryStore {
         inner.votes.push(vote);
         })
     }
-    fn get_vote(&self, proposal: ProposalId, voter: UserId) -> Result<Option<Vote>, StoreError> {
+    async fn get_vote(&self, proposal: ProposalId, voter: UserId) -> Result<Option<Vote>, StoreError> {
         Ok({
         self.0
             .lock()
@@ -936,7 +944,7 @@ impl VoteStore for MemoryStore {
             .copied()
         })
     }
-    fn list_for_proposal(&self, proposal: ProposalId) -> Result<Vec<Vote>, StoreError> {
+    async fn list_for_proposal(&self, proposal: ProposalId) -> Result<Vec<Vote>, StoreError> {
         Ok({
         self.0
             .lock()
@@ -950,27 +958,28 @@ impl VoteStore for MemoryStore {
     }
 }
 
+#[async_trait]
 impl EmojiStore for MemoryStore {
-    fn next_emoji_id(&self) -> Result<EmojiId, StoreError> {
+    async fn next_emoji_id(&self) -> Result<EmojiId, StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.next_emoji += 1;
         EmojiId(compose_id(inner.node, inner.next_emoji))
         })
     }
-    fn insert_emoji(&self, emoji: Emoji) -> Result<(), StoreError> {
+    async fn insert_emoji(&self, emoji: Emoji) -> Result<(), StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.record("emojis", ChangeOp::Upsert, to_payload(&emoji));
         inner.emojis.insert(emoji.id, emoji);
         })
     }
-    fn get_emoji(&self, id: EmojiId) -> Result<Option<Emoji>, StoreError> {
+    async fn get_emoji(&self, id: EmojiId) -> Result<Option<Emoji>, StoreError> {
         Ok({
         self.0.lock().unwrap().emojis.get(&id).cloned()
         })
     }
-    fn find_emoji(&self, server: ServerId, name: &str) -> Result<Option<Emoji>, StoreError> {
+    async fn find_emoji(&self, server: ServerId, name: &str) -> Result<Option<Emoji>, StoreError> {
         Ok({
         self.0
             .lock()
@@ -981,7 +990,7 @@ impl EmojiStore for MemoryStore {
             .cloned()
         })
     }
-    fn list_for_server(&self, server: ServerId) -> Result<Vec<Emoji>, StoreError> {
+    async fn list_for_server(&self, server: ServerId) -> Result<Vec<Emoji>, StoreError> {
         Ok({
         let mut v: Vec<Emoji> = self
             .0
@@ -998,8 +1007,9 @@ impl EmojiStore for MemoryStore {
     }
 }
 
+#[async_trait]
 impl EmojiVoteStore for MemoryStore {
-    fn upsert_emoji_vote(&self, vote: EmojiVote) -> Result<(), StoreError> {
+    async fn upsert_emoji_vote(&self, vote: EmojiVote) -> Result<(), StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner
@@ -1009,7 +1019,7 @@ impl EmojiVoteStore for MemoryStore {
         inner.emoji_votes.push(vote);
         })
     }
-    fn emoji_votes_for_server(&self, server: ServerId) -> Result<Vec<EmojiVote>, StoreError> {
+    async fn emoji_votes_for_server(&self, server: ServerId) -> Result<Vec<EmojiVote>, StoreError> {
         Ok({
         self.0
             .lock()
@@ -1021,7 +1031,7 @@ impl EmojiVoteStore for MemoryStore {
             .collect()
         })
     }
-    fn my_emoji_vote(&self, emoji: EmojiId, voter: UserId) -> Result<Option<bool>, StoreError> {
+    async fn my_emoji_vote(&self, emoji: EmojiId, voter: UserId) -> Result<Option<bool>, StoreError> {
         Ok({
         self.0
             .lock()
@@ -1034,8 +1044,9 @@ impl EmojiVoteStore for MemoryStore {
     }
 }
 
+#[async_trait]
 impl RoleColorVoteStore for MemoryStore {
-    fn upsert_role_color_vote(&self, vote: RoleColorVote) -> Result<(), StoreError> {
+    async fn upsert_role_color_vote(&self, vote: RoleColorVote) -> Result<(), StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner
@@ -1045,7 +1056,7 @@ impl RoleColorVoteStore for MemoryStore {
         inner.role_color_votes.push(vote);
         })
     }
-    fn role_color_votes_for_server(&self, server: ServerId) -> Result<Vec<RoleColorVote>, StoreError> {
+    async fn role_color_votes_for_server(&self, server: ServerId) -> Result<Vec<RoleColorVote>, StoreError> {
         Ok({
         self.0
             .lock()
@@ -1057,7 +1068,7 @@ impl RoleColorVoteStore for MemoryStore {
             .collect()
         })
     }
-    fn my_role_color_vote(&self, role: RoleId, voter: UserId) -> Result<Option<RoleColor>, StoreError> {
+    async fn my_role_color_vote(&self, role: RoleId, voter: UserId) -> Result<Option<RoleColor>, StoreError> {
         Ok({
         self.0
             .lock()
@@ -1070,22 +1081,23 @@ impl RoleColorVoteStore for MemoryStore {
     }
 }
 
+#[async_trait]
 impl RuleStore for MemoryStore {
-    fn next_rule_id(&self) -> Result<RuleId, StoreError> {
+    async fn next_rule_id(&self) -> Result<RuleId, StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.next_rule += 1;
         RuleId(compose_id(inner.node, inner.next_rule))
         })
     }
-    fn insert_rule(&self, rule: Rule) -> Result<(), StoreError> {
+    async fn insert_rule(&self, rule: Rule) -> Result<(), StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.record("rules", ChangeOp::Upsert, to_payload(&rule));
         inner.rules.insert(rule.id, rule);
         })
     }
-    fn remove_rule(&self, id: RuleId) -> Result<bool, StoreError> {
+    async fn remove_rule(&self, id: RuleId) -> Result<bool, StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         match inner.rules.remove(&id) {
@@ -1097,7 +1109,7 @@ impl RuleStore for MemoryStore {
         }
         })
     }
-    fn list_for_server(&self, server: ServerId) -> Result<Vec<Rule>, StoreError> {
+    async fn list_for_server(&self, server: ServerId) -> Result<Vec<Rule>, StoreError> {
         Ok({
         let mut v: Vec<Rule> = self
             .0
@@ -1114,30 +1126,32 @@ impl RuleStore for MemoryStore {
     }
 }
 
+#[async_trait]
 impl KeyDirectoryStore for MemoryStore {
-    fn put_keys(&self, keys: UserKeys) -> Result<(), StoreError> {
+    async fn put_keys(&self, keys: UserKeys) -> Result<(), StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.record("user_keys", ChangeOp::Upsert, to_payload(&keys));
         inner.user_keys.insert(keys.user_id, keys);
         })
     }
-    fn get_keys(&self, user: UserId) -> Result<Option<UserKeys>, StoreError> {
+    async fn get_keys(&self, user: UserId) -> Result<Option<UserKeys>, StoreError> {
         Ok({
         self.0.lock().unwrap().user_keys.get(&user).cloned()
         })
     }
 }
 
+#[async_trait]
 impl ChannelKeyStore for MemoryStore {
-    fn put_grant(&self, grant: ChannelKeyGrant) -> Result<(), StoreError> {
+    async fn put_grant(&self, grant: ChannelKeyGrant) -> Result<(), StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.record("channel_grants", ChangeOp::Upsert, to_payload(&grant));
         inner.channel_grants.insert((grant.channel_id, grant.epoch, grant.member), grant);
         })
     }
-    fn grants_for_member(&self, channel: ChannelId, member: UserId) -> Result<Vec<ChannelKeyGrant>, StoreError> {
+    async fn grants_for_member(&self, channel: ChannelId, member: UserId) -> Result<Vec<ChannelKeyGrant>, StoreError> {
         Ok({
         let mut v: Vec<ChannelKeyGrant> = self
             .0
@@ -1154,22 +1168,23 @@ impl ChannelKeyStore for MemoryStore {
     }
 }
 
+#[async_trait]
 impl DmStore for MemoryStore {
-    fn next_dm_id(&self) -> Result<DmId, StoreError> {
+    async fn next_dm_id(&self) -> Result<DmId, StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.next_dm += 1;
         DmId(compose_id(inner.node, inner.next_dm))
         })
     }
-    fn insert_dm(&self, message: DmMessage) -> Result<(), StoreError> {
+    async fn insert_dm(&self, message: DmMessage) -> Result<(), StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.record("dms", ChangeOp::Upsert, to_payload(&message));
         inner.dms.push(message);
         })
     }
-    fn conversation(&self, a: UserId, b: UserId) -> Result<Vec<DmMessage>, StoreError> {
+    async fn conversation(&self, a: UserId, b: UserId) -> Result<Vec<DmMessage>, StoreError> {
         Ok({
         let mut v: Vec<DmMessage> = self
             .0
@@ -1184,7 +1199,7 @@ impl DmStore for MemoryStore {
         v
         })
     }
-    fn partners(&self, who: UserId) -> Result<Vec<UserId>, StoreError> {
+    async fn partners(&self, who: UserId) -> Result<Vec<UserId>, StoreError> {
         Ok({
         // Walk newest-first, keeping each partner's first (i.e. most-recent) sighting.
         let inner = self.0.lock().unwrap();
@@ -1208,8 +1223,9 @@ impl DmStore for MemoryStore {
     }
 }
 
+#[async_trait]
 impl BlockStore for MemoryStore {
-    fn add(&self, block: Block) -> Result<bool, StoreError> {
+    async fn add(&self, block: Block) -> Result<bool, StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         let exists = inner
@@ -1224,7 +1240,7 @@ impl BlockStore for MemoryStore {
         true
         })
     }
-    fn involving(&self, who: UserId) -> Result<Vec<Block>, StoreError> {
+    async fn involving(&self, who: UserId) -> Result<Vec<Block>, StoreError> {
         Ok({
         self.0
             .lock()
@@ -1236,7 +1252,7 @@ impl BlockStore for MemoryStore {
             .collect()
         })
     }
-    fn is_blocked_between(&self, a: UserId, b: UserId) -> Result<bool, StoreError> {
+    async fn is_blocked_between(&self, a: UserId, b: UserId) -> Result<bool, StoreError> {
         Ok({
         self.0
             .lock()
@@ -1267,20 +1283,21 @@ impl app::MediaStore for MemoryStore {
     }
 }
 
+#[async_trait]
 impl app::InviteStore for MemoryStore {
-    fn add(&self, invite: Invite) -> Result<(), StoreError> {
+    async fn add(&self, invite: Invite) -> Result<(), StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.record("invites", ChangeOp::Upsert, to_payload(&invite));
         inner.invites.insert(invite.code_hash.clone(), invite);
         })
     }
-    fn by_hash(&self, code_hash: &str) -> Result<Option<Invite>, StoreError> {
+    async fn by_hash(&self, code_hash: &str) -> Result<Option<Invite>, StoreError> {
         Ok({
         self.0.lock().unwrap().invites.get(code_hash).cloned()
         })
     }
-    fn list_for_server(&self, server_id: ServerId) -> Result<Vec<Invite>, StoreError> {
+    async fn list_for_server(&self, server_id: ServerId) -> Result<Vec<Invite>, StoreError> {
         Ok({
         self.0
             .lock()
@@ -1292,7 +1309,7 @@ impl app::InviteStore for MemoryStore {
             .collect()
         })
     }
-    fn revoke(&self, code_hash: &str) -> Result<(), StoreError> {
+    async fn revoke(&self, code_hash: &str) -> Result<(), StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         if let Some(mut invite) = inner.invites.get(code_hash).cloned() {
@@ -1304,8 +1321,9 @@ impl app::InviteStore for MemoryStore {
     }
 }
 
+#[async_trait]
 impl FriendStore for MemoryStore {
-    fn add(&self, friendship: Friendship) -> Result<bool, StoreError> {
+    async fn add(&self, friendship: Friendship) -> Result<bool, StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         let exists = inner
@@ -1320,7 +1338,7 @@ impl FriendStore for MemoryStore {
         true
         })
     }
-    fn update(&self, friendship: Friendship) -> Result<(), StoreError> {
+    async fn update(&self, friendship: Friendship) -> Result<(), StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         let payload = to_payload(&friendship);
@@ -1340,7 +1358,7 @@ impl FriendStore for MemoryStore {
         }
         })
     }
-    fn between(&self, a: UserId, b: UserId) -> Result<Option<Friendship>, StoreError> {
+    async fn between(&self, a: UserId, b: UserId) -> Result<Option<Friendship>, StoreError> {
         Ok({
         self.0
             .lock()
@@ -1351,7 +1369,7 @@ impl FriendStore for MemoryStore {
             .cloned()
         })
     }
-    fn involving(&self, who: UserId) -> Result<Vec<Friendship>, StoreError> {
+    async fn involving(&self, who: UserId) -> Result<Vec<Friendship>, StoreError> {
         Ok({
         self.0
             .lock()
@@ -1365,27 +1383,28 @@ impl FriendStore for MemoryStore {
     }
 }
 
+#[async_trait]
 impl RoleStore for MemoryStore {
-    fn next_role_id(&self) -> Result<RoleId, StoreError> {
+    async fn next_role_id(&self) -> Result<RoleId, StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.next_role += 1;
         RoleId(compose_id(inner.node, inner.next_role))
         })
     }
-    fn insert_role(&self, role: Role) -> Result<(), StoreError> {
+    async fn insert_role(&self, role: Role) -> Result<(), StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         inner.record("roles", ChangeOp::Upsert, to_payload(&role));
         inner.roles.insert(role.id, role);
         })
     }
-    fn get_role(&self, id: RoleId) -> Result<Option<Role>, StoreError> {
+    async fn get_role(&self, id: RoleId) -> Result<Option<Role>, StoreError> {
         Ok({
         self.0.lock().unwrap().roles.get(&id).cloned()
         })
     }
-    fn find_role(&self, server: ServerId, name: &str) -> Result<Option<Role>, StoreError> {
+    async fn find_role(&self, server: ServerId, name: &str) -> Result<Option<Role>, StoreError> {
         Ok({
         self.0
             .lock()
@@ -1396,7 +1415,7 @@ impl RoleStore for MemoryStore {
             .cloned()
         })
     }
-    fn remove_role(&self, id: RoleId) -> Result<bool, StoreError> {
+    async fn remove_role(&self, id: RoleId) -> Result<bool, StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         let Some(removed) = inner.roles.remove(&id) else {
@@ -1410,7 +1429,7 @@ impl RoleStore for MemoryStore {
         true
         })
     }
-    fn list_for_server(&self, server: ServerId) -> Result<Vec<Role>, StoreError> {
+    async fn list_for_server(&self, server: ServerId) -> Result<Vec<Role>, StoreError> {
         Ok({
         let mut v: Vec<Role> = self
             .0
@@ -1425,7 +1444,7 @@ impl RoleStore for MemoryStore {
         v
         })
     }
-    fn assign(&self, assignment: RoleAssignment) -> Result<bool, StoreError> {
+    async fn assign(&self, assignment: RoleAssignment) -> Result<bool, StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         let exists = inner
@@ -1440,7 +1459,7 @@ impl RoleStore for MemoryStore {
         true
         })
     }
-    fn unassign(&self, role: RoleId, user: UserId) -> Result<bool, StoreError> {
+    async fn unassign(&self, role: RoleId, user: UserId) -> Result<bool, StoreError> {
         Ok({
         let mut inner = self.0.lock().unwrap();
         // Capture the assignment before removing it — its `server_id` is what lets
@@ -1460,7 +1479,7 @@ impl RoleStore for MemoryStore {
         true
         })
     }
-    fn holders(&self, role: RoleId) -> Result<Vec<UserId>, StoreError> {
+    async fn holders(&self, role: RoleId) -> Result<Vec<UserId>, StoreError> {
         Ok({
         self.0
             .lock()

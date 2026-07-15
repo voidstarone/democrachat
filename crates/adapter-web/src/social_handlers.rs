@@ -25,8 +25,8 @@ fn bad(e: impl ToString) -> (StatusCode, String) {
 /// friendships and social state are private to their owner, so you may only ever
 /// read or act as yourself. This is what closes the DM-IDOR hole — a signed-in
 /// `@bob` cannot pass `@alice` in the path to read her conversations.
-fn require_self(st: &AppState, headers: &HeaderMap, me: &str) -> Result<(), (StatusCode, String)> {
-    let actor = require_actor(st, headers)?;
+async fn require_self(st: &AppState, headers: &HeaderMap, me: &str) -> Result<(), (StatusCode, String)> {
+    let actor = require_actor(st, headers).await?;
     if actor == me {
         Ok(())
     } else {
@@ -45,30 +45,27 @@ pub async fn social_me(
     Path(me): Path<String>,
     headers: HeaderMap,
 ) -> Res<SocialMeDto> {
-    require_self(&st, &headers, &me)?;
+    require_self(&st, &headers, &me).await?;
     let s = &st.services;
-    if s.find_user(&me).is_none() {
+    if s.find_user(&me).await.is_none() {
         return Err((StatusCode::NOT_FOUND, "err.no_such_user".into()));
     }
 
-    let friends = s.social().friends_of(&me);
-    let partners = s.social()
-        .dm_partners(&me)
-        .into_iter()
-        .map(|handle| DmPartnerDto {
-            is_friend: friends.iter().any(|f| f == &handle),
-            is_blocked: s.social().is_blocked_between(&me, &handle),
-            can_dm: s.social().can_dm(&me, &handle),
-            handle,
-        })
-        .collect();
+    let friends = s.social().friends_of(&me).await;
+    let mut partners = Vec::new();
+    for handle in s.social().dm_partners(&me).await {
+        let is_friend = friends.iter().any(|f| f == &handle);
+        let is_blocked = s.social().is_blocked_between(&me, &handle).await;
+        let can_dm = s.social().can_dm(&me, &handle).await;
+        partners.push(DmPartnerDto { is_friend, is_blocked, can_dm, handle });
+    }
 
     Ok(Json(SocialMeDto {
-        is_friends_only: matches!(s.social().dm_policy(&me), Some(DmPolicy::FriendsOnly)),
+        is_friends_only: matches!(s.social().dm_policy(&me).await, Some(DmPolicy::FriendsOnly)),
         partners,
         friends,
-        incoming_requests: s.social().incoming_friend_requests(&me),
-        blocked: s.social().blocked_users(&me),
+        incoming_requests: s.social().incoming_friend_requests(&me).await,
+        blocked: s.social().blocked_users(&me).await,
         handle: me,
     }))
 }
@@ -79,26 +76,18 @@ pub async fn conversation(
     Path((me, other)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Res<Vec<DmMessageDto>> {
-    require_self(&st, &headers, &me)?;
+    require_self(&st, &headers, &me).await?;
     let s = &st.services;
-    let me_user = s.find_user(&me).ok_or((StatusCode::NOT_FOUND, "err.no_such_user".to_string()))?;
-    let out = s.social()
-        .conversation(&me, &other)
-        .into_iter()
-        .map(|m| {
-            let is_mine = m.sender == me_user.id;
-            // Hand the viewer only the ciphertext they hold a key for.
-            let sealed_for_me =
-                if is_mine { m.sealed_for_sender } else { m.sealed_for_recipient };
-            DmMessageDto {
-                id: m.id.0,
-                is_mine,
-                sender: s.chat().user_handle(m.sender).unwrap_or_default(),
-                recipient: s.chat().user_handle(m.recipient).unwrap_or_default(),
-                sealed_for_me,
-            }
-        })
-        .collect();
+    let me_user = s.find_user(&me).await.ok_or((StatusCode::NOT_FOUND, "err.no_such_user".to_string()))?;
+    let mut out = Vec::new();
+    for m in s.social().conversation(&me, &other).await {
+        let is_mine = m.sender == me_user.id;
+        // Hand the viewer only the ciphertext they hold a key for.
+        let sealed_for_me = if is_mine { m.sealed_for_sender } else { m.sealed_for_recipient };
+        let sender = s.chat().user_handle(m.sender).await.unwrap_or_default();
+        let recipient = s.chat().user_handle(m.recipient).await.unwrap_or_default();
+        out.push(DmMessageDto { id: m.id.0, is_mine, sender, recipient, sealed_for_me });
+    }
     Ok(Json(out))
 }
 
@@ -115,15 +104,15 @@ pub async fn send_dm(
     headers: HeaderMap,
     Json(req): Json<SendDmReq>,
 ) -> Res<serde_json::Value> {
-    require_self(&st, &headers, &me)?;
+    require_self(&st, &headers, &me).await?;
     let s = &st.services;
     match &st.dm_router {
         Some(router) => {
             // Resolve both handles to home-stable ids before leaving this node —
             // the owner authorizes by id and never re-resolves our handles.
-            let from = s.find_user(&me).ok_or((StatusCode::NOT_FOUND, "err.no_such_user".into()))?;
+            let from = s.find_user(&me).await.ok_or((StatusCode::NOT_FOUND, "err.no_such_user".into()))?;
             let to =
-                s.find_user(&other).ok_or((StatusCode::NOT_FOUND, "err.no_such_user".into()))?;
+                s.find_user(&other).await.ok_or((StatusCode::NOT_FOUND, "err.no_such_user".into()))?;
             router
                 .send_dm(
                     from.id.0,
@@ -140,7 +129,7 @@ pub async fn send_dm(
         }
         None => {
             let dm = s.social()
-                .send_sealed_dm(&me, &other, &req.sealed_for_recipient, &req.sealed_for_sender)
+                .send_sealed_dm(&me, &other, &req.sealed_for_recipient, &req.sealed_for_sender).await
                 .map_err(bad)?;
             st.persist();
             st.publish(social_event(&me, &other));
@@ -161,20 +150,20 @@ pub async fn block(
     Path((me, other)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Res<serde_json::Value> {
-    require_self(&st, &headers, &me)?;
+    require_self(&st, &headers, &me).await?;
     let s = &st.services;
     match &st.block_router {
         Some(router) => {
             let blocker =
-                s.find_user(&me).ok_or((StatusCode::NOT_FOUND, "err.no_such_user".into()))?;
+                s.find_user(&me).await.ok_or((StatusCode::NOT_FOUND, "err.no_such_user".into()))?;
             let blocked =
-                s.find_user(&other).ok_or((StatusCode::NOT_FOUND, "err.no_such_user".into()))?;
+                s.find_user(&other).await.ok_or((StatusCode::NOT_FOUND, "err.no_such_user".into()))?;
             router.block(blocker.id.0, blocked.id.0).await.map_err(bad)?;
             st.publish(social_event(&me, &other));
             Ok(Json(json!({ "ok": true })))
         }
         None => {
-            s.social().block_user(&me, &other).map_err(bad)?;
+            s.social().block_user(&me, &other).await.map_err(bad)?;
             st.persist();
             st.publish(social_event(&me, &other));
             Ok(Json(json!({ "ok": true })))
@@ -193,20 +182,20 @@ pub async fn request_friend(
     Path((me, other)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Res<serde_json::Value> {
-    require_self(&st, &headers, &me)?;
+    require_self(&st, &headers, &me).await?;
     let s = &st.services;
     match &st.friend_router {
         Some(router) => {
             let requester =
-                s.find_user(&me).ok_or((StatusCode::NOT_FOUND, "err.no_such_user".into()))?;
+                s.find_user(&me).await.ok_or((StatusCode::NOT_FOUND, "err.no_such_user".into()))?;
             let addressee =
-                s.find_user(&other).ok_or((StatusCode::NOT_FOUND, "err.no_such_user".into()))?;
+                s.find_user(&other).await.ok_or((StatusCode::NOT_FOUND, "err.no_such_user".into()))?;
             router.request(requester.id.0, addressee.id.0).await.map_err(bad)?;
             st.publish(social_event(&me, &other));
             Ok(Json(json!({ "ok": true })))
         }
         None => {
-            s.social().request_friend(&me, &other).map_err(bad)?;
+            s.social().request_friend(&me, &other).await.map_err(bad)?;
             st.persist();
             st.publish(social_event(&me, &other));
             Ok(Json(json!({ "ok": true })))
@@ -224,20 +213,20 @@ pub async fn accept_friend(
     Path((me, other)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Res<serde_json::Value> {
-    require_self(&st, &headers, &me)?;
+    require_self(&st, &headers, &me).await?;
     let s = &st.services;
     match &st.friend_router {
         Some(router) => {
             let accepter =
-                s.find_user(&me).ok_or((StatusCode::NOT_FOUND, "err.no_such_user".into()))?;
+                s.find_user(&me).await.ok_or((StatusCode::NOT_FOUND, "err.no_such_user".into()))?;
             let requester =
-                s.find_user(&other).ok_or((StatusCode::NOT_FOUND, "err.no_such_user".into()))?;
+                s.find_user(&other).await.ok_or((StatusCode::NOT_FOUND, "err.no_such_user".into()))?;
             router.accept(accepter.id.0, requester.id.0).await.map_err(bad)?;
             st.publish(social_event(&me, &other));
             Ok(Json(json!({ "ok": true })))
         }
         None => {
-            s.social().accept_friend(&me, &other).map_err(bad)?;
+            s.social().accept_friend(&me, &other).await.map_err(bad)?;
             st.persist();
             st.publish(social_event(&me, &other));
             Ok(Json(json!({ "ok": true })))
@@ -252,13 +241,13 @@ pub async fn set_policy(
     headers: HeaderMap,
     Json(req): Json<DmPolicyReq>,
 ) -> Res<serde_json::Value> {
-    require_self(&st, &headers, &me)?;
+    require_self(&st, &headers, &me).await?;
     let policy = if req.is_friends_only {
         DmPolicy::FriendsOnly
     } else {
         DmPolicy::Everyone
     };
-    st.services.social().set_dm_policy(&me, policy).map_err(bad)?;
+    st.services.social().set_dm_policy(&me, policy).await.map_err(bad)?;
     st.persist();
     st.publish(social_event(&me, &me));
     Ok(Json(json!({ "ok": true })))

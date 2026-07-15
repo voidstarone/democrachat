@@ -29,50 +29,51 @@ fn secret_for(handle: &str) -> IdentitySecret {
 
 /// A server founded by `founder` (citizen #1) with the other handles joined as
 /// members, everyone's device key published, and one channel created.
-fn setup(founder: &str, members: &[&str], channel: &str) -> Services {
+async fn setup(founder: &str, members: &[&str], channel: &str) -> Services {
     let store = Arc::new(MemoryStore::new());
     let s = Services::new(Arc::new(FixedClock::new(Timestamp(100 * DAY))), store.as_stores());
     for h in std::iter::once(&founder).chain(members.iter()) {
-        s.register_account(h).unwrap();
+        s.register_account(h).await.unwrap();
         let secret = secret_for(h);
         s.keys().publish_keys(
             h,
             &secret.public().to_hex(),
             WrappedKey { salt: "00".into(), nonce: "00".into(), ciphertext: "00".into() },
         )
+        .await
         .unwrap();
     }
-    s.found_server(founder, "Town Square").unwrap();
+    s.found_server(founder, "Town Square").await.unwrap();
     for m in members {
-        s.join_server(m, "town-square").unwrap();
+        s.join_server(m, "town-square").await.unwrap();
     }
     // #general is auto-provisioned when the server is founded; only create the
     // requested channel when it's a different one.
     if channel != "general" {
-        s.chat().create_channel(founder, "town-square", channel, "").unwrap();
+        s.chat().create_channel(founder, "town-square", channel, "").await.unwrap();
     }
     s
 }
 
 /// Client-side: seal the channel `key` for `member`'s device key and file the grant.
-fn grant(s: &Services, granter: &str, channel: &str, epoch: u32, member: &str, key: &ChannelKey) {
-    let member_pub = PublicIdentity::from_hex(&s.keys().public_key_of(member).unwrap()).unwrap();
+async fn grant(s: &Services, granter: &str, channel: &str, epoch: u32, member: &str, key: &ChannelKey) {
+    let member_pub = PublicIdentity::from_hex(&s.keys().public_key_of(member).await.unwrap()).unwrap();
     let sealed = hex::encode(seal_to(&member_pub, &key.to_bytes()));
-    s.channel_keys().grant_channel_key(granter, "town-square", channel, epoch, member, &sealed).unwrap();
+    s.channel_keys().grant_channel_key(granter, "town-square", channel, epoch, member, &sealed).await.unwrap();
 }
 
 /// Client-side: seal `text` under the epoch `key` and post it.
-fn post(s: &Services, sender: &str, channel: &str, text: &str, epoch: u32, key: &ChannelKey) {
+async fn post(s: &Services, sender: &str, channel: &str, text: &str, epoch: u32, key: &ChannelKey) {
     let ct = hex::encode(seal_channel_message(key, text.as_bytes()));
-    s.chat().post_sealed_message(sender, "town-square", channel, &ct, epoch, None).unwrap();
+    s.chat().post_sealed_message(sender, "town-square", channel, &ct, epoch, None).await.unwrap();
 }
 
 /// Client-side read: recover every channel key `viewer` was granted, then decrypt
 /// each message — `None` for a message whose epoch key the viewer doesn't hold.
-fn read(s: &Services, viewer: &str, channel: &str) -> Vec<Option<String>> {
+async fn read(s: &Services, viewer: &str, channel: &str) -> Vec<Option<String>> {
     let secret = secret_for(viewer);
     let mut keys: HashMap<u32, ChannelKey> = HashMap::new();
-    for g in s.channel_keys().my_channel_grants(viewer, "town-square", channel).unwrap() {
+    for g in s.channel_keys().my_channel_grants(viewer, "town-square", channel).await.unwrap() {
         if let Ok(raw) = open_sealed(&secret, &hex::decode(&g.sealed_key).unwrap()) {
             if let Ok(bytes) = <[u8; 32]>::try_from(raw) {
                 keys.insert(g.epoch, ChannelKey::from_bytes(bytes));
@@ -80,6 +81,7 @@ fn read(s: &Services, viewer: &str, channel: &str) -> Vec<Option<String>> {
         }
     }
     s.chat().channel_messages("town-square", channel)
+        .await
         .unwrap()
         .into_iter()
         .map(|m| {
@@ -90,113 +92,115 @@ fn read(s: &Services, viewer: &str, channel: &str) -> Vec<Option<String>> {
         .collect()
 }
 
-#[test]
-fn open_history_lets_a_new_member_read_the_backlog() {
-    let s = setup("ada", &["bob"], "general");
-    s.channel_keys().enable_channel_encryption("ada", "town-square", "general", HistoryMode::Open).unwrap();
+#[tokio::test]
+async fn open_history_lets_a_new_member_read_the_backlog() {
+    let s = setup("ada", &["bob"], "general").await;
+    s.channel_keys().enable_channel_encryption("ada", "town-square", "general", HistoryMode::Open).await.unwrap();
 
     // One long-lived key (epoch 0), granted to the current members.
     let key0 = ChannelKey::generate();
-    grant(&s, "ada", "general", 0, "ada", &key0);
-    grant(&s, "ada", "general", 0, "bob", &key0);
-    post(&s, "ada", "general", "welcome to the room", 0, &key0);
+    grant(&s, "ada", "general", 0, "ada", &key0).await;
+    grant(&s, "ada", "general", 0, "bob", &key0).await;
+    post(&s, "ada", "general", "welcome to the room", 0, &key0).await;
 
-    assert_eq!(read(&s, "bob", "general"), vec![Some("welcome to the room".to_string())]);
+    assert_eq!(read(&s, "bob", "general").await, vec![Some("welcome to the room".to_string())]);
 
     // Carol joins later; in Open mode she is granted the same long-lived key and can
     // read the whole backlog.
-    s.register_account("carol").unwrap();
+    s.register_account("carol").await.unwrap();
     let carol_secret = secret_for("carol");
     s.keys().publish_keys(
         "carol",
         &carol_secret.public().to_hex(),
         WrappedKey { salt: "00".into(), nonce: "00".into(), ciphertext: "00".into() },
     )
+    .await
     .unwrap();
-    s.join_server("carol", "town-square").unwrap();
-    grant(&s, "ada", "general", 0, "carol", &key0);
+    s.join_server("carol", "town-square").await.unwrap();
+    grant(&s, "ada", "general", 0, "carol", &key0).await;
 
-    assert_eq!(read(&s, "carol", "general"), vec![Some("welcome to the room".to_string())]);
+    assert_eq!(read(&s, "carol", "general").await, vec![Some("welcome to the room".to_string())]);
 }
 
-#[test]
-fn ephemeral_history_hides_messages_sent_before_a_member_joined() {
-    let s = setup("ada", &["bob"], "secret");
-    s.channel_keys().enable_channel_encryption("ada", "town-square", "secret", HistoryMode::Ephemeral).unwrap();
+#[tokio::test]
+async fn ephemeral_history_hides_messages_sent_before_a_member_joined() {
+    let s = setup("ada", &["bob"], "secret").await;
+    s.channel_keys().enable_channel_encryption("ada", "town-square", "secret", HistoryMode::Ephemeral).await.unwrap();
 
     // Epoch 0: the founding members.
     let key0 = ChannelKey::generate();
-    grant(&s, "ada", "secret", 0, "ada", &key0);
-    grant(&s, "ada", "secret", 0, "bob", &key0);
-    post(&s, "ada", "secret", "before carol", 0, &key0);
+    grant(&s, "ada", "secret", 0, "ada", &key0).await;
+    grant(&s, "ada", "secret", 0, "bob", &key0).await;
+    post(&s, "ada", "secret", "before carol", 0, &key0).await;
 
     // Carol joins → the key ratchets to epoch 1, granted only to current members.
-    s.register_account("carol").unwrap();
+    s.register_account("carol").await.unwrap();
     let carol_secret = secret_for("carol");
     s.keys().publish_keys(
         "carol",
         &carol_secret.public().to_hex(),
         WrappedKey { salt: "00".into(), nonce: "00".into(), ciphertext: "00".into() },
     )
+    .await
     .unwrap();
-    s.join_server("carol", "town-square").unwrap();
+    s.join_server("carol", "town-square").await.unwrap();
     let key1 = ChannelKey::generate();
     for m in ["ada", "bob", "carol"] {
-        grant(&s, "ada", "secret", 1, m, &key1);
+        grant(&s, "ada", "secret", 1, m, &key1).await;
     }
-    post(&s, "ada", "secret", "after carol", 1, &key1);
+    post(&s, "ada", "secret", "after carol", 1, &key1).await;
 
     // Carol holds only epoch 1: she reads the post-join message, not the earlier one.
     assert_eq!(
-        read(&s, "carol", "secret"),
+        read(&s, "carol", "secret").await,
         vec![None, Some("after carol".to_string())],
         "carol cannot open the pre-join epoch-0 message",
     );
     // Bob was there for both epochs and reads everything.
     assert_eq!(
-        read(&s, "bob", "secret"),
+        read(&s, "bob", "secret").await,
         vec![Some("before carol".to_string()), Some("after carol".to_string())],
     );
 }
 
-#[test]
-fn the_stored_channel_message_is_ciphertext_only() {
-    let s = setup("ada", &["bob"], "general");
-    s.channel_keys().enable_channel_encryption("ada", "town-square", "general", HistoryMode::Open).unwrap();
+#[tokio::test]
+async fn the_stored_channel_message_is_ciphertext_only() {
+    let s = setup("ada", &["bob"], "general").await;
+    s.channel_keys().enable_channel_encryption("ada", "town-square", "general", HistoryMode::Open).await.unwrap();
     let key0 = ChannelKey::generate();
-    grant(&s, "ada", "general", 0, "ada", &key0);
-    post(&s, "ada", "general", "top-secret-phrase", 0, &key0);
+    grant(&s, "ada", "general", 0, "ada", &key0).await;
+    post(&s, "ada", "general", "top-secret-phrase", 0, &key0).await;
 
-    let stored = &s.chat().channel_messages("town-square", "general").unwrap()[0];
+    let stored = &s.chat().channel_messages("town-square", "general").await.unwrap()[0];
     assert_eq!(stored.key_epoch, Some(0));
     assert!(!stored.body.contains("top-secret-phrase"), "the server holds ciphertext only");
 }
 
-#[test]
-fn a_plaintext_post_to_an_encrypted_channel_is_rejected() {
-    let s = setup("ada", &["bob"], "general");
-    s.channel_keys().enable_channel_encryption("ada", "town-square", "general", HistoryMode::Open).unwrap();
+#[tokio::test]
+async fn a_plaintext_post_to_an_encrypted_channel_is_rejected() {
+    let s = setup("ada", &["bob"], "general").await;
+    s.channel_keys().enable_channel_encryption("ada", "town-square", "general", HistoryMode::Open).await.unwrap();
     assert_eq!(
-        s.chat().post_message("ada", "town-square", "general", "hi"),
+        s.chat().post_message("ada", "town-square", "general", "hi").await,
         Err(MessageError::ChannelEncrypted),
     );
 }
 
-#[test]
-fn a_sealed_post_to_a_plaintext_channel_is_rejected() {
-    let s = setup("ada", &["bob"], "general");
+#[tokio::test]
+async fn a_sealed_post_to_a_plaintext_channel_is_rejected() {
+    let s = setup("ada", &["bob"], "general").await;
     assert_eq!(
-        s.chat().post_sealed_message("ada", "town-square", "general", "deadbeef", 0, None),
+        s.chat().post_sealed_message("ada", "town-square", "general", "deadbeef", 0, None).await,
         Err(MessageError::NotEncrypted),
     );
 }
 
-#[test]
-fn only_a_citizen_may_enable_channel_encryption() {
-    let s = setup("ada", &["bob"], "general");
+#[tokio::test]
+async fn only_a_citizen_may_enable_channel_encryption() {
+    let s = setup("ada", &["bob"], "general").await;
     // bob is a member, not a citizen.
     assert_eq!(
-        s.channel_keys().enable_channel_encryption("bob", "town-square", "general", HistoryMode::Open),
+        s.channel_keys().enable_channel_encryption("bob", "town-square", "general", HistoryMode::Open).await,
         Err(ChannelKeyError::NotACitizen),
     );
 }

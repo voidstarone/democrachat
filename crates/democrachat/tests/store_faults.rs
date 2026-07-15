@@ -50,26 +50,27 @@ impl FailingMembershipStore {
     }
 }
 
+#[async_trait::async_trait]
 impl MembershipStore for FailingMembershipStore {
-    fn upsert(&self, membership: Membership) -> Result<(), StoreError> {
+    async fn upsert(&self, membership: Membership) -> Result<(), StoreError> {
         self.guard()?;
-        self.inner.upsert(membership)
+        self.inner.upsert(membership).await
     }
-    fn get(&self, user: UserId, server: ServerId) -> Result<Option<Membership>, StoreError> {
+    async fn get(&self, user: UserId, server: ServerId) -> Result<Option<Membership>, StoreError> {
         self.guard()?;
-        self.inner.get(user, server)
+        self.inner.get(user, server).await
     }
-    fn list_for_server(&self, server: ServerId) -> Result<Vec<Membership>, StoreError> {
+    async fn list_for_server(&self, server: ServerId) -> Result<Vec<Membership>, StoreError> {
         self.guard()?;
-        self.inner.list_for_server(server)
+        self.inner.list_for_server(server).await
     }
-    fn citizen_count(&self, server: ServerId) -> Result<u64, StoreError> {
+    async fn citizen_count(&self, server: ServerId) -> Result<u64, StoreError> {
         self.guard()?;
-        self.inner.citizen_count(server)
+        self.inner.citizen_count(server).await
     }
-    fn admitted_since(&self, server: ServerId, since: Timestamp) -> Result<u64, StoreError> {
+    async fn admitted_since(&self, server: ServerId, since: Timestamp) -> Result<u64, StoreError> {
         self.guard()?;
-        self.inner.admitted_since(server, since)
+        self.inner.admitted_since(server, since).await
     }
 }
 
@@ -93,28 +94,28 @@ fn harness(now_secs: i64) -> Harness {
 
 /// Open the franchise criteria so a fresh member is Layer-1 eligible — isolating the
 /// store failure from any domain-rule rejection.
-fn open_criteria(h: &Harness, slug: &str) {
+async fn open_criteria(h: &Harness, slug: &str) {
     use app::ServerStore;
-    let mut s = h.store.find_by_slug(slug).unwrap().unwrap();
+    let mut s = h.store.find_by_slug(slug).await.unwrap().unwrap();
     s.criteria = FranchiseCriteria { min_account_age_days: 0, min_membership_days: 0, min_contribution: 0 };
-    h.store.update_server(s).unwrap();
+    h.store.update_server(s).await.unwrap();
 }
 
 /// A membership write that fails mid-enfranchise surfaces as a typed
 /// `EnfranchiseError::Store` — the operation is refused cleanly, not with a panic.
-#[test]
-fn an_enfranchise_surfaces_a_store_outage() {
+#[tokio::test]
+async fn an_enfranchise_surfaces_a_store_outage() {
     let h = harness(1_000 * DAY);
-    h.services.register_account("boss").unwrap();
-    h.services.found_server("boss", "Town").unwrap();
-    open_criteria(&h, "town");
-    h.services.register_account("newbie").unwrap();
-    h.services.join_server("newbie", "town").unwrap();
+    h.services.register_account("boss").await.unwrap();
+    h.services.found_server("boss", "Town").await.unwrap();
+    open_criteria(&h, "town").await;
+    h.services.register_account("newbie").await.unwrap();
+    h.services.join_server("newbie", "town").await.unwrap();
     h.clock.set(Timestamp(1_040 * DAY));
 
     // The backend drops out; the very next enfranchise attempt must fail loudly-but-cleanly.
     h.failing.arm();
-    match h.services.try_enfranchise("newbie", "town") {
+    match h.services.try_enfranchise("newbie", "town").await {
         Err(EnfranchiseError::Store(StoreError::Unavailable(_))) => {}
         other => panic!("expected a store-outage error, got {other:?}"),
     }
@@ -122,22 +123,22 @@ fn an_enfranchise_surfaces_a_store_outage() {
 
 /// The outage is transient: once the backend recovers (disarm), the same operation
 /// succeeds — the failure left no poisoned state behind.
-#[test]
-fn recovery_after_an_outage_lets_the_operation_succeed() {
+#[tokio::test]
+async fn recovery_after_an_outage_lets_the_operation_succeed() {
     let h = harness(1_000 * DAY);
-    h.services.register_account("boss").unwrap();
-    h.services.found_server("boss", "Town").unwrap();
-    open_criteria(&h, "town");
-    h.services.register_account("newbie").unwrap();
-    h.services.join_server("newbie", "town").unwrap();
+    h.services.register_account("boss").await.unwrap();
+    h.services.found_server("boss", "Town").await.unwrap();
+    open_criteria(&h, "town").await;
+    h.services.register_account("newbie").await.unwrap();
+    h.services.join_server("newbie", "town").await.unwrap();
     h.clock.set(Timestamp(1_040 * DAY));
 
     h.failing.arm();
-    assert!(h.services.try_enfranchise("newbie", "town").is_err(), "outage refuses the write");
+    assert!(h.services.try_enfranchise("newbie", "town").await.is_err(), "outage refuses the write");
     h.failing.disarm();
     // Backend restored: the member is admitted (open criteria + a lone-server floor).
     assert!(
-        matches!(h.services.try_enfranchise("newbie", "town"), Ok(EnfranchiseOutcome::Admitted)),
+        matches!(h.services.try_enfranchise("newbie", "town").await, Ok(EnfranchiseOutcome::Admitted)),
         "the operation succeeds once the store recovers",
     );
 }
@@ -145,19 +146,20 @@ fn recovery_after_an_outage_lets_the_operation_succeed() {
 /// A read failure on a command path surfaces too: casting a vote must read the
 /// caller's membership, and an outage there is reported as `VoteError::Store`
 /// rather than being mistaken for "not a citizen".
-#[test]
-fn a_read_outage_is_not_mistaken_for_a_domain_rejection() {
+#[tokio::test]
+async fn a_read_outage_is_not_mistaken_for_a_domain_rejection() {
     let h = harness(1_000 * DAY);
-    h.services.register_account("boss").unwrap();
-    h.services.found_server("boss", "Town").unwrap();
+    h.services.register_account("boss").await.unwrap();
+    h.services.found_server("boss", "Town").await.unwrap();
     let p = h
         .services
         .governance()
         .open_proposal("boss", "town", ProposalKind::AddRule { text: "x".into() })
+        .await
         .unwrap();
 
     h.failing.arm();
-    match h.services.governance().cast_vote("boss", p.id.0, true) {
+    match h.services.governance().cast_vote("boss", p.id.0, true).await {
         Err(VoteError::Store(StoreError::Unavailable(_))) => {}
         other => panic!("a store read outage must surface as Store, not a domain no: {other:?}"),
     }

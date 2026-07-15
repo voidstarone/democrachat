@@ -24,3 +24,5 @@ async-trait = { workspace = true }
 
 [dev-dependencies]
 hex = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }

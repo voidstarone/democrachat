@@ -19,9 +19,9 @@ pub struct StoreResolver(pub Arc<MemoryStore>);
 #[async_trait]
 impl ScopeResolver for StoreResolver {
     async fn proposal_server(&self, proposal: u64) -> Option<u64> {
-        self.0.get_proposal(ProposalId(proposal)).ok().flatten().map(|p| p.server_id.0)
+        self.0.get_proposal(ProposalId(proposal)).await.ok().flatten().map(|p| p.server_id.0)
     }
     async fn message_server(&self, message: u64) -> Option<u64> {
-        self.0.get_message(MessageId(message)).ok().flatten().map(|m| m.server_id.0)
+        self.0.get_message(MessageId(message)).await.ok().flatten().map(|m| m.server_id.0)
     }
 }

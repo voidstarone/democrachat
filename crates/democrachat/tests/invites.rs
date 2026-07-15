@@ -28,43 +28,43 @@ fn fixture() -> Fixture {
 }
 
 /// Register `handle`, join `slug`, and seat them as an enfranchised citizen.
-fn seat_citizen(f: &Fixture, handle: &str, slug: &str) {
-    f.services.register_account(handle).unwrap();
-    f.services.join_server(handle, slug).unwrap();
-    let user = f.store.find_by_handle(handle).unwrap().unwrap();
-    let server = f.store.find_by_slug(slug).unwrap().unwrap();
-    let mut m = f.store.get(user.id, server.id).unwrap().unwrap();
+async fn seat_citizen(f: &Fixture, handle: &str, slug: &str) {
+    f.services.register_account(handle).await.unwrap();
+    f.services.join_server(handle, slug).await.unwrap();
+    let user = f.store.find_by_handle(handle).await.unwrap().unwrap();
+    let server = f.store.find_by_slug(slug).await.unwrap().unwrap();
+    let mut m = f.store.get(user.id, server.id).await.unwrap().unwrap();
     m.tier = Tier::Citizen;
     m.contribution = 5;
     m.enfranchised_at = Some(f.clock.now());
-    f.store.upsert(m).unwrap();
+    f.store.upsert(m).await.unwrap();
 }
 
-#[test]
-fn an_invite_admits_a_member_but_never_a_voter() {
+#[tokio::test]
+async fn an_invite_admits_a_member_but_never_a_voter() {
     let f = fixture();
-    f.services.register_account("ada").unwrap();
-    f.services.register_account("bo").unwrap();
-    f.services.found_server_with_visibility("ada", "Secret Club", true).unwrap();
+    f.services.register_account("ada").await.unwrap();
+    f.services.register_account("bo").await.unwrap();
+    f.services.found_server_with_visibility("ada", "Secret Club", true).await.unwrap();
 
-    let code = f.services.create_invite("ada", "secret-club").unwrap();
-    let m = f.services.accept_invite("bo", &code).unwrap();
+    let code = f.services.create_invite("ada", "secret-club").await.unwrap();
+    let m = f.services.accept_invite("bo", &code).await.unwrap();
 
     assert!(!m.is_citizen(), "an invite must never grant the franchise");
-    let bo = f.store.find_by_handle("bo").unwrap().unwrap();
-    let server = f.store.find_by_slug("secret-club").unwrap().unwrap();
-    assert!(f.store.get(bo.id, server.id).unwrap().is_some(), "bo is now a member");
+    let bo = f.store.find_by_handle("bo").await.unwrap().unwrap();
+    let server = f.store.find_by_slug("secret-club").await.unwrap().unwrap();
+    assert!(f.store.get(bo.id, server.id).await.unwrap().is_some(), "bo is now a member");
 }
 
-#[test]
-fn private_servers_are_hidden_from_the_directory_public_ones_listed() {
+#[tokio::test]
+async fn private_servers_are_hidden_from_the_directory_public_ones_listed() {
     let f = fixture();
-    f.services.register_account("ada").unwrap();
-    f.services.found_server_with_visibility("ada", "Open Town", false).unwrap();
-    f.services.found_server_with_visibility("ada", "Hidden Cabal", true).unwrap();
+    f.services.register_account("ada").await.unwrap();
+    f.services.found_server_with_visibility("ada", "Open Town", false).await.unwrap();
+    f.services.found_server_with_visibility("ada", "Hidden Cabal", true).await.unwrap();
 
     let public: Vec<String> =
-        f.services.list_public_servers().into_iter().map(|(g, _, _)| g.slug).collect();
+        f.services.list_public_servers().await.into_iter().map(|(g, _, _)| g.slug).collect();
     assert!(public.contains(&"open-town".to_string()));
     assert!(
         !public.contains(&"hidden-cabal".to_string()),
@@ -72,61 +72,62 @@ fn private_servers_are_hidden_from_the_directory_public_ones_listed() {
     );
 }
 
-#[test]
-fn a_non_member_cannot_mint_and_a_bad_code_is_rejected() {
+#[tokio::test]
+async fn a_non_member_cannot_mint_and_a_bad_code_is_rejected() {
     let f = fixture();
-    f.services.register_account("ada").unwrap();
-    f.services.register_account("bo").unwrap();
-    f.services.found_server_with_visibility("ada", "Club", false).unwrap();
+    f.services.register_account("ada").await.unwrap();
+    f.services.register_account("bo").await.unwrap();
+    f.services.found_server_with_visibility("ada", "Club", false).await.unwrap();
 
-    assert_eq!(f.services.create_invite("bo", "club"), Err(InviteError::NotMember("club".into())));
-    assert_eq!(f.services.accept_invite("bo", "not-a-real-code"), Err(InviteError::InvalidCode));
+    assert_eq!(f.services.create_invite("bo", "club").await, Err(InviteError::NotMember("club".into())));
+    assert_eq!(f.services.accept_invite("bo", "not-a-real-code").await, Err(InviteError::InvalidCode));
 }
 
-#[test]
-fn a_revoked_code_no_longer_admits() {
+#[tokio::test]
+async fn a_revoked_code_no_longer_admits() {
     let f = fixture();
-    f.services.register_account("ada").unwrap();
-    f.services.register_account("bo").unwrap();
-    f.services.found_server_with_visibility("ada", "Club", false).unwrap();
+    f.services.register_account("ada").await.unwrap();
+    f.services.register_account("bo").await.unwrap();
+    f.services.found_server_with_visibility("ada", "Club", false).await.unwrap();
 
-    let code = f.services.create_invite("ada", "club").unwrap();
-    let invites = f.services.list_invites("ada", "club").unwrap();
+    let code = f.services.create_invite("ada", "club").await.unwrap();
+    let invites = f.services.list_invites("ada", "club").await.unwrap();
     assert_eq!(invites.len(), 1);
-    f.services.revoke_invite("ada", "club", &invites[0].code_hash).unwrap();
+    f.services.revoke_invite("ada", "club", &invites[0].code_hash).await.unwrap();
 
-    assert_eq!(f.services.accept_invite("bo", &code), Err(InviteError::InvalidCode));
-    assert!(f.services.list_invites("ada", "club").unwrap().is_empty(), "revoked invites drop off");
+    assert_eq!(f.services.accept_invite("bo", &code).await, Err(InviteError::InvalidCode));
+    assert!(f.services.list_invites("ada", "club").await.unwrap().is_empty(), "revoked invites drop off");
 }
 
-#[test]
-fn voting_the_policy_closed_seals_minting() {
+#[tokio::test]
+async fn voting_the_policy_closed_seals_minting() {
     let f = fixture();
-    f.services.register_account("ada").unwrap();
-    f.services.found_server("ada", "Club").unwrap();
+    f.services.register_account("ada").await.unwrap();
+    f.services.found_server("ada", "Club").await.unwrap();
     // Seat two more citizens so a ballot has a real electorate to pass.
-    seat_citizen(&f, "bob", "club");
-    seat_citizen(&f, "cid", "club");
+    seat_citizen(&f, "bob", "club").await;
+    seat_citizen(&f, "cid", "club").await;
 
-    let before = f.store.find_by_slug("club").unwrap().unwrap();
+    let before = f.store.find_by_slug("club").await.unwrap().unwrap();
     assert_eq!(before.invite_policy, InvitePolicy::Open, "invites start open");
 
     let p = f
         .services.governance()
         .open_proposal("ada", "club", ProposalKind::SetInvitePolicy { policy: InvitePolicy::Closed })
+        .await
         .unwrap();
-    f.services.governance().cast_vote("ada", p.id.0, true).unwrap();
-    f.services.governance().cast_vote("bob", p.id.0, true).unwrap();
-    f.services.governance().cast_vote("cid", p.id.0, true).unwrap();
+    f.services.governance().cast_vote("ada", p.id.0, true).await.unwrap();
+    f.services.governance().cast_vote("bob", p.id.0, true).await.unwrap();
+    f.services.governance().cast_vote("cid", p.id.0, true).await.unwrap();
 
     // Advance past the voting window and resolve.
     f.clock.set(Timestamp(1_000 * DAY + 5 * DAY));
-    f.services.governance().resolve_due("club");
+    f.services.governance().resolve_due("club").await;
 
-    let after = f.store.find_by_slug("club").unwrap().unwrap();
+    let after = f.store.find_by_slug("club").await.unwrap().unwrap();
     assert_eq!(after.invite_policy, InvitePolicy::Closed, "the vote closed the door");
     assert_eq!(
-        f.services.create_invite("ada", "club"),
+        f.services.create_invite("ada", "club").await,
         Err(InviteError::Closed("club".into())),
         "no member may mint once closed"
     );

@@ -33,9 +33,9 @@ async fn node_b_replicates_node_a_over_http() {
     let store_a = Arc::new(MemoryStore::new().with_node(NodeId(1)));
     let now = Timestamp(1_000);
     let sid = ServerId(7);
-    ServerStore::insert_server(&*store_a, Server::new(sid, "town", "Town", UserId(1), now)).unwrap();
-    let chan = ChannelStore::next_channel_id(&*store_a).unwrap();
-    ChannelStore::insert_channel(&*store_a, Channel::new(chan, sid, "general", "", now)).unwrap();
+    ServerStore::insert_server(&*store_a, Server::new(sid, "town", "Town", UserId(1), now)).await.unwrap();
+    let chan = ChannelStore::next_channel_id(&*store_a).await.unwrap();
+    ChannelStore::insert_channel(&*store_a, Channel::new(chan, sid, "general", "", now)).await.unwrap();
 
     // A's feed server.
     let feed_state = FeedState {
@@ -63,8 +63,8 @@ async fn node_b_replicates_node_a_over_http() {
     let applied = adapter_federation::poll_peer(&replicator, &peer, 100).await.unwrap();
     assert_eq!(applied, 2);
     assert_eq!(replicator.cursor(NodeId(1)), 2, "cursor advanced over the applied prefix");
-    assert_eq!(ServerStore::get_server(&*store_b, sid).unwrap().map(|s| s.name), Some("Town".into()));
-    assert_eq!(ChannelStore::get_channel(&*store_b, chan).unwrap().map(|c| c.name), Some("general".into()));
+    assert_eq!(ServerStore::get_server(&*store_b, sid).await.unwrap().map(|s| s.name), Some("Town".into()));
+    assert_eq!(ChannelStore::get_channel(&*store_b, chan).await.unwrap().map(|c| c.name), Some("general".into()));
 
     // A second poll from the advanced cursor has nothing new.
     let again = adapter_federation::poll_peer(&replicator, &peer, 100).await.unwrap();
@@ -82,7 +82,7 @@ async fn a_bad_bearer_token_is_rejected() {
     ServerStore::insert_server(
         &*store_a,
         Server::new(ServerId(7), "town", "Town", UserId(1), Timestamp(1)),
-    ).unwrap();
+    ).await.unwrap();
 
     let feed_state = FeedState {
         store: store_a.clone(),

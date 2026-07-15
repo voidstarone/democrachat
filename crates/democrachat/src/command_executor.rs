@@ -34,12 +34,14 @@ impl CommandExecutor for ServiceCommandExecutor {
                 // forwarder's say-so about who may vote.
                 self.services.governance()
                     .cast_vote_by_id(*voter, *proposal, *aye)
+                    .await
                     .map_err(|e| ForwardError::Rejected(e.to_string()))?;
             }
             Command::SendDm { from, to, sealed_for_recipient, sealed_for_sender } => {
                 // The owner (the sender's home) re-checks the can_dm gate itself.
                 self.services.social()
                     .send_sealed_dm_by_id(*from, *to, sealed_for_recipient, sealed_for_sender)
+                    .await
                     .map_err(|e| ForwardError::Rejected(e.to_string()))?;
             }
             Command::Block { blocker, blocked } => {
@@ -47,17 +49,20 @@ impl CommandExecutor for ServiceCommandExecutor {
                 // two commits (and any re-drive of a partial one) converge.
                 self.services.social()
                     .block_user_by_id(*blocker, *blocked)
+                    .await
                     .map_err(|e| ForwardError::Rejected(e.to_string()))?;
             }
             Command::RequestFriend { requester, addressee } => {
                 // Runs on both users' homes; idempotent re-affirm converges.
                 self.services.social()
                     .request_friend_by_id(*requester, *addressee)
+                    .await
                     .map_err(|e| ForwardError::Rejected(e.to_string()))?;
             }
             Command::AcceptFriend { accepter, requester } => {
                 self.services.social()
                     .accept_friend_by_id(*accepter, *requester)
+                    .await
                     .map_err(|e| ForwardError::Rejected(e.to_string()))?;
             }
         }

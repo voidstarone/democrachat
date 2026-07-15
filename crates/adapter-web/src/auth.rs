@@ -41,18 +41,18 @@ pub fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 /// The authenticated actor's handle, or `None` if the request carries no valid,
 /// unexpired session. Reads the `sid` cookie, verifies its HMAC, checks expiry
 /// against the server clock, and resolves the uid to a current handle.
-pub fn current_actor(st: &AppState, headers: &HeaderMap) -> Option<String> {
+pub async fn current_actor(st: &AppState, headers: &HeaderMap) -> Option<String> {
     let token = cookie_value(headers, SESSION_COOKIE)?;
     let (uid, expires_at) = st.signer.verify(token)?;
     if expires_at < st.services.now().0 {
         return None; // expired — reject even if the browser resent it
     }
-    st.services.chat().user_handle(UserId(uid))
+    st.services.chat().user_handle(UserId(uid)).await
 }
 
 /// Require an authenticated actor, or fail with `401`.
-pub fn require_actor(st: &AppState, headers: &HeaderMap) -> Result<String, (StatusCode, String)> {
-    current_actor(st, headers).ok_or((StatusCode::UNAUTHORIZED, "err.not_signed_in".to_string()))
+pub async fn require_actor(st: &AppState, headers: &HeaderMap) -> Result<String, (StatusCode, String)> {
+    current_actor(st, headers).await.ok_or((StatusCode::UNAUTHORIZED, "err.not_signed_in".to_string()))
 }
 
 /// Build the `Set-Cookie` value for a freshly signed session.

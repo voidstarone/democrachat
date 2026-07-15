@@ -16,72 +16,72 @@ fn services() -> Services {
     Services::new(clock, store.as_stores())
 }
 
-#[test]
-fn register_then_authenticate_succeeds() {
+#[tokio::test]
+async fn register_then_authenticate_succeeds() {
     let s = services();
-    s.register_with_password("alice", GOOD_PW).unwrap();
-    let user = s.authenticate("alice", GOOD_PW).expect("correct password authenticates");
+    s.register_with_password("alice", GOOD_PW).await.unwrap();
+    let user = s.authenticate("alice", GOOD_PW).await.expect("correct password authenticates");
     assert_eq!(user.handle, "alice");
     assert!(user.has_password());
 }
 
-#[test]
-fn wrong_password_does_not_authenticate() {
+#[tokio::test]
+async fn wrong_password_does_not_authenticate() {
     let s = services();
-    s.register_with_password("alice", GOOD_PW).unwrap();
-    assert!(s.authenticate("alice", "wrong wrong wrong!").is_none());
+    s.register_with_password("alice", GOOD_PW).await.unwrap();
+    assert!(s.authenticate("alice", "wrong wrong wrong!").await.is_none());
 }
 
-#[test]
-fn unknown_handle_does_not_authenticate() {
+#[tokio::test]
+async fn unknown_handle_does_not_authenticate() {
     let s = services();
-    assert!(s.authenticate("nobody", GOOD_PW).is_none());
+    assert!(s.authenticate("nobody", GOOD_PW).await.is_none());
 }
 
-#[test]
-fn short_password_is_rejected() {
+#[tokio::test]
+async fn short_password_is_rejected() {
     let s = services();
-    match s.register_with_password("alice", "short") {
+    match s.register_with_password("alice", "short").await {
         Err(RegisterError::WeakPassword(_)) => {}
         other => panic!("expected WeakPassword, got {other:?}"),
     }
     // And no account was created.
-    assert!(s.find_user("alice").is_none());
+    assert!(s.find_user("alice").await.is_none());
 }
 
-#[test]
-fn a_passwordless_account_cannot_authenticate() {
+#[tokio::test]
+async fn a_passwordless_account_cannot_authenticate() {
     let s = services();
     // register_account (seed/CLI path) sets no password.
-    s.register_account("seed").unwrap();
-    let user = s.find_user("seed").unwrap();
+    s.register_account("seed").await.unwrap();
+    let user = s.find_user("seed").await.unwrap();
     assert!(!user.has_password());
-    assert!(s.authenticate("seed", GOOD_PW).is_none());
-    assert!(s.authenticate("seed", "").is_none());
+    assert!(s.authenticate("seed", GOOD_PW).await.is_none());
+    assert!(s.authenticate("seed", "").await.is_none());
 }
 
-#[test]
-fn set_password_makes_a_seed_account_loginable() {
+#[tokio::test]
+async fn set_password_makes_a_seed_account_loginable() {
     let s = services();
-    s.register_account("seed").unwrap();
-    s.set_password("seed", GOOD_PW).unwrap();
-    assert!(s.authenticate("seed", GOOD_PW).is_some());
+    s.register_account("seed").await.unwrap();
+    s.set_password("seed", GOOD_PW).await.unwrap();
+    assert!(s.authenticate("seed", GOOD_PW).await.is_some());
 }
 
-#[test]
-fn the_stored_hash_is_not_the_plaintext() {
+#[tokio::test]
+async fn the_stored_hash_is_not_the_plaintext() {
     let s = services();
-    s.register_with_password("alice", GOOD_PW).unwrap();
-    let user = s.find_user("alice").unwrap();
+    s.register_with_password("alice", GOOD_PW).await.unwrap();
+    let user = s.find_user("alice").await.unwrap();
     assert_ne!(user.password_hash, GOOD_PW);
     assert!(user.password_hash.starts_with("$argon2")); // PHC Argon2 string
 }
 
-#[test]
-fn a_duplicate_handle_is_rejected() {
+#[tokio::test]
+async fn a_duplicate_handle_is_rejected() {
     let s = services();
-    s.register_with_password("alice", GOOD_PW).unwrap();
-    match s.register_with_password("alice", GOOD_PW) {
+    s.register_with_password("alice", GOOD_PW).await.unwrap();
+    match s.register_with_password("alice", GOOD_PW).await {
         Err(RegisterError::HandleTaken(_)) => {}
         other => panic!("expected HandleTaken, got {other:?}"),
     }

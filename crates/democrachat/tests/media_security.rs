@@ -29,10 +29,10 @@ fn fixture() -> Fixture {
 }
 
 /// A founder with a #general to post into.
-fn founded() -> Fixture {
+async fn founded() -> Fixture {
     let f = fixture();
-    f.services.register_account("boss").unwrap();
-    f.services.found_server("boss", "Town").unwrap();
+    f.services.register_account("boss").await.unwrap();
+    f.services.found_server("boss", "Town").await.unwrap();
     f
 }
 
@@ -41,15 +41,15 @@ fn founded() -> Fixture {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// An empty upload is refused, never stored as a zero-byte blob.
-#[test]
-fn an_empty_upload_is_refused() {
+#[tokio::test]
+async fn an_empty_upload_is_refused() {
     let f = fixture();
     assert!(matches!(f.services.chat().store_media("image/png", &[]), Err(MediaError::Empty)));
 }
 
 /// An upload over the size cap is refused before anything is stored.
-#[test]
-fn an_oversized_upload_is_refused() {
+#[tokio::test]
+async fn an_oversized_upload_is_refused() {
     let f = fixture();
     let huge = vec![0u8; MAX_MEDIA_BYTES + 1];
     assert!(matches!(f.services.chat().store_media("image/jpeg", &huge), Err(MediaError::TooLarge)));
@@ -61,8 +61,8 @@ fn an_oversized_upload_is_refused() {
 
 /// An SVG is refused outright: nominally an image, it can carry script, and served
 /// same-origin it is an XSS vector.
-#[test]
-fn an_svg_upload_is_refused() {
+#[tokio::test]
+async fn an_svg_upload_is_refused() {
     let f = fixture();
     let svg = br#"<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>"#;
     assert!(matches!(
@@ -74,8 +74,8 @@ fn an_svg_upload_is_refused() {
 /// Byte-sniffing beats a spoofed content type: markup declared as `image/png` is
 /// still recognized by its opening tag and refused. Covers each opener the guard
 /// screens, plus the BOM- and whitespace-prefixed evasions.
-#[test]
-fn markup_is_rejected_even_when_declared_an_image() {
+#[tokio::test]
+async fn markup_is_rejected_even_when_declared_an_image() {
     let f = fixture();
     let cases: &[&[u8]] = &[
         b"<script>alert(1)</script>",
@@ -99,8 +99,8 @@ fn markup_is_rejected_even_when_declared_an_image() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Only image/video/audio are accepted; any other top-level type is refused.
-#[test]
-fn non_media_mime_types_are_refused() {
+#[tokio::test]
+async fn non_media_mime_types_are_refused() {
     let f = fixture();
     for ct in ["application/zip", "text/html", "application/octet-stream", "text/plain"] {
         assert!(
@@ -112,8 +112,8 @@ fn non_media_mime_types_are_refused() {
 
 /// A charset/parameter suffix on the content type is stripped before the type is
 /// classified, and does not defeat acceptance of a real media type.
-#[test]
-fn a_content_type_parameter_is_stripped() {
+#[tokio::test]
+async fn a_content_type_parameter_is_stripped() {
     let f = fixture();
     // Passthrough transcoder: the (non-markup) bytes are stored verbatim under the
     // base type, proving the `; charset=…` suffix was ignored, not rejected.
@@ -129,8 +129,8 @@ fn a_content_type_parameter_is_stripped() {
 }
 
 /// Video and audio are accepted and stored verbatim (only images are re-encoded).
-#[test]
-fn video_and_audio_are_accepted() {
+#[tokio::test]
+async fn video_and_audio_are_accepted() {
     let f = fixture();
     let (_k, ct, kind) = f.services.chat().store_media("video/mp4", b"\x00\x00\x00\x18ftypmp42").unwrap();
     assert_eq!((ct.as_str(), kind), ("video/mp4", MediaKind::Video));
@@ -144,14 +144,14 @@ fn video_and_audio_are_accepted() {
 
 /// A message may not carry more than the attachment cap — a flood of references is
 /// refused before the message is recorded.
-#[test]
-fn too_many_attachments_are_refused() {
-    let f = founded();
+#[tokio::test]
+async fn too_many_attachments_are_refused() {
+    let f = founded().await;
     let att = |i: usize| Attachment::new(format!("key{i}"), "image/png", MediaKind::Image, "", false);
     let over: Vec<Attachment> = (0..=MAX_ATTACHMENTS).map(att).collect();
     assert_eq!(over.len(), MAX_ATTACHMENTS + 1);
     assert!(matches!(
-        f.services.chat().post_message_with_attachments("boss", "town", "general", "", over),
+        f.services.chat().post_message_with_attachments("boss", "town", "general", "", over).await,
         Err(MessageError::TooManyAttachments(_)),
     ));
     // Exactly the cap is allowed.
@@ -159,5 +159,6 @@ fn too_many_attachments_are_refused() {
     assert!(f
         .services.chat()
         .post_message_with_attachments("boss", "town", "general", "look", ok)
+        .await
         .is_ok());
 }

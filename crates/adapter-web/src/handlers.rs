@@ -26,7 +26,7 @@ fn not_found(what: impl ToString) -> (StatusCode, String) {
 /// cookie — who the viewer currently is (so the SPA can restore its identity
 /// without trusting a stored handle).
 pub async fn config(State(st): State<AppState>, headers: HeaderMap) -> Json<serde_json::Value> {
-    let me = crate::auth::current_actor(&st, &headers);
+    let me = crate::auth::current_actor(&st, &headers).await;
     Json(json!({ "is_dev": st.is_dev, "now": st.services.now().0, "me": me }))
 }
 
@@ -39,7 +39,7 @@ pub async fn login(
 ) -> Result<axum::response::Response, (StatusCode, String)> {
     let user = st
         .services
-        .authenticate(&req.handle, &req.password)
+        .authenticate(&req.handle, &req.password).await
         .ok_or((StatusCode::UNAUTHORIZED, "err.invalid_credentials".to_string()))?;
     let cookie = session_cookie(&st, user.id.0);
     Ok(([(header::SET_COOKIE, cookie)], Json(json!({ "handle": user.handle }))).into_response())
@@ -52,7 +52,7 @@ pub async fn register(
 ) -> Result<axum::response::Response, (StatusCode, String)> {
     let user = st
         .services
-        .register_with_password(&req.handle, &req.password)
+        .register_with_password(&req.handle, &req.password).await
         .map_err(bad)?;
     st.persist();
     let cookie = session_cookie(&st, user.id.0);
@@ -74,16 +74,16 @@ pub async fn list_servers(
     State(st): State<AppState>,
     headers: HeaderMap,
 ) -> Res<Vec<ServerSummary>> {
-    let me = require_actor(&st, &headers)?;
+    let me = require_actor(&st, &headers).await?;
     Ok(Json(
-        st.services.my_servers(&me).into_iter().map(server_summary).collect(),
+        st.services.my_servers(&me).await.into_iter().map(server_summary).collect(),
     ))
 }
 
 /// The public browse directory: every public server. Unauthenticated — discovery is
 /// open; private servers never appear here.
 pub async fn list_public_servers(State(st): State<AppState>) -> Json<Vec<ServerSummary>> {
-    Json(st.services.list_public_servers().into_iter().map(server_summary).collect())
+    Json(st.services.list_public_servers().await.into_iter().map(server_summary).collect())
 }
 
 pub async fn found_server(
@@ -91,10 +91,10 @@ pub async fn found_server(
     headers: HeaderMap,
     Json(req): Json<FoundReq>,
 ) -> Res<ServerSummary> {
-    let me = require_actor(&st, &headers)?;
+    let me = require_actor(&st, &headers).await?;
     let g = st
         .services
-        .found_server_with_visibility(&me, &req.name, req.is_private)
+        .found_server_with_visibility(&me, &req.name, req.is_private).await
         .map_err(bad)?;
     st.persist();
     st.publish(json!({ "type": "server" }).to_string());
@@ -127,8 +127,8 @@ pub async fn create_invite(
     Path(slug): Path<String>,
     headers: HeaderMap,
 ) -> Res<serde_json::Value> {
-    let me = require_actor(&st, &headers)?;
-    let code = st.services.create_invite(&me, &slug).map_err(bad)?;
+    let me = require_actor(&st, &headers).await?;
+    let code = st.services.create_invite(&me, &slug).await.map_err(bad)?;
     st.persist();
     Ok(Json(json!({ "code": code })))
 }
@@ -139,10 +139,10 @@ pub async fn list_invites(
     Path(slug): Path<String>,
     headers: HeaderMap,
 ) -> Res<Vec<InviteDto>> {
-    let me = require_actor(&st, &headers)?;
+    let me = require_actor(&st, &headers).await?;
     let invites = st
         .services
-        .list_invites(&me, &slug)
+        .list_invites(&me, &slug).await
         .map_err(bad)?
         .into_iter()
         .map(|i| InviteDto { code_hash: i.code_hash, created_at: i.created_at.0 })
@@ -156,8 +156,8 @@ pub async fn revoke_invite(
     Path((slug, code_hash)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Res<serde_json::Value> {
-    let me = require_actor(&st, &headers)?;
-    st.services.revoke_invite(&me, &slug, &code_hash).map_err(bad)?;
+    let me = require_actor(&st, &headers).await?;
+    st.services.revoke_invite(&me, &slug, &code_hash).await.map_err(bad)?;
     st.persist();
     Ok(Json(json!({ "ok": true })))
 }
@@ -169,11 +169,11 @@ pub async fn accept_invite(
     headers: HeaderMap,
     Json(req): Json<AcceptInviteReq>,
 ) -> Res<serde_json::Value> {
-    let me = require_actor(&st, &headers)?;
-    let m = st.services.accept_invite(&me, &req.code).map_err(bad)?;
+    let me = require_actor(&st, &headers).await?;
+    let m = st.services.accept_invite(&me, &req.code).await.map_err(bad)?;
     st.persist();
     st.publish(json!({ "type": "server" }).to_string());
-    let slug = st.services.server_slug(m.server_id).unwrap_or_default();
+    let slug = st.services.server_slug(m.server_id).await.unwrap_or_default();
     Ok(Json(json!({ "slug": slug })))
 }
 
@@ -182,18 +182,18 @@ pub async fn server_detail(
     Path(slug): Path<String>,
     headers: HeaderMap,
 ) -> Res<ServerDetail> {
-    let (g, phase, citizens) = st.services.server_snapshot(&slug).ok_or_else(|| not_found("err.no_such_server"))?;
-    let founder = st.services.chat().user_handle(g.founder_id).unwrap_or_default();
+    let (g, phase, citizens) = st.services.server_snapshot(&slug).await.ok_or_else(|| not_found("err.no_such_server"))?;
+    let founder = st.services.chat().user_handle(g.founder_id).await.unwrap_or_default();
     let mut surface: Vec<String> = g.enabled_ballots.iter().map(|b| b.name().to_string()).collect();
     surface.sort();
     let jury_mode = g.jury_sizing.mode_name();
     let (jury_post, jury_comment) = g.jury_sizing.factors();
     // Filter channels for the requester: the restricted #appeals channel is hidden
     // from anyone who is not a voter, police officer, or the muted appellant.
-    let viewer = crate::auth::current_actor(&st, &headers).unwrap_or_default();
+    let viewer = crate::auth::current_actor(&st, &headers).await.unwrap_or_default();
     let channels = st
         .services.chat()
-        .visible_channels(&viewer, &slug)
+        .visible_channels(&viewer, &slug).await
         .unwrap_or_default()
         .into_iter()
         .map(channel_dto)
@@ -226,8 +226,8 @@ pub async fn join_server(
     Path(slug): Path<String>,
     headers: HeaderMap,
 ) -> Res<serde_json::Value> {
-    let me = require_actor(&st, &headers)?;
-    st.services.join_server(&me, &slug).map_err(bad)?;
+    let me = require_actor(&st, &headers).await?;
+    st.services.join_server(&me, &slug).await.map_err(bad)?;
     st.persist();
     st.publish(json!({ "type": "server" }).to_string());
     Ok(Json(json!({ "ok": true })))
@@ -239,10 +239,10 @@ pub async fn create_channel(
     headers: HeaderMap,
     Json(req): Json<CreateChannelReq>,
 ) -> Res<ChannelDto> {
-    let me = require_actor(&st, &headers)?;
+    let me = require_actor(&st, &headers).await?;
     let c = st
         .services.chat()
-        .create_channel(&me, &slug, &req.name, &req.topic)
+        .create_channel(&me, &slug, &req.name, &req.topic).await
         .map_err(bad)?;
     st.persist();
     st.publish(json!({ "type": "channel", "server": slug }).to_string());
@@ -266,8 +266,8 @@ pub async fn enfranchise(
     headers: HeaderMap,
 ) -> Res<serde_json::Value> {
     use app::EnfranchiseOutcome::*;
-    let me = require_actor(&st, &headers)?;
-    let outcome = st.services.try_enfranchise(&me, &slug).map_err(bad)?;
+    let me = require_actor(&st, &headers).await?;
+    let outcome = st.services.try_enfranchise(&me, &slug).await.map_err(bad)?;
     st.persist();
     let msg = match &outcome {
         Admitted => {
@@ -288,7 +288,7 @@ pub async fn my_status(
 ) -> Res<MeDto> {
     // A signed-out viewer is simply a guest; no 401 here so the public read view
     // still works.
-    let Some(me) = crate::auth::current_actor(&st, &headers) else {
+    let Some(me) = crate::auth::current_actor(&st, &headers).await else {
         return Ok(Json(MeDto {
             tier: "guest".into(),
             is_eligible: false,
@@ -299,7 +299,7 @@ pub async fn my_status(
             is_muted: false,
         }));
     };
-    match st.services.member_tier(&me, &slug) {
+    match st.services.member_tier(&me, &slug).await {
         None => Ok(Json(MeDto {
             tier: "guest".into(),
             is_eligible: false,
@@ -310,15 +310,15 @@ pub async fn my_status(
             is_muted: false,
         })),
         Some(tier) => {
-            let elig = st.services.eligibility(&me, &slug).map_err(bad)?;
+            let elig = st.services.eligibility(&me, &slug).await.map_err(bad)?;
             let (is_police, is_muted) =
-                st.services.mute().police_and_mute_status(&me, &slug).unwrap_or((false, false));
+                st.services.mute().police_and_mute_status(&me, &slug).await.unwrap_or((false, false));
             Ok(Json(MeDto {
                 tier: tier.as_str().into(),
                 is_eligible: elig.is_eligible(),
                 unmet: elig.unmet.iter().map(describe_unmet).collect(),
-                contribution: st.services.member_contribution(&me, &slug).unwrap_or(0),
-                shares_history: st.services.chat().history_sharing(&me, &slug),
+                contribution: st.services.member_contribution(&me, &slug).await.unwrap_or(0),
+                shares_history: st.services.chat().history_sharing(&me, &slug).await,
                 is_police,
                 is_muted,
             }))
@@ -333,8 +333,8 @@ pub async fn set_history_sharing(
     headers: HeaderMap,
     Json(req): Json<HistorySharingReq>,
 ) -> Res<serde_json::Value> {
-    let me = require_actor(&st, &headers)?;
-    st.services.chat().set_history_sharing(&me, &slug, req.shares).map_err(bad)?;
+    let me = require_actor(&st, &headers).await?;
+    st.services.chat().set_history_sharing(&me, &slug, req.shares).await.map_err(bad)?;
     st.persist();
     Ok(Json(json!({ "ok": true })))
 }
@@ -344,16 +344,16 @@ pub async fn list_messages(
     Path((slug, channel)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Res<Vec<MessageDto>> {
-    let viewer = crate::auth::current_actor(&st, &headers).unwrap_or_default();
-    let messages = st.services.chat().channel_messages_for(&viewer, &slug, &channel).map_err(bad)?;
+    let viewer = crate::auth::current_actor(&st, &headers).await.unwrap_or_default();
+    let messages = st.services.chat().channel_messages_for(&viewer, &slug, &channel).await.map_err(bad)?;
     // Chronological, flat (id order) — replies sit at the bottom like everything
     // else and carry a quote of their parent rather than being indented.
     let by_id: std::collections::HashMap<u64, &domain::Message> =
         messages.iter().map(|m| (m.id.0, m)).collect();
-    let out = messages
-        .iter()
-        .map(|m| build_message_dto(&st, &slug, &viewer, m, &by_id))
-        .collect();
+    let mut out = Vec::new();
+    for m in messages.iter() {
+        out.push(build_message_dto(&st, &slug, &viewer, m, &by_id).await);
+    }
     Ok(Json(out))
 }
 
@@ -367,7 +367,7 @@ fn excerpt(body: &str) -> String {
     s
 }
 
-fn build_message_dto(
+async fn build_message_dto(
     st: &AppState,
     slug: &str,
     viewer: &str,
@@ -376,18 +376,28 @@ fn build_message_dto(
 ) -> MessageDto {
     // The message being replied to, resolved to a compact quote.
     let is_sealed = m.key_epoch.is_some();
-    let reply_to = m.parent.and_then(|pid| by_id.get(&pid.0)).map(|p| ReplyRefDto {
-        id: p.id.0,
-        author: st.services.chat().user_handle(p.author).unwrap_or_else(|| format!("user{}", p.author)),
-        // A sealed parent's body is ciphertext — quote it as a lock, not gibberish.
-        excerpt: if p.is_deleted {
-            "[deleted]".into()
-        } else if p.key_epoch.is_some() {
-            "🔒 encrypted".into()
-        } else {
-            excerpt(&p.body)
-        },
-    });
+    let reply_to = match m.parent.and_then(|pid| by_id.get(&pid.0)) {
+        Some(p) => {
+            let author = st
+                .services
+                .chat()
+                .user_handle(p.author).await
+                .unwrap_or_else(|| format!("user{}", p.author));
+            Some(ReplyRefDto {
+                id: p.id.0,
+                author,
+                // A sealed parent's body is ciphertext — quote it as a lock, not gibberish.
+                excerpt: if p.is_deleted {
+                    "[deleted]".into()
+                } else if p.key_epoch.is_some() {
+                    "🔒 encrypted".into()
+                } else {
+                    excerpt(&p.body)
+                },
+            })
+        }
+        None => None,
+    };
     // A reply pings the author of the message it answers.
     let replies_to_viewer = !viewer.is_empty()
         && reply_to.as_ref().is_some_and(|r| r.author == viewer);
@@ -397,7 +407,7 @@ fn build_message_dto(
     let (mentions, mentions_me) = if m.is_deleted || is_sealed {
         (Vec::new(), replies_to_viewer)
     } else {
-        let resolved = st.services.roles().resolve_mentions(slug, &m.body);
+        let resolved = st.services.roles().resolve_mentions(slug, &m.body).await;
         let mentions_me = replies_to_viewer
             || (!viewer.is_empty() && resolved.iter().any(|r| r.handles.iter().any(|h| h == viewer)));
         let dtos = resolved
@@ -410,14 +420,14 @@ fn build_message_dto(
 
     MessageDto {
         id: m.id.0,
-        author: st.services.chat().user_handle(m.author).unwrap_or_else(|| format!("user{}", m.author)),
+        author: st.services.chat().user_handle(m.author).await.unwrap_or_else(|| format!("user{}", m.author)),
         body: if m.is_deleted { "[deleted]".into() } else { m.body.clone() },
         key_epoch: m.key_epoch,
         ts: m.created_at.0,
         parent: m.parent.map(|p| p.0),
         is_deleted: m.is_deleted,
         edited: m.edited_at.is_some(),
-        reactions: st.services.chat().message_reactions(m.id.0),
+        reactions: st.services.chat().message_reactions(m.id.0).await,
         mentions,
         mentions_me,
         reply_to,
@@ -441,7 +451,7 @@ pub async fn post_message(
     headers: HeaderMap,
     Json(req): Json<PostReq>,
 ) -> Res<serde_json::Value> {
-    let me = require_actor(&st, &headers)?;
+    let me = require_actor(&st, &headers).await?;
     // Build domain attachments, deriving the kind from the (base) content type and
     // dropping anything that isn't a supported media type.
     let attachments: Vec<domain::Attachment> = req
@@ -455,13 +465,13 @@ pub async fn post_message(
         })
         .collect();
     let msg = match req.parent {
-        Some(parent) => st.services.chat().reply_message(&me, parent, &req.body).map_err(bad)?,
+        Some(parent) => st.services.chat().reply_message(&me, parent, &req.body).await.map_err(bad)?,
         None if attachments.is_empty() => {
-            st.services.chat().post_message(&me, &slug, &channel, &req.body).map_err(bad)?
+            st.services.chat().post_message(&me, &slug, &channel, &req.body).await.map_err(bad)?
         }
         None => st
             .services.chat()
-            .post_message_with_attachments(&me, &slug, &channel, &req.body, attachments)
+            .post_message_with_attachments(&me, &slug, &channel, &req.body, attachments).await
             .map_err(bad)?,
     };
     st.persist();
@@ -477,7 +487,7 @@ pub async fn upload_media(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Res<serde_json::Value> {
-    let _me = require_actor(&st, &headers)?;
+    let _me = require_actor(&st, &headers).await?;
     let content_type = headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -539,10 +549,10 @@ pub async fn post_sealed_message(
     headers: HeaderMap,
     Json(req): Json<PostSealedReq>,
 ) -> Res<serde_json::Value> {
-    let me = require_actor(&st, &headers)?;
+    let me = require_actor(&st, &headers).await?;
     let msg = st
         .services.chat()
-        .post_sealed_message(&me, &slug, &channel, &req.ciphertext, req.key_epoch, req.parent)
+        .post_sealed_message(&me, &slug, &channel, &req.ciphertext, req.key_epoch, req.parent).await
         .map_err(bad)?;
     st.persist();
     st.publish(json!({ "type": "message", "server": slug, "channel": channel }).to_string());
@@ -557,11 +567,11 @@ pub async fn enable_channel_encryption(
     headers: HeaderMap,
     Json(req): Json<EnableEncryptionReq>,
 ) -> Res<serde_json::Value> {
-    let me = require_actor(&st, &headers)?;
+    let me = require_actor(&st, &headers).await?;
     // Unknown/empty falls to the default (Open); the string→mode table lives on the
     // enum, so a new mode is added there, not in a `_ =>` arm here.
     let mode = domain::HistoryMode::from_wire(req.history_mode.trim()).unwrap_or_default();
-    st.services.channel_keys().enable_channel_encryption(&me, &slug, &channel, mode).map_err(bad)?;
+    st.services.channel_keys().enable_channel_encryption(&me, &slug, &channel, mode).await.map_err(bad)?;
     st.persist();
     st.publish(json!({ "type": "channel", "server": slug }).to_string());
     Ok(Json(json!({ "ok": true })))
@@ -575,9 +585,9 @@ pub async fn grant_channel_key(
     headers: HeaderMap,
     Json(req): Json<GrantKeyReq>,
 ) -> Res<serde_json::Value> {
-    let me = require_actor(&st, &headers)?;
+    let me = require_actor(&st, &headers).await?;
     st.services.channel_keys()
-        .grant_channel_key(&me, &slug, &channel, req.epoch, &req.member, &req.sealed_key)
+        .grant_channel_key(&me, &slug, &channel, req.epoch, &req.member, &req.sealed_key).await
         .map_err(bad)?;
     st.persist();
     Ok(Json(json!({ "ok": true })))
@@ -590,10 +600,10 @@ pub async fn my_channel_grants(
     Path((slug, channel)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Res<Vec<ChannelGrantDto>> {
-    let me = require_actor(&st, &headers)?;
+    let me = require_actor(&st, &headers).await?;
     let grants = st
         .services.channel_keys()
-        .my_channel_grants(&me, &slug, &channel)
+        .my_channel_grants(&me, &slug, &channel).await
         .map_err(bad)?
         .into_iter()
         .map(|g| ChannelGrantDto { epoch: g.epoch, sealed_key: g.sealed_key })
@@ -607,10 +617,10 @@ pub async fn react(
     headers: HeaderMap,
     Json(req): Json<ReactReq>,
 ) -> Res<serde_json::Value> {
-    let me = require_actor(&st, &headers)?;
-    st.services.chat().react(&me, id, &req.emoji).map_err(bad)?;
+    let me = require_actor(&st, &headers).await?;
+    st.services.chat().react(&me, id, &req.emoji).await.map_err(bad)?;
     st.persist();
-    if let Some((server, channel)) = st.services.chat().message_context(id) {
+    if let Some((server, channel)) = st.services.chat().message_context(id).await {
         st.publish(json!({ "type": "reaction", "server": server, "channel": channel }).to_string());
     }
     Ok(Json(json!({ "ok": true })))
@@ -622,33 +632,36 @@ pub async fn list_proposals(
     Path(slug): Path<String>,
     headers: HeaderMap,
 ) -> Res<Vec<ProposalDto>> {
-    let me = crate::auth::current_actor(&st, &headers).unwrap_or_default();
+    let me = crate::auth::current_actor(&st, &headers).await.unwrap_or_default();
     let now = st.services.now().0;
-    let dtos = st
-        .services.governance()
-        .list_proposals(&slug)
-        .into_iter()
-        .map(|p| {
-            let (aye, nay) = st.services.governance().proposal_head_counts(p.id.0);
-            let (status, closes_in, is_applied) = match p.status {
-                domain::ProposalStatus::Open => ("open", Some(p.closes_at.0 - now), false),
-                domain::ProposalStatus::Passed { .. } => ("passed", None, p.is_applied),
-                domain::ProposalStatus::Failed => ("failed", None, false),
-            };
-            ProposalDto {
-                id: p.id.0,
-                summary: summarize_kind(&st, &p.kind),
-                amendments: p.amendments.iter().map(|k| summarize_kind(&st, k)).collect(),
-                proposer: st.services.chat().user_handle(p.proposer).unwrap_or_default(),
-                status: status.into(),
-                aye,
-                nay,
-                closes_in,
-                my_vote: st.services.governance().my_vote(p.id.0, &me),
-                is_applied,
-            }
-        })
-        .collect();
+    let mut dtos = Vec::new();
+    for p in st.services.governance().list_proposals(&slug).await {
+        let (aye, nay) = st.services.governance().proposal_head_counts(p.id.0).await;
+        let (status, closes_in, is_applied) = match p.status {
+            domain::ProposalStatus::Open => ("open", Some(p.closes_at.0 - now), false),
+            domain::ProposalStatus::Passed { .. } => ("passed", None, p.is_applied),
+            domain::ProposalStatus::Failed => ("failed", None, false),
+        };
+        let summary = summarize_kind(&st, &p.kind).await;
+        let mut amendments = Vec::new();
+        for k in p.amendments.iter() {
+            amendments.push(summarize_kind(&st, k).await);
+        }
+        let proposer = st.services.chat().user_handle(p.proposer).await.unwrap_or_default();
+        let my_vote = st.services.governance().my_vote(p.id.0, &me).await;
+        dtos.push(ProposalDto {
+            id: p.id.0,
+            summary,
+            amendments,
+            proposer,
+            status: status.into(),
+            aye,
+            nay,
+            closes_in,
+            my_vote,
+            is_applied,
+        });
+    }
     Ok(Json(dtos))
 }
 
@@ -659,9 +672,9 @@ pub async fn propose(
     headers: HeaderMap,
     Json(req): Json<ProposeReq>,
 ) -> Res<serde_json::Value> {
-    let me = require_actor(&st, &headers)?;
-    let kind = to_proposal_kind(&st, &slug, &req.kind).map_err(bad)?;
-    let p = st.services.governance().open_proposal(&me, &slug, kind).map_err(bad)?;
+    let me = require_actor(&st, &headers).await?;
+    let kind = to_proposal_kind(&st, &slug, &req.kind).await.map_err(bad)?;
+    let p = st.services.governance().open_proposal(&me, &slug, kind).await.map_err(bad)?;
     st.persist();
     st.publish(json!({ "type": "proposal", "server": slug }).to_string());
     Ok(Json(json!({ "id": p.id.0 })))
@@ -674,16 +687,16 @@ pub async fn vote(
     headers: HeaderMap,
     Json(req): Json<VoteReq>,
 ) -> Res<serde_json::Value> {
-    let me = require_actor(&st, &headers)?;
+    let me = require_actor(&st, &headers).await?;
     match &st.vote_router {
         // Federated: route to the node that owns the proposal's server (which may be
         // this one). The owner re-checks citizenship and mints the canonical event.
         Some(router) => {
-            let voter_id = st.services.chat().user_id(&me).ok_or_else(|| bad("err.no_such_account"))?;
+            let voter_id = st.services.chat().user_id(&me).await.ok_or_else(|| bad("err.no_such_account"))?;
             router.cast_vote(voter_id, id, req.is_aye).await.map_err(bad)?;
         }
         // Single-box: apply directly.
-        None => st.services.governance().cast_vote(&me, id, req.is_aye).map_err(bad)?,
+        None => st.services.governance().cast_vote(&me, id, req.is_aye).await.map_err(bad)?,
     }
     st.persist();
     // A proposal doesn't carry its server slug here; broadcast a generic nudge.
@@ -699,14 +712,14 @@ pub async fn amend(
     headers: HeaderMap,
     Json(req): Json<ProposeReq>,
 ) -> Res<serde_json::Value> {
-    let me = require_actor(&st, &headers)?;
+    let me = require_actor(&st, &headers).await?;
     // Resolve handles/roles in the amendment against the proposal's own server.
     let slug = st
         .services.governance()
-        .proposal_server_slug(id)
+        .proposal_server_slug(id).await
         .ok_or_else(|| bad("err.no_such_proposal"))?;
-    let kind = to_proposal_kind(&st, &slug, &req.kind).map_err(bad)?;
-    st.services.governance().amend_proposal(&me, id, kind).map_err(bad)?;
+    let kind = to_proposal_kind(&st, &slug, &req.kind).await.map_err(bad)?;
+    st.services.governance().amend_proposal(&me, id, kind).await.map_err(bad)?;
     st.persist();
     st.publish(json!({ "type": "proposal", "server": slug }).to_string());
     Ok(Json(json!({ "ok": true })))
@@ -714,15 +727,11 @@ pub async fn amend(
 
 /// A proposal's deliberation thread, in post order.
 pub async fn list_discussion(State(st): State<AppState>, Path(id): Path<u64>) -> Res<Vec<DiscussionDto>> {
-    let dtos = st
-        .services.governance()
-        .list_discussion(id)
-        .into_iter()
-        .map(|d| DiscussionDto {
-            author: st.services.chat().user_handle(d.author).unwrap_or_default(),
-            body: d.body,
-        })
-        .collect();
+    let mut dtos = Vec::new();
+    for d in st.services.governance().list_discussion(id).await {
+        let author = st.services.chat().user_handle(d.author).await.unwrap_or_default();
+        dtos.push(DiscussionDto { author, body: d.body });
+    }
     Ok(Json(dtos))
 }
 
@@ -733,8 +742,8 @@ pub async fn post_discussion(
     headers: HeaderMap,
     Json(req): Json<DiscussReq>,
 ) -> Res<serde_json::Value> {
-    let me = require_actor(&st, &headers)?;
-    st.services.governance().post_discussion(&me, id, &req.body).map_err(bad)?;
+    let me = require_actor(&st, &headers).await?;
+    st.services.governance().post_discussion(&me, id, &req.body).await.map_err(bad)?;
     st.persist();
     st.publish(json!({ "type": "proposal" }).to_string());
     Ok(Json(json!({ "ok": true })))
@@ -747,10 +756,10 @@ pub async fn list_emojis(
     Path(slug): Path<String>,
     headers: HeaderMap,
 ) -> Res<Vec<EmojiDto>> {
-    let me = crate::auth::current_actor(&st, &headers).unwrap_or_default();
+    let me = crate::auth::current_actor(&st, &headers).await.unwrap_or_default();
     let dtos = st
         .services.emoji()
-        .ranked_emojis(&slug, &me)
+        .ranked_emojis(&slug, &me).await
         .into_iter()
         .map(|e| EmojiDto {
             id: e.id,
@@ -770,7 +779,7 @@ pub async fn list_emojis(
 pub async fn emoji_map(State(st): State<AppState>, Path(slug): Path<String>) -> Res<serde_json::Value> {
     let map: serde_json::Map<String, serde_json::Value> = st
         .services.emoji()
-        .emoji_name_map(&slug)
+        .emoji_name_map(&slug).await
         .into_iter()
         .map(|(name, url)| (name, serde_json::Value::String(url)))
         .collect();
@@ -785,9 +794,9 @@ pub async fn add_emoji(
     headers: HeaderMap,
     Json(req): Json<AddEmojiReq>,
 ) -> Res<serde_json::Value> {
-    let me = require_actor(&st, &headers)?;
+    let me = require_actor(&st, &headers).await?;
     let url = emoji_url(&req.url, &req.image).map_err(bad)?;
-    let emoji = st.services.emoji().add_emoji(&me, &slug, &req.name, &url).map_err(bad)?;
+    let emoji = st.services.emoji().add_emoji(&me, &slug, &req.name, &url).await.map_err(bad)?;
     st.persist();
     st.publish(json!({ "type": "emoji", "server": slug }).to_string());
     Ok(Json(json!({ "id": emoji.id.0, "name": emoji.name })))
@@ -800,8 +809,8 @@ pub async fn vote_emoji(
     headers: HeaderMap,
     Json(req): Json<VoteEmojiReq>,
 ) -> Res<serde_json::Value> {
-    let me = require_actor(&st, &headers)?;
-    st.services.emoji().vote_emoji(&me, &slug, id, req.is_up).map_err(bad)?;
+    let me = require_actor(&st, &headers).await?;
+    st.services.emoji().vote_emoji(&me, &slug, id, req.is_up).await.map_err(bad)?;
     st.persist();
     st.publish(json!({ "type": "emoji", "server": slug }).to_string());
     Ok(Json(json!({ "ok": true })))
@@ -840,9 +849,9 @@ pub async fn publish_keys(
     headers: HeaderMap,
     Json(req): Json<PublishKeysReq>,
 ) -> Res<serde_json::Value> {
-    let me = require_actor(&st, &headers)?;
+    let me = require_actor(&st, &headers).await?;
     st.services.keys()
-        .publish_keys(&me, &req.public_key, req.wrapped_secret.into())
+        .publish_keys(&me, &req.public_key, req.wrapped_secret.into()).await
         .map_err(bad)?;
     st.persist();
     Ok(Json(json!({ "ok": true })))
@@ -852,8 +861,8 @@ pub async fn publish_keys(
 /// secret, so a new device can unwrap it with the password. Served only to the
 /// authenticated owner — the actor comes from the session, never the request.
 pub async fn my_keys(State(st): State<AppState>, headers: HeaderMap) -> Res<MyKeysDto> {
-    let me = require_actor(&st, &headers)?;
-    let keys = st.services.keys().my_keys(&me).map_err(bad)?;
+    let me = require_actor(&st, &headers).await?;
+    let keys = st.services.keys().my_keys(&me).await.map_err(bad)?;
     Ok(Json(MyKeysDto {
         public_key: keys.public_key,
         wrapped_secret: keys.wrapped_secret.into(),
@@ -867,14 +876,14 @@ pub async fn public_key(
     Path(handle): Path<String>,
     headers: HeaderMap,
 ) -> Res<PublicKeyDto> {
-    require_actor(&st, &headers)?;
-    let public_key = st.services.keys().public_key_of(&handle).map_err(bad)?;
+    require_actor(&st, &headers).await?;
+    let public_key = st.services.keys().public_key_of(&handle).await.map_err(bad)?;
     Ok(Json(PublicKeyDto { handle, public_key }))
 }
 
 /// Translate the client's tagged request into a domain [`ProposalKind`],
 /// resolving handles/ids that only the server can look up.
-fn to_proposal_kind(
+async fn to_proposal_kind(
     st: &AppState,
     slug: &str,
     req: &ProposeKindReq,
@@ -888,26 +897,26 @@ fn to_proposal_kind(
         }
         ProposeKindReq::DeleteChannel { name } => K::DeleteChannel { name: name.clone() },
         ProposeKindReq::Ban { handle } => {
-            let u = st.services.find_user(handle).ok_or_else(|| format!("no such user: {handle}"))?;
+            let u = st.services.find_user(handle).await.ok_or_else(|| format!("no such user: {handle}"))?;
             K::Ban { user: u.id }
         }
-        ProposeKindReq::Mute { handle } => K::Mute { user: resolve_member(st, slug, handle)? },
-        ProposeKindReq::LiftMute { handle } => K::LiftMute { user: resolve_member(st, slug, handle)? },
+        ProposeKindReq::Mute { handle } => K::Mute { user: resolve_member(st, slug, handle).await? },
+        ProposeKindReq::LiftMute { handle } => K::LiftMute { user: resolve_member(st, slug, handle).await? },
         ProposeKindReq::AppointPolice { handle } => {
-            K::AppointPolice { user: resolve_member(st, slug, handle)? }
+            K::AppointPolice { user: resolve_member(st, slug, handle).await? }
         }
         ProposeKindReq::DismissPolice { handle } => {
-            K::DismissPolice { user: resolve_member(st, slug, handle)? }
+            K::DismissPolice { user: resolve_member(st, slug, handle).await? }
         }
         ProposeKindReq::CreateRole { name } => K::CreateRole { name: name.clone() },
-        ProposeKindReq::DeleteRole { role } => K::DeleteRole { role: resolve_role(st, slug, role)? },
+        ProposeKindReq::DeleteRole { role } => K::DeleteRole { role: resolve_role(st, slug, role).await? },
         ProposeKindReq::AssignRole { handle, role } => K::AssignRole {
-            user: resolve_member(st, slug, handle)?,
-            role: resolve_role(st, slug, role)?,
+            user: resolve_member(st, slug, handle).await?,
+            role: resolve_role(st, slug, role).await?,
         },
         ProposeKindReq::UnassignRole { handle, role } => K::UnassignRole {
-            user: resolve_member(st, slug, handle)?,
-            role: resolve_role(st, slug, role)?,
+            user: resolve_member(st, slug, handle).await?,
+            role: resolve_role(st, slug, role).await?,
         },
         ProposeKindReq::SetRehomingPolicy { is_disabled } => {
             K::SetRehomingPolicy { is_disabled: *is_disabled }
@@ -949,15 +958,15 @@ fn to_proposal_kind(
 }
 
 /// Resolve a handle to a member's [`UserId`], erroring if unknown.
-fn resolve_member(st: &AppState, _slug: &str, handle: &str) -> Result<domain::UserId, String> {
-    st.services.find_user(handle).map(|u| u.id).ok_or_else(|| format!("no such user: {handle}"))
+async fn resolve_member(st: &AppState, _slug: &str, handle: &str) -> Result<domain::UserId, String> {
+    st.services.find_user(handle).await.map(|u| u.id).ok_or_else(|| format!("no such user: {handle}"))
 }
 
 /// Resolve a role name to its [`RoleId`] within a server, erroring if unknown.
-fn resolve_role(st: &AppState, slug: &str, name: &str) -> Result<domain::RoleId, String> {
+async fn resolve_role(st: &AppState, slug: &str, name: &str) -> Result<domain::RoleId, String> {
     let norm = domain::normalize_role_name(name);
     st.services.roles()
-        .list_roles(slug)
+        .list_roles(slug).await
         .into_iter()
         .find(|r| r.name == norm)
         .map(|r| r.id)
@@ -965,30 +974,30 @@ fn resolve_role(st: &AppState, slug: &str, name: &str) -> Result<domain::RoleId,
 }
 
 /// A short human summary of a proposal for the list.
-fn summarize_kind(st: &AppState, kind: &domain::ProposalKind) -> String {
+async fn summarize_kind(st: &AppState, kind: &domain::ProposalKind) -> String {
     use domain::ProposalKind as K;
     match kind {
         K::AddRule { text } => format!("Add rule: “{text}”"),
         K::RemoveRule { rule } => format!("Repeal rule #{}", rule.0),
         K::CreateChannel { name, .. } => format!("Create channel #{name}"),
         K::DeleteChannel { name } => format!("Delete channel #{name}"),
-        K::Ban { user } => format!("Ban @{}", st.services.chat().user_handle(*user).unwrap_or_default()),
-        K::Timeout { user, .. } => format!("Time out @{}", st.services.chat().user_handle(*user).unwrap_or_default()),
-        K::Mute { user } => format!("Mute @{}", st.services.chat().user_handle(*user).unwrap_or_default()),
-        K::LiftMute { user } => format!("Lift mute on @{}", st.services.chat().user_handle(*user).unwrap_or_default()),
+        K::Ban { user } => format!("Ban @{}", st.services.chat().user_handle(*user).await.unwrap_or_default()),
+        K::Timeout { user, .. } => format!("Time out @{}", st.services.chat().user_handle(*user).await.unwrap_or_default()),
+        K::Mute { user } => format!("Mute @{}", st.services.chat().user_handle(*user).await.unwrap_or_default()),
+        K::LiftMute { user } => format!("Lift mute on @{}", st.services.chat().user_handle(*user).await.unwrap_or_default()),
         K::AppointPolice { user } => {
-            format!("Appoint @{} as police", st.services.chat().user_handle(*user).unwrap_or_default())
+            format!("Appoint @{} as police", st.services.chat().user_handle(*user).await.unwrap_or_default())
         }
         K::DismissPolice { user } => {
-            format!("Dismiss police @{}", st.services.chat().user_handle(*user).unwrap_or_default())
+            format!("Dismiss police @{}", st.services.chat().user_handle(*user).await.unwrap_or_default())
         }
-        K::Recall { leader } => format!("Recall @{}", st.services.chat().user_handle(*leader).unwrap_or_default()),
+        K::Recall { leader } => format!("Recall @{}", st.services.chat().user_handle(*leader).await.unwrap_or_default()),
         K::AmendCriteria { .. } => "Amend franchise criteria".into(),
         K::SetJurySizing { .. } => "Change jury sizing".into(),
         K::SetVoteWeighting { .. } => "Change vote weighting".into(),
         K::SetWeightingScope { .. } => "Change weighting scope".into(),
         K::GrantVoteWeight { user, weight } => {
-            format!("Grant @{} vote weight {weight}", st.services.chat().user_handle(*user).unwrap_or_default())
+            format!("Grant @{} vote weight {weight}", st.services.chat().user_handle(*user).await.unwrap_or_default())
         }
         K::SetGovernanceSurface { .. } => "Change what this server votes on".into(),
         K::RemoveContent { target } => format!("Remove content {target}"),
@@ -996,12 +1005,12 @@ fn summarize_kind(st: &AppState, kind: &domain::ProposalKind) -> String {
         K::DeleteRole { role } => format!("Delete role #{}", role.0),
         K::AssignRole { user, role } => format!(
             "Add @{} to role #{}",
-            st.services.chat().user_handle(*user).unwrap_or_default(),
+            st.services.chat().user_handle(*user).await.unwrap_or_default(),
             role.0
         ),
         K::UnassignRole { user, role } => format!(
             "Remove @{} from role #{}",
-            st.services.chat().user_handle(*user).unwrap_or_default(),
+            st.services.chat().user_handle(*user).await.unwrap_or_default(),
             role.0
         ),
         K::SetRehomingPolicy { is_disabled } => if *is_disabled {
@@ -1019,17 +1028,16 @@ fn summarize_kind(st: &AppState, kind: &domain::ProposalKind) -> String {
 
 /// List a server's custom roles and their holders (for the governance panel).
 pub async fn list_roles(State(st): State<AppState>, Path(slug): Path<String>) -> Res<Vec<RoleDto>> {
-    let dtos = st
-        .services.roles()
-        .roles_with_color(&slug)
-        .into_iter()
-        .map(|(r, color)| RoleDto {
+    let mut dtos = Vec::new();
+    for (r, color) in st.services.roles().roles_with_color(&slug).await {
+        let holders = st.services.roles().role_holders(&slug, &r.name).await;
+        dtos.push(RoleDto {
             id: r.id.0,
-            holders: st.services.roles().role_holders(&slug, &r.name),
+            holders,
             color: color.map(|c| c.as_str().to_string()),
             name: r.name,
-        })
-        .collect();
+        });
+    }
     Ok(Json(dtos))
 }
 
@@ -1041,10 +1049,10 @@ pub async fn user_roles(
     Path((slug, handle)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Res<UserRolesDto> {
-    let me = crate::auth::current_actor(&st, &headers).unwrap_or_default();
+    let me = crate::auth::current_actor(&st, &headers).await.unwrap_or_default();
     let ur = st
         .services.roles()
-        .user_roles(&slug, &handle, &me)
+        .user_roles(&slug, &handle, &me).await
         .ok_or_else(|| not_found("err.no_such_user"))?;
     Ok(Json(UserRolesDto {
         handle: ur.handle,
@@ -1065,8 +1073,8 @@ pub async fn vote_role_color(
     headers: HeaderMap,
     Json(req): Json<VoteRoleColorReq>,
 ) -> Res<serde_json::Value> {
-    let me = require_actor(&st, &headers)?;
-    st.services.roles().vote_role_color(&me, &slug, id, &req.color).map_err(bad)?;
+    let me = require_actor(&st, &headers).await?;
+    st.services.roles().vote_role_color(&me, &slug, id, &req.color).await.map_err(bad)?;
     st.persist();
     st.publish(json!({ "type": "role", "server": slug }).to_string());
     Ok(Json(json!({ "ok": true })))
@@ -1076,8 +1084,8 @@ pub async fn vote_role_color(
 /// composer's autocomplete.
 pub async fn mentionable(State(st): State<AppState>, Path(slug): Path<String>) -> Res<MentionableDto> {
     Ok(Json(MentionableDto {
-        users: st.services.roles().member_handles(&slug),
-        roles: st.services.roles().mentionable_role_names(&slug),
+        users: st.services.roles().member_handles(&slug).await,
+        roles: st.services.roles().mentionable_role_names(&slug).await,
     }))
 }
 
@@ -1085,7 +1093,7 @@ pub async fn mentionable(State(st): State<AppState>, Path(slug): Path<String>) -
 pub async fn list_members(State(st): State<AppState>, Path(slug): Path<String>) -> Res<Vec<MemberDto>> {
     let dtos = st
         .services.mute()
-        .list_members(&slug)
+        .list_members(&slug).await
         .into_iter()
         .map(|m| MemberDto {
             handle: m.handle,
@@ -1105,8 +1113,8 @@ pub async fn mute(
     headers: HeaderMap,
     Json(req): Json<MuteReq>,
 ) -> Res<serde_json::Value> {
-    let me = require_actor(&st, &headers)?;
-    st.services.mute().mute_member(&me, &slug, &req.handle).map_err(bad)?;
+    let me = require_actor(&st, &headers).await?;
+    st.services.mute().mute_member(&me, &slug, &req.handle).await.map_err(bad)?;
     st.persist();
     st.publish(json!({ "type": "mute", "server": slug }).to_string());
     Ok(Json(json!({ "ok": true })))
@@ -1119,8 +1127,8 @@ pub async fn unmute(
     headers: HeaderMap,
     Json(req): Json<MuteReq>,
 ) -> Res<serde_json::Value> {
-    let me = require_actor(&st, &headers)?;
-    st.services.mute().unmute_member(&me, &slug, &req.handle).map_err(bad)?;
+    let me = require_actor(&st, &headers).await?;
+    st.services.mute().unmute_member(&me, &slug, &req.handle).await.map_err(bad)?;
     st.persist();
     st.publish(json!({ "type": "mute", "server": slug }).to_string());
     Ok(Json(json!({ "ok": true })))
@@ -1137,9 +1145,9 @@ pub async fn dev_endorse(
     if !st.is_dev {
         return Err((StatusCode::FORBIDDEN, "err.dev_disabled".into()));
     }
-    let me = require_actor(&st, &headers)?;
-    let current = st.services.member_contribution(&me, &slug).unwrap_or(0);
-    st.services.set_contribution(&me, &slug, current + 5).map_err(bad)?;
+    let me = require_actor(&st, &headers).await?;
+    let current = st.services.member_contribution(&me, &slug).await.unwrap_or(0);
+    st.services.set_contribution(&me, &slug, current + 5).await.map_err(bad)?;
     st.persist();
     st.publish(json!({ "type": "server" }).to_string());
     Ok(Json(json!({ "ok": true })))

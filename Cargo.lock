@@ -9,6 +9,7 @@ dependencies = [
  "app",
  "clap",
  "domain",
+ "tokio",
 ]
 
 [[package]]

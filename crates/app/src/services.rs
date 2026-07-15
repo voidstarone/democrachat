@@ -177,23 +177,23 @@ impl Services {
     /// ([`authenticate`](Self::authenticate) rejects a passwordless account) until
     /// a password is set. Web sign-up uses
     /// [`register_with_password`](Self::register_with_password).
-    pub fn register_account(&self, handle: &str) -> Result<User, RegisterError> {
+    pub async fn register_account(&self, handle: &str) -> Result<User, RegisterError> {
         let handle = handle.trim();
         if handle.is_empty() {
             return Err(RegisterError::EmptyHandle);
         }
-        if self.users.find_by_handle(handle)?.is_some() {
+        if self.users.find_by_handle(handle).await?.is_some() {
             return Err(RegisterError::HandleTaken(handle.to_string()));
         }
-        let user = User::new(self.users.next_user_id()?, handle, self.clock.now());
-        self.users.insert_user(user.clone())?;
+        let user = User::new(self.users.next_user_id().await?, handle, self.clock.now());
+        self.users.insert_user(user.clone()).await?;
         Ok(user)
     }
 
     /// Register a new account with a password. The password is length-validated by
     /// the domain and hashed with Argon2id before storage; the plaintext never
     /// persists. This is the only registration path the web signup uses.
-    pub fn register_with_password(
+    pub async fn register_with_password(
         &self,
         handle: &str,
         password: &str,
@@ -204,27 +204,27 @@ impl Services {
         }
         domain::validate_password(password)
             .map_err(|e| RegisterError::WeakPassword(e.to_string()))?;
-        if self.users.find_by_handle(handle)?.is_some() {
+        if self.users.find_by_handle(handle).await?.is_some() {
             return Err(RegisterError::HandleTaken(handle.to_string()));
         }
         let hash = crate::hash_password(password).map_err(|_| RegisterError::HashFailed)?;
-        let mut user = User::new(self.users.next_user_id()?, handle, self.clock.now());
+        let mut user = User::new(self.users.next_user_id().await?, handle, self.clock.now());
         user.password_hash = hash;
-        self.users.insert_user(user.clone())?;
+        self.users.insert_user(user.clone()).await?;
         Ok(user)
     }
 
     /// Set (or replace) an account's password. Used to give seed/CLI accounts a
     /// real credential so the demo can log in as them.
-    pub fn set_password(&self, handle: &str, password: &str) -> Result<(), RegisterError> {
+    pub async fn set_password(&self, handle: &str, password: &str) -> Result<(), RegisterError> {
         domain::validate_password(password)
             .map_err(|e| RegisterError::WeakPassword(e.to_string()))?;
         let mut user = self
             .users
-            .find_by_handle(handle.trim())?
+            .find_by_handle(handle.trim()).await?
             .ok_or(RegisterError::EmptyHandle)?;
         user.password_hash = crate::hash_password(password).map_err(|_| RegisterError::HashFailed)?;
-        self.users.update_user(user)?;
+        self.users.update_user(user).await?;
         Ok(())
     }
 
@@ -233,8 +233,8 @@ impl Services {
     /// password). Every failure path spends one Argon2 verify's worth of time
     /// ([`spend_verify_time`](crate::spend_verify_time)) so an attacker cannot
     /// tell "no such account" from "wrong password" by timing.
-    pub fn authenticate(&self, handle: &str, password: &str) -> Option<User> {
-        match self.users.find_by_handle(handle.trim()).ok().flatten() {
+    pub async fn authenticate(&self, handle: &str, password: &str) -> Option<User> {
+        match self.users.find_by_handle(handle.trim()).await.ok().flatten() {
             Some(user) if user.has_password() => {
                 if crate::verify_password(password, &user.password_hash) {
                     Some(user)
@@ -256,12 +256,12 @@ impl Services {
     /// automatically as the server grows across phases; it is not founder-for-life,
     /// and it is not a power to enfranchise anyone *else* (which stays
     /// criteria-only). A franchise-barred puppet account may not found a server.
-    pub fn found_server(
+    pub async fn found_server(
         &self,
         founder_handle: &str,
         name: &str,
     ) -> Result<Server, FoundError> {
-        self.found_server_with_visibility(founder_handle, name, false)
+        self.found_server_with_visibility(founder_handle, name, false).await
     }
 
     /// Found a server, choosing its visibility. A **private** server is hidden from
@@ -269,7 +269,7 @@ impl Services {
     /// one is listed and freely joinable. Either way the founder becomes citizen #1
     /// and the invite policy starts [`InvitePolicy::Open`](domain::InvitePolicy) so
     /// the community can grow toward its first ten voters.
-    pub fn found_server_with_visibility(
+    pub async fn found_server_with_visibility(
         &self,
         founder_handle: &str,
         name: &str,
@@ -277,7 +277,7 @@ impl Services {
     ) -> Result<Server, FoundError> {
         let founder = self
             .users
-            .find_by_handle(founder_handle.trim())?
+            .find_by_handle(founder_handle.trim()).await?
             .ok_or_else(|| FoundError::NoSuchUser(founder_handle.to_string()))?;
         if founder.is_franchise_barred {
             return Err(FoundError::FounderBarred);
@@ -286,27 +286,27 @@ impl Services {
         if slug.is_empty() {
             return Err(FoundError::EmptyName);
         }
-        if self.servers.find_by_slug(&slug)?.is_some() {
+        if self.servers.find_by_slug(&slug).await?.is_some() {
             return Err(FoundError::SlugTaken(slug));
         }
 
         let now = self.clock.now();
         let mut server =
-            Server::new(self.servers.next_server_id()?, slug, name.trim(), founder.id, now);
+            Server::new(self.servers.next_server_id().await?, slug, name.trim(), founder.id, now);
         server.is_private = is_private;
-        self.servers.insert_server(server.clone())?;
+        self.servers.insert_server(server.clone()).await?;
 
         // Founder joins as citizen #1.
         let mut m = Membership::joined(founder.id, server.id, now);
         m.tier = Tier::Citizen;
         m.enfranchised_at = Some(now);
-        self.memberships.upsert(m)?;
+        self.memberships.upsert(m).await?;
 
         // Every server starts with #general (somewhere to post from the first
         // moment) and the restricted #appeals room. Past Seed, further channels are
         // governed by ballot; these two are the provisioning floor no server is
         // ever without.
-        self.ensure_default_channels(server.id, now);
+        self.ensure_default_channels(server.id, now).await;
 
         Ok(server)
     }
@@ -315,26 +315,26 @@ impl Services {
     /// restricted `#appeals` — creating whichever is missing. Idempotent: a server
     /// that already has them is untouched. Used at founding and by
     /// [`backfill_default_channels`](Self::backfill_default_channels).
-    fn ensure_default_channels(&self, sid: domain::ServerId, now: Timestamp) {
+    async fn ensure_default_channels(&self, sid: domain::ServerId, now: Timestamp) {
         let general = domain::normalize_channel_name("general");
-        if self.channels.find_by_name(sid, &general).ok().flatten().is_none() {
+        if self.channels.find_by_name(sid, &general).await.ok().flatten().is_none() {
             self.channels.insert_channel(domain::Channel::new(
-                self.channels.next_channel_id().unwrap_or_default(),
+                self.channels.next_channel_id().await.unwrap_or_default(),
                 sid,
                 general,
                 "",
                 now,
-            )).unwrap_or_default();
+            )).await.unwrap_or_default();
         }
         let appeals = domain::normalize_channel_name("appeals");
-        if self.channels.find_by_name(sid, &appeals).ok().flatten().is_none() {
+        if self.channels.find_by_name(sid, &appeals).await.ok().flatten().is_none() {
             self.channels.insert_channel(domain::Channel::appeals(
-                self.channels.next_channel_id().unwrap_or_default(),
+                self.channels.next_channel_id().await.unwrap_or_default(),
                 sid,
                 appeals,
                 "Appeal a mute here — visible to voters and police.",
                 now,
-            )).unwrap_or_default();
+            )).await.unwrap_or_default();
         }
     }
 
@@ -342,10 +342,10 @@ impl Services {
     /// servers founded before channels were auto-provisioned (and before #appeals
     /// existed at all); running this once at boot gives each of them a #general and
     /// #appeals. Idempotent — safe to run on every start.
-    pub fn backfill_default_channels(&self) {
+    pub async fn backfill_default_channels(&self) {
         let now = self.clock.now();
-        for server in self.servers.list_all().unwrap_or_default() {
-            self.ensure_default_channels(server.id, now);
+        for server in self.servers.list_all().await.unwrap_or_default() {
+            self.ensure_default_channels(server.id, now).await;
         }
     }
 
@@ -353,16 +353,16 @@ impl Services {
     /// its digest is stored). Gated on: the actor is a member, and the server's
     /// [`InvitePolicy`](domain::InvitePolicy) is `Open`. An invite grants membership
     /// only — never the franchise.
-    pub fn create_invite(&self, handle: &str, server_slug: &str) -> Result<String, InviteError> {
+    pub async fn create_invite(&self, handle: &str, server_slug: &str) -> Result<String, InviteError> {
         let user = self
             .users
-            .find_by_handle(handle.trim())?
+            .find_by_handle(handle.trim()).await?
             .ok_or_else(|| InviteError::NoSuchUser(handle.to_string()))?;
         let server = self
             .servers
-            .find_by_slug(server_slug.trim())?
+            .find_by_slug(server_slug.trim()).await?
             .ok_or_else(|| InviteError::NoSuchServer(server_slug.to_string()))?;
-        if self.memberships.get(user.id, server.id)?.is_none() {
+        if self.memberships.get(user.id, server.id).await?.is_none() {
             return Err(InviteError::NotMember(server_slug.to_string()));
         }
         if !server.allows_member_invites() {
@@ -371,66 +371,66 @@ impl Services {
         let code = crate::invite::new_invite_code::new_invite_code();
         let hash = crate::invite::hash_code::hash_code(&code);
         self.invites
-            .add(Invite::new(hash, server.id, user.id, self.clock.now()))?;
+            .add(Invite::new(hash, server.id, user.id, self.clock.now())).await?;
         Ok(code)
     }
 
     /// Redeem an invite code: join its server as an ordinary member. Fails if the
     /// code is unknown/revoked, the server has since closed invites, or the redeemer
     /// already belongs. Never grants citizenship.
-    pub fn accept_invite(&self, handle: &str, code: &str) -> Result<Membership, InviteError> {
+    pub async fn accept_invite(&self, handle: &str, code: &str) -> Result<Membership, InviteError> {
         let user = self
             .users
-            .find_by_handle(handle.trim())?
+            .find_by_handle(handle.trim()).await?
             .ok_or_else(|| InviteError::NoSuchUser(handle.to_string()))?;
         let hash = crate::invite::hash_code::hash_code(code);
         let invite = self
             .invites
-            .by_hash(&hash)?
+            .by_hash(&hash).await?
             .filter(Invite::is_live)
             .ok_or(InviteError::InvalidCode)?;
         let server = self
             .servers
-            .get_server(invite.server_id)?
+            .get_server(invite.server_id).await?
             .ok_or(InviteError::InvalidCode)?;
         if !server.allows_member_invites() {
             return Err(InviteError::Closed(server.slug.clone()));
         }
-        if self.memberships.get(user.id, server.id)?.is_some() {
+        if self.memberships.get(user.id, server.id).await?.is_some() {
             return Err(InviteError::AlreadyMember(server.slug));
         }
         let m = Membership::joined(user.id, server.id, self.clock.now());
-        self.memberships.upsert(m.clone())?;
+        self.memberships.upsert(m.clone()).await?;
         Ok(m)
     }
 
     /// The live invites for a server, for a member to view/share. Members only.
-    pub fn list_invites(
+    pub async fn list_invites(
         &self,
         handle: &str,
         server_slug: &str,
     ) -> Result<Vec<Invite>, InviteError> {
         let user = self
             .users
-            .find_by_handle(handle.trim())?
+            .find_by_handle(handle.trim()).await?
             .ok_or_else(|| InviteError::NoSuchUser(handle.to_string()))?;
         let server = self
             .servers
-            .find_by_slug(server_slug.trim())?
+            .find_by_slug(server_slug.trim()).await?
             .ok_or_else(|| InviteError::NoSuchServer(server_slug.to_string()))?;
-        if self.memberships.get(user.id, server.id)?.is_none() {
+        if self.memberships.get(user.id, server.id).await?.is_none() {
             return Err(InviteError::NotMember(server_slug.to_string()));
         }
         Ok(self
             .invites
-            .list_for_server(server.id)?
+            .list_for_server(server.id).await?
             .into_iter()
             .filter(Invite::is_live)
             .collect())
     }
 
     /// Revoke one of a server's invites by its code digest. Members only.
-    pub fn revoke_invite(
+    pub async fn revoke_invite(
         &self,
         handle: &str,
         server_slug: &str,
@@ -438,42 +438,42 @@ impl Services {
     ) -> Result<(), InviteError> {
         let user = self
             .users
-            .find_by_handle(handle.trim())?
+            .find_by_handle(handle.trim()).await?
             .ok_or_else(|| InviteError::NoSuchUser(handle.to_string()))?;
         let server = self
             .servers
-            .find_by_slug(server_slug.trim())?
+            .find_by_slug(server_slug.trim()).await?
             .ok_or_else(|| InviteError::NoSuchServer(server_slug.to_string()))?;
-        if self.memberships.get(user.id, server.id)?.is_none() {
+        if self.memberships.get(user.id, server.id).await?.is_none() {
             return Err(InviteError::NotMember(server_slug.to_string()));
         }
         // Only revoke a hash that actually belongs to this server.
         if self
             .invites
-            .by_hash(code_hash)?
+            .by_hash(code_hash).await?
             .is_some_and(|i| i.server_id == server.id)
         {
-            self.invites.revoke(code_hash)?;
+            self.invites.revoke(code_hash).await?;
         }
         Ok(())
     }
 
     /// Join a server as an ordinary member (tier `Member`). Joining accrues dwell
     /// time toward the franchise but confers **no** vote.
-    pub fn join_server(&self, handle: &str, server_slug: &str) -> Result<Membership, JoinError> {
+    pub async fn join_server(&self, handle: &str, server_slug: &str) -> Result<Membership, JoinError> {
         let user = self
             .users
-            .find_by_handle(handle.trim())?
+            .find_by_handle(handle.trim()).await?
             .ok_or_else(|| JoinError::NoSuchUser(handle.to_string()))?;
         let server = self
             .servers
-            .find_by_slug(server_slug.trim())?
+            .find_by_slug(server_slug.trim()).await?
             .ok_or_else(|| JoinError::NoSuchServer(server_slug.to_string()))?;
-        if self.memberships.get(user.id, server.id)?.is_some() {
+        if self.memberships.get(user.id, server.id).await?.is_some() {
             return Err(JoinError::AlreadyMember(server_slug.to_string()));
         }
         let m = Membership::joined(user.id, server.id, self.clock.now());
-        self.memberships.upsert(m.clone())?;
+        self.memberships.upsert(m.clone()).await?;
         Ok(m)
     }
 
@@ -481,22 +481,22 @@ impl Services {
     /// non-founder becomes a citizen, and it runs entirely on the domain rules:
     /// Layer 1 (are the criteria met?) then Layer 2 (is a rate-cap slot open?).
     /// There is no override.
-    pub fn try_enfranchise(
+    pub async fn try_enfranchise(
         &self,
         handle: &str,
         server_slug: &str,
     ) -> Result<EnfranchiseOutcome, EnfranchiseError> {
         let user = self
             .users
-            .find_by_handle(handle.trim())?
+            .find_by_handle(handle.trim()).await?
             .ok_or_else(|| EnfranchiseError::NoSuchUser(handle.to_string()))?;
         let server = self
             .servers
-            .find_by_slug(server_slug.trim())?
+            .find_by_slug(server_slug.trim()).await?
             .ok_or_else(|| EnfranchiseError::NoSuchServer(server_slug.to_string()))?;
         let mut membership = self
             .memberships
-            .get(user.id, server.id)?
+            .get(user.id, server.id).await?
             .ok_or_else(|| EnfranchiseError::NotAMember(handle.to_string()))?;
 
         if membership.is_citizen() {
@@ -512,9 +512,9 @@ impl Services {
         }
 
         // Layer 2 — enfranchisement rate cap.
-        let citizens = self.memberships.citizen_count(server.id)?;
+        let citizens = self.memberships.citizen_count(server.id).await?;
         let window_start = Timestamp(now.0 - RATE_CAP_WINDOW_DAYS * Timestamp::SECONDS_PER_DAY);
-        let admitted = self.memberships.admitted_since(server.id, window_start)?;
+        let admitted = self.memberships.admitted_since(server.id, window_start).await?;
         if enfranchisement_slots(citizens, admitted) == 0 {
             return Ok(EnfranchiseOutcome::RateCapped {
                 admitted_this_window: admitted,
@@ -524,76 +524,78 @@ impl Services {
         // Admit.
         membership.tier = Tier::Citizen;
         membership.enfranchised_at = Some(now);
-        self.memberships.upsert(membership)?;
+        self.memberships.upsert(membership).await?;
         Ok(EnfranchiseOutcome::Admitted)
     }
 
     /// Read-only: how a member currently stands against the franchise criteria.
     /// Powers a "why can't I vote yet?" view without any side effect.
-    pub fn eligibility(
+    pub async fn eligibility(
         &self,
         handle: &str,
         server_slug: &str,
     ) -> Result<Eligibility, EnfranchiseError> {
         let user = self
             .users
-            .find_by_handle(handle.trim())?
+            .find_by_handle(handle.trim()).await?
             .ok_or_else(|| EnfranchiseError::NoSuchUser(handle.to_string()))?;
         let server = self
             .servers
-            .find_by_slug(server_slug.trim())?
+            .find_by_slug(server_slug.trim()).await?
             .ok_or_else(|| EnfranchiseError::NoSuchServer(server_slug.to_string()))?;
         let membership = self
             .memberships
-            .get(user.id, server.id)?
+            .get(user.id, server.id).await?
             .ok_or_else(|| EnfranchiseError::NotAMember(handle.to_string()))?;
         Ok(evaluate_eligibility(&user, &membership, &server.criteria, self.clock.now()))
     }
 
     /// Read-only: every server plus its phase and citizen count, for a directory.
-    pub fn list_servers(&self) -> Vec<(Server, Phase, u64)> {
-        self.servers
-            .list_all().unwrap_or_default()
-            .into_iter()
-            .map(|g| {
-                let citizens = self.memberships.citizen_count(g.id).unwrap_or_default();
-                let phase = Phase::from_citizen_count(citizens);
-                (g, phase, citizens)
-            })
-            .collect()
+    pub async fn list_servers(&self) -> Vec<(Server, Phase, u64)> {
+        let mut out = Vec::new();
+        for g in self.servers.list_all().await.unwrap_or_default() {
+            let citizens = self.memberships.citizen_count(g.id).await.unwrap_or_default();
+            let phase = Phase::from_citizen_count(citizens);
+            out.push((g, phase, citizens));
+        }
+        out
     }
 
     /// The servers this user belongs to — powers their sidebar. A user only ever
     /// sees servers they've joined (public or private); discovery of *new* servers
     /// is [`list_public_servers`](Self::list_public_servers).
-    pub fn my_servers(&self, handle: &str) -> Vec<(Server, Phase, u64)> {
-        let Some(user) = self.users.find_by_handle(handle.trim()).ok().flatten() else {
+    pub async fn my_servers(&self, handle: &str) -> Vec<(Server, Phase, u64)> {
+        let Some(user) = self.users.find_by_handle(handle.trim()).await.ok().flatten() else {
             return Vec::new();
         };
-        self.list_servers()
-            .into_iter()
-            .filter(|(g, _, _)| self.memberships.get(user.id, g.id).ok().flatten().is_some())
-            .collect()
+        let mut out = Vec::new();
+        for (g, phase, citizens) in self.list_servers().await {
+            if self.memberships.get(user.id, g.id).await.ok().flatten().is_some() {
+                out.push((g, phase, citizens));
+            }
+        }
+        out
     }
 
     /// The slug of a server by id, if it exists (for turning a redeemed invite's
     /// server id back into a URL the client can open).
-    pub fn server_slug(&self, id: domain::ServerId) -> Option<String> {
-        self.servers.get_server(id).ok().flatten().map(|g| g.slug)
+    pub async fn server_slug(&self, id: domain::ServerId) -> Option<String> {
+        self.servers.get_server(id).await.ok().flatten().map(|g| g.slug)
     }
 
     /// The public browse directory: every **public** server. Private servers are
     /// omitted — they are reachable only by invite code.
-    pub fn list_public_servers(&self) -> Vec<(Server, Phase, u64)> {
+    pub async fn list_public_servers(&self) -> Vec<(Server, Phase, u64)> {
         self.list_servers()
+            .await
             .into_iter()
             .filter(|(g, _, _)| !g.is_private)
             .collect()
     }
 
     /// Read-only: look up an account by handle.
-    pub fn find_user(&self, handle: &str) -> Option<User> {
-        self.users.find_by_handle(handle.trim()).ok().flatten()
+    pub async fn find_user(&self, handle: &str) -> Option<User> {
+        self.users.find_by_handle(handle.trim()).await.ok().flatten()
     }
 
     /// The current instant according to the injected clock.
@@ -602,24 +604,24 @@ impl Services {
     }
 
     /// Read-only: a member's tier within a server, if they belong.
-    pub fn member_tier(&self, handle: &str, server_slug: &str) -> Option<Tier> {
-        let user = self.users.find_by_handle(handle.trim()).ok().flatten()?;
-        let server = self.servers.find_by_slug(server_slug.trim()).ok().flatten()?;
-        self.memberships.get(user.id, server.id).ok().flatten().map(|m| m.tier)
+    pub async fn member_tier(&self, handle: &str, server_slug: &str) -> Option<Tier> {
+        let user = self.users.find_by_handle(handle.trim()).await.ok().flatten()?;
+        let server = self.servers.find_by_slug(server_slug.trim()).await.ok().flatten()?;
+        self.memberships.get(user.id, server.id).await.ok().flatten().map(|m| m.tier)
     }
 
     /// Read-only: a member's endorsement-weighted contribution in a server.
-    pub fn member_contribution(&self, handle: &str, server_slug: &str) -> Option<i64> {
-        let user = self.users.find_by_handle(handle.trim()).ok().flatten()?;
-        let server = self.servers.find_by_slug(server_slug.trim()).ok().flatten()?;
-        self.memberships.get(user.id, server.id).ok().flatten().map(|m| m.contribution)
+    pub async fn member_contribution(&self, handle: &str, server_slug: &str) -> Option<i64> {
+        let user = self.users.find_by_handle(handle.trim()).await.ok().flatten()?;
+        let server = self.servers.find_by_slug(server_slug.trim()).await.ok().flatten()?;
+        self.memberships.get(user.id, server.id).await.ok().flatten().map(|m| m.contribution)
     }
 
     /// Read-only snapshot of a server: the server, its current phase, and its
     /// citizen count.
-    pub fn server_snapshot(&self, server_slug: &str) -> Option<(Server, Phase, u64)> {
-        let server = self.servers.find_by_slug(server_slug.trim()).ok().flatten()?;
-        let citizens = self.memberships.citizen_count(server.id).unwrap_or_default();
+    pub async fn server_snapshot(&self, server_slug: &str) -> Option<(Server, Phase, u64)> {
+        let server = self.servers.find_by_slug(server_slug.trim()).await.ok().flatten()?;
+        let citizens = self.memberships.citizen_count(server.id).await.unwrap_or_default();
         Some((server.clone(), Phase::from_citizen_count(citizens), citizens))
     }
 
@@ -628,7 +630,7 @@ impl Services {
     /// positively to a member's messages; here it lets the CLI demonstrate the
     /// franchise criteria without a full reaction pipeline. It changes *only* the
     /// contribution input to Layer 1 — it never enfranchises anyone.
-    pub fn set_contribution(
+    pub async fn set_contribution(
         &self,
         handle: &str,
         server_slug: &str,
@@ -636,18 +638,18 @@ impl Services {
     ) -> Result<(), EnfranchiseError> {
         let user = self
             .users
-            .find_by_handle(handle.trim())?
+            .find_by_handle(handle.trim()).await?
             .ok_or_else(|| EnfranchiseError::NoSuchUser(handle.to_string()))?;
         let server = self
             .servers
-            .find_by_slug(server_slug.trim())?
+            .find_by_slug(server_slug.trim()).await?
             .ok_or_else(|| EnfranchiseError::NoSuchServer(server_slug.to_string()))?;
         let mut membership = self
             .memberships
-            .get(user.id, server.id)?
+            .get(user.id, server.id).await?
             .ok_or_else(|| EnfranchiseError::NotAMember(handle.to_string()))?;
         membership.contribution = contribution;
-        self.memberships.upsert(membership)?;
+        self.memberships.upsert(membership).await?;
         Ok(())
     }
 }

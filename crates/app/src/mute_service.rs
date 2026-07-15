@@ -27,20 +27,20 @@ impl MuteService {
     /// server, the target is an ordinary member (police cannot be muted, nor can an
     /// officer mute themselves), and no vote-imposed 24-hour cooldown bars *this*
     /// officer from re-muting *this* member.
-    pub fn mute_member(
+    pub async fn mute_member(
         &self,
         officer_handle: &str,
         server_slug: &str,
         target_handle: &str,
     ) -> Result<(), MuteError> {
-        let (officer, server) = self.resolve_officer(officer_handle, server_slug)?;
+        let (officer, server) = self.resolve_officer(officer_handle, server_slug).await?;
         let target = self
             .users
-            .find_by_handle(target_handle.trim())?
+            .find_by_handle(target_handle.trim()).await?
             .ok_or_else(|| MuteError::NotAMember(target_handle.to_string()))?;
         let mut m = self
             .memberships
-            .get(target.id, server.id)?
+            .get(target.id, server.id).await?
             .ok_or_else(|| MuteError::NotAMember(target_handle.to_string()))?;
         if m.is_police {
             return Err(MuteError::CannotMutePolice);
@@ -50,46 +50,46 @@ impl MuteService {
             return Err(MuteError::RemuteBlocked);
         }
         m.mute(Some(officer.id));
-        self.memberships.upsert(m)?;
+        self.memberships.upsert(m).await?;
         Ok(())
     }
 
     /// Instantly lift a member's mute. Any police officer may do this; a
     /// police-lifted mute carries no re-mute cooldown (only a *vote* lift does).
-    pub fn unmute_member(
+    pub async fn unmute_member(
         &self,
         officer_handle: &str,
         server_slug: &str,
         target_handle: &str,
     ) -> Result<(), MuteError> {
-        let (_officer, server) = self.resolve_officer(officer_handle, server_slug)?;
+        let (_officer, server) = self.resolve_officer(officer_handle, server_slug).await?;
         let target = self
             .users
-            .find_by_handle(target_handle.trim())?
+            .find_by_handle(target_handle.trim()).await?
             .ok_or_else(|| MuteError::NotAMember(target_handle.to_string()))?;
         let mut m = self
             .memberships
-            .get(target.id, server.id)?
+            .get(target.id, server.id).await?
             .ok_or_else(|| MuteError::NotAMember(target_handle.to_string()))?;
         m.unmute(false, now_placeholder());
-        self.memberships.upsert(m)?;
+        self.memberships.upsert(m).await?;
         Ok(())
     }
 
     /// Resolve the acting officer and server, checking the officer holds the police
     /// power. Shared by mute/unmute.
-    fn resolve_officer(&self, officer_handle: &str, server_slug: &str) -> Result<(domain::User, domain::Server), MuteError> {
+    async fn resolve_officer(&self, officer_handle: &str, server_slug: &str) -> Result<(domain::User, domain::Server), MuteError> {
         let officer = self
             .users
-            .find_by_handle(officer_handle.trim())?
+            .find_by_handle(officer_handle.trim()).await?
             .ok_or_else(|| MuteError::NoSuchUser(officer_handle.to_string()))?;
         let server = self
             .servers
-            .find_by_slug(server_slug.trim())?
+            .find_by_slug(server_slug.trim()).await?
             .ok_or_else(|| MuteError::NoSuchServer(server_slug.to_string()))?;
         let is_police = self
             .memberships
-            .get(officer.id, server.id)?
+            .get(officer.id, server.id).await?
             .is_some_and(|m| m.is_police);
         if !is_police {
             return Err(MuteError::NotPolice);
@@ -99,30 +99,30 @@ impl MuteService {
 
     /// Read-only: every member of a server with the flags a roster needs (for the
     /// ban picker, the police moderation panel, etc.), in join order.
-    pub fn list_members(&self, server_slug: &str) -> Vec<MemberView> {
-        let Some(server) = self.servers.find_by_slug(server_slug.trim()).ok().flatten() else {
+    pub async fn list_members(&self, server_slug: &str) -> Vec<MemberView> {
+        let Some(server) = self.servers.find_by_slug(server_slug.trim()).await.ok().flatten() else {
             return Vec::new();
         };
-        self.memberships
-            .list_for_server(server.id).unwrap_or_default()
-            .into_iter()
-            .filter_map(|m| {
-                self.users.get_user(m.user_id).ok().flatten().map(|u| MemberView {
+        let mut out = Vec::new();
+        for m in self.memberships.list_for_server(server.id).await.unwrap_or_default() {
+            if let Some(u) = self.users.get_user(m.user_id).await.ok().flatten() {
+                out.push(MemberView {
                     handle: u.handle,
                     tier: m.tier,
                     is_sanctioned: m.is_sanctioned,
                     is_muted: m.is_muted,
                     is_police: m.is_police,
-                })
-            })
-            .collect()
+                });
+            }
+        }
+        out
     }
 
     /// Read-only: a caller's `(is_police, is_muted)` on a server, if a member.
-    pub fn police_and_mute_status(&self, handle: &str, server_slug: &str) -> Option<(bool, bool)> {
-        let user = self.users.find_by_handle(handle.trim()).ok().flatten()?;
-        let server = self.servers.find_by_slug(server_slug.trim()).ok().flatten()?;
-        self.memberships.get(user.id, server.id).ok().flatten().map(|m| (m.is_police, m.is_muted))
+    pub async fn police_and_mute_status(&self, handle: &str, server_slug: &str) -> Option<(bool, bool)> {
+        let user = self.users.find_by_handle(handle.trim()).await.ok().flatten()?;
+        let server = self.servers.find_by_slug(server_slug.trim()).await.ok().flatten()?;
+        self.memberships.get(user.id, server.id).await.ok().flatten().map(|m| (m.is_police, m.is_muted))
     }
 }
 

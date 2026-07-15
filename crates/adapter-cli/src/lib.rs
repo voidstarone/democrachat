@@ -70,7 +70,11 @@ pub fn run(services: &Services, set_now: impl Fn(Timestamp)) -> i32 {
     if let Some(secs) = cli.now {
         set_now(Timestamp(secs));
     }
-    match dispatch(services, cli.command) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("cli runtime");
+    match rt.block_on(dispatch(services, cli.command)) {
         Ok(msg) => {
             println!("{msg}");
             0
@@ -82,25 +86,25 @@ pub fn run(services: &Services, set_now: impl Fn(Timestamp)) -> i32 {
     }
 }
 
-fn dispatch(services: &Services, command: Command) -> Result<String, String> {
+async fn dispatch(services: &Services, command: Command) -> Result<String, String> {
     match command {
         Command::Register { handle } => {
-            let user = services.register_account(&handle).map_err(|e| e.to_string())?;
+            let user = services.register_account(&handle).await.map_err(|e| e.to_string())?;
             Ok(format!("registered {} (id {})", user.handle, user.id))
         }
         Command::Found { founder, name } => {
-            let server = services.found_server(&founder, &name).map_err(|e| e.to_string())?;
+            let server = services.found_server(&founder, &name).await.map_err(|e| e.to_string())?;
             Ok(format!(
                 "founded g/{} ({}) — {} is citizen #1",
                 server.slug, server.name, founder
             ))
         }
         Command::Join { handle, server } => {
-            services.join_server(&handle, &server).map_err(|e| e.to_string())?;
+            services.join_server(&handle, &server).await.map_err(|e| e.to_string())?;
             Ok(format!("{handle} joined g/{server} as a member (no vote yet)"))
         }
         Command::Enfranchise { handle, server } => {
-            let outcome = services.try_enfranchise(&handle, &server).map_err(|e| e.to_string())?;
+            let outcome = services.try_enfranchise(&handle, &server).await.map_err(|e| e.to_string())?;
             Ok(match outcome {
                 EnfranchiseOutcome::Admitted => {
                     format!("✓ {handle} is now a CITIZEN of g/{server} — earned by meeting the criteria")
@@ -119,7 +123,7 @@ fn dispatch(services: &Services, command: Command) -> Result<String, String> {
             })
         }
         Command::Status { handle, server } => {
-            let e = services.eligibility(&handle, &server).map_err(|e| e.to_string())?;
+            let e = services.eligibility(&handle, &server).await.map_err(|e| e.to_string())?;
             if e.is_eligible() {
                 Ok(format!("{handle} meets every franchise criterion in g/{server} (run `enfranchise`)"))
             } else {
@@ -132,7 +136,7 @@ fn dispatch(services: &Services, command: Command) -> Result<String, String> {
         }
         Command::Show { server } => {
             let (g, phase, citizens) = services
-                .server_snapshot(&server)
+                .server_snapshot(&server).await
                 .ok_or_else(|| format!("no such server: '{server}'"))?;
             let mut surface: Vec<String> =
                 g.enabled_ballots.iter().map(|b| format!("{b:?}")).collect();
@@ -150,19 +154,19 @@ fn dispatch(services: &Services, command: Command) -> Result<String, String> {
         }
         Command::SetContribution { handle, server, amount } => {
             services
-                .set_contribution(&handle, &server, amount)
+                .set_contribution(&handle, &server, amount).await
                 .map_err(|e| e.to_string())?;
             Ok(format!("set {handle}'s contribution in g/{server} to {amount}"))
         }
         Command::CreateChannel { founder, server, name, topic } => {
             let ch = services.chat()
-                .create_channel(&founder, &server, &name, &topic)
+                .create_channel(&founder, &server, &name, &topic).await
                 .map_err(|e| e.to_string())?;
             Ok(format!("created #{} in g/{server}", ch.name))
         }
         Command::Channels { server } => {
             let channels = services.chat()
-                .list_channels(&server)
+                .list_channels(&server).await
                 .ok_or_else(|| format!("no such server: '{server}'"))?;
             if channels.is_empty() {
                 return Ok(format!("g/{server} has no channels yet"));
@@ -176,33 +180,33 @@ fn dispatch(services: &Services, command: Command) -> Result<String, String> {
         }
         Command::Post { handle, server, channel, body } => {
             let m = services.chat()
-                .post_message(&handle, &server, &channel, &body)
+                .post_message(&handle, &server, &channel, &body).await
                 .map_err(|e| e.to_string())?;
             Ok(format!("posted message {} to #{channel}", m.id))
         }
         Command::Reply { handle, message, body } => {
-            let m = services.chat().reply_message(&handle, message, &body).map_err(|e| e.to_string())?;
+            let m = services.chat().reply_message(&handle, message, &body).await.map_err(|e| e.to_string())?;
             Ok(format!("posted reply {} under message {message}", m.id))
         }
         Command::Edit { handle, message, body } => {
-            services.chat().edit_message(&handle, message, &body).map_err(|e| e.to_string())?;
+            services.chat().edit_message(&handle, message, &body).await.map_err(|e| e.to_string())?;
             Ok(format!("edited message {message}"))
         }
         Command::Delete { handle, message } => {
-            services.chat().delete_message(&handle, message).map_err(|e| e.to_string())?;
+            services.chat().delete_message(&handle, message).await.map_err(|e| e.to_string())?;
             Ok(format!("deleted message {message}"))
         }
         Command::React { handle, message, emoji } => {
-            services.chat().react(&handle, message, &emoji).map_err(|e| e.to_string())?;
+            services.chat().react(&handle, message, &emoji).await.map_err(|e| e.to_string())?;
             Ok(format!("{handle} reacted {emoji} to message {message}"))
         }
         Command::Unreact { handle, message, emoji } => {
-            services.chat().unreact(&handle, message, &emoji).map_err(|e| e.to_string())?;
+            services.chat().unreact(&handle, message, &emoji).await.map_err(|e| e.to_string())?;
             Ok(format!("{handle} removed {emoji} from message {message}"))
         }
         Command::Thread { server, channel } => {
             let messages = services.chat()
-                .channel_messages(&server, &channel)
+                .channel_messages(&server, &channel).await
                 .map_err(|e| e.to_string())?;
             if messages.is_empty() {
                 return Ok(format!("#{channel} is empty"));
@@ -210,7 +214,7 @@ fn dispatch(services: &Services, command: Command) -> Result<String, String> {
             let tree = build_message_tree(&messages);
             let mut out = format!("#{channel} in g/{server}:");
             for node in &tree {
-                render_node(services, node, 0, &mut out);
+                render_node(services, node, 0, &mut out).await;
             }
             Ok(out)
         }
@@ -218,15 +222,21 @@ fn dispatch(services: &Services, command: Command) -> Result<String, String> {
 }
 
 /// Recursively render a message and its replies, indented by depth.
-fn render_node(services: &Services, node: &MessageNode, depth: usize, out: &mut String) {
+fn render_node<'a>(
+    services: &'a Services,
+    node: &'a MessageNode,
+    depth: usize,
+    out: &'a mut String,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'a>> {
+    Box::pin(async move {
     let indent = "  ".repeat(depth + 1);
     let m = &node.message;
     let author = services.chat()
-        .user_handle(m.author)
+        .user_handle(m.author).await
         .unwrap_or_else(|| format!("user{}", m.author));
     let body = if m.is_deleted { "[deleted]".to_string() } else { m.body.clone() };
     let edited = if m.edited_at.is_some() { " (edited)" } else { "" };
-    let reactions = services.chat().message_reactions(m.id.0);
+    let reactions = services.chat().message_reactions(m.id.0).await;
     let react_str = if reactions.is_empty() {
         String::new()
     } else {
@@ -235,8 +245,9 @@ fn render_node(services: &Services, node: &MessageNode, depth: usize, out: &mut 
     };
     out.push_str(&format!("\n{indent}[{}] {author}: {body}{edited}{react_str}", m.id));
     for child in &node.replies {
-        render_node(services, child, depth + 1, out);
+        render_node(services, child, depth + 1, out).await;
     }
+    })
 }
 
 fn describe_unmet(u: &Unmet) -> String {

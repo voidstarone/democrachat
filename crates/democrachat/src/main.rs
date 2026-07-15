@@ -169,7 +169,11 @@ fn main() {
     // Backfill floor channels for any server persisted before channels were
     // auto-provisioned (older datasets have servers with no channels, and none had
     // an #appeals room). Idempotent; the next save writes the repaired dataset.
-    services.backfill_default_channels();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("backfill runtime")
+        .block_on(services.backfill_default_channels());
 
     if args.get(1).map(String::as_str) == Some("serve") {
         run_serve(&args, services, clock, store, path, node, data_key);
@@ -200,7 +204,8 @@ fn run_serve(
             exit(2);
         });
 
-    seed_if_empty(&services);
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    rt.block_on(seed_if_empty(&services));
     save(&store, &path, data_key.as_ref());
 
     // Wire the dev clock fast-forward to the same FixedClock.
@@ -235,13 +240,14 @@ fn run_serve(
     // sign in as them. In production the seed accounts stay passwordless (they
     // author content but cannot be logged into); real users register their own.
     if is_dev {
-        for who in ["ada", "grace"] {
-            let _ = services.set_password(who, DEV_SEED_PASSWORD);
-        }
+        rt.block_on(async {
+            for who in ["ada", "grace"] {
+                let _ = services.set_password(who, DEV_SEED_PASSWORD).await;
+            }
+        });
         save(&store, &path, data_key.as_ref());
     }
 
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let served = rt.block_on(async move {
         // Bring federation up (feed + command server + puller) if this node is
         // configured for it; a no-op on the default single-box deployment. Started
@@ -317,16 +323,16 @@ fn arg_value(args: &[String], flag: &str) -> Option<String> {
 /// Give a fresh dataset something to look at: a sample server with a channel and
 /// a couple of messages, so the demo isn't a blank page. No-op if any server
 /// already exists.
-fn seed_if_empty(services: &Services) {
-    if !services.list_servers().is_empty() {
+async fn seed_if_empty(services: &Services) {
+    if !services.list_servers().await.is_empty() {
         return;
     }
-    let _ = services.register_account("ada");
-    if services.found_server("ada", "Founders Lounge").is_ok() {
+    let _ = services.register_account("ada").await;
+    if services.found_server("ada", "Founders Lounge").await.is_ok() {
         // #general is provisioned automatically when the server is founded.
-        let _ = services.chat().create_channel("ada", "founders-lounge", "governance", "how we govern ourselves");
-        let _ = services.chat().post_message("ada", "founders-lounge", "general", "Welcome to democrachat — a chat that governs itself. No owner, no mods: citizens vote.");
-        let _ = services.chat().post_message("ada", "founders-lounge", "general", "You start as a guest. Join, chat, and once citizens endorse your messages you can earn the vote.");
+        let _ = services.chat().create_channel("ada", "founders-lounge", "governance", "how we govern ourselves").await;
+        let _ = services.chat().post_message("ada", "founders-lounge", "general", "Welcome to democrachat — a chat that governs itself. No owner, no mods: citizens vote.").await;
+        let _ = services.chat().post_message("ada", "founders-lounge", "general", "You start as a guest. Join, chat, and once citizens endorse your messages you can earn the vote.").await;
 
         // Seed a couple of custom emoji so the vote list in server settings has
         // something to rank. Emoji are curated by citizen voting, not ballots.
@@ -337,10 +343,10 @@ fn seed_if_empty(services: &Services) {
                  width='64' height='64'><text x='6' y='52' font-size='52'>{g}</text></svg>"
             )
         };
-        let _ = services.emoji().add_emoji("ada", "founders-lounge", "party", &glyph("🎉"));
-        let _ = services.emoji().add_emoji("ada", "founders-lounge", "vote", &glyph("🗳️"));
+        let _ = services.emoji().add_emoji("ada", "founders-lounge", "party", &glyph("🎉")).await;
+        let _ = services.emoji().add_emoji("ada", "founders-lounge", "vote", &glyph("🗳️")).await;
     }
-    let _ = services.register_account("grace");
-    let _ = services.join_server("grace", "founders-lounge");
-    let _ = services.chat().post_message("grace", "founders-lounge", "general", "Hi! I just joined as a member.");
+    let _ = services.register_account("grace").await;
+    let _ = services.join_server("grace", "founders-lounge").await;
+    let _ = services.chat().post_message("grace", "founders-lounge", "general", "Hi! I just joined as a member.").await;
 }

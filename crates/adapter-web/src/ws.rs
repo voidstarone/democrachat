@@ -21,7 +21,7 @@ pub async fn ws_handler(
         return (StatusCode::FORBIDDEN, "err.bad_origin").into_response();
     }
     // Require a valid session — the live feed is for authenticated users only.
-    if crate::auth::current_actor(&st, &headers).is_none() {
+    if crate::auth::current_actor(&st, &headers).await.is_none() {
         return (StatusCode::UNAUTHORIZED, "err.not_signed_in").into_response();
     }
     upgrade.on_upgrade(move |socket| pump(socket, st))

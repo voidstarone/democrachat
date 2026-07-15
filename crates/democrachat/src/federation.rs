@@ -193,6 +193,7 @@ pub async fn start(
                     .map(|v| v.into_iter().map(|s| s.node.0).collect())
                     .unwrap_or_default();
                 let candidates: Vec<OwnedScope> = foreign_scopes(store.as_ref(), node)
+                    .await
                     .into_iter()
                     .filter(|scope| !live.contains(&scope_home(*scope)))
                     .collect();
@@ -287,14 +288,14 @@ pub async fn start(
 
 /// The scopes this node homes (the ones it minted the ids for): each minted server
 /// and each minted user.
-fn owned_scopes(store: &MemoryStore, node: NodeId) -> Vec<OwnedScope> {
-    let mut out: Vec<OwnedScope> = ServerStore::list_all(store).unwrap_or_default()
+async fn owned_scopes(store: &MemoryStore, node: NodeId) -> Vec<OwnedScope> {
+    let mut out: Vec<OwnedScope> = ServerStore::list_all(store).await.unwrap_or_default()
         .into_iter()
         .filter(|s| origin_node(s.id.0) == node)
         .map(|s| OwnedScope::Server(s.id.0))
         .collect();
     out.extend(
-        UserStore::list_all(store).unwrap_or_default()
+        UserStore::list_all(store).await.unwrap_or_default()
             .into_iter()
             .filter(|u| origin_node(u.id.0) == node)
             .map(|u| OwnedScope::UserHome(u.id.0)),
@@ -313,14 +314,14 @@ fn scope_home(scope: OwnedScope) -> u16 {
 
 /// The scopes homed on OTHER nodes that this node has replicated — the failover
 /// candidates it may have to take over if a peer goes down.
-fn foreign_scopes(store: &MemoryStore, node: NodeId) -> Vec<OwnedScope> {
-    let mut out: Vec<OwnedScope> = ServerStore::list_all(store).unwrap_or_default()
+async fn foreign_scopes(store: &MemoryStore, node: NodeId) -> Vec<OwnedScope> {
+    let mut out: Vec<OwnedScope> = ServerStore::list_all(store).await.unwrap_or_default()
         .into_iter()
         .filter(|s| origin_node(s.id.0) != node)
         .map(|s| OwnedScope::Server(s.id.0))
         .collect();
     out.extend(
-        UserStore::list_all(store).unwrap_or_default()
+        UserStore::list_all(store).await.unwrap_or_default()
             .into_iter()
             .filter(|u| origin_node(u.id.0) != node)
             .map(|u| OwnedScope::UserHome(u.id.0)),
@@ -344,7 +345,7 @@ async fn reconcile_claims(
     registry: &dyn OwnershipRegistry,
     node: NodeId,
 ) {
-    let owned = owned_scopes(store, node);
+    let owned = owned_scopes(store, node).await;
 
     // Liveness heartbeat + load hint (hosted-scope count breaks failover ties).
     let _ = registry
@@ -364,7 +365,7 @@ async fn reconcile_claims(
         }
         // Pin a server that its citizens voted to disable rehoming for.
         if let OwnedScope::Server(id) = scope {
-            let disabled = ServerStore::list_all(store).unwrap_or_default()
+            let disabled = ServerStore::list_all(store).await.unwrap_or_default()
                 .into_iter()
                 .find(|s| s.id.0 == id)
                 .is_some_and(|s| s.is_rehoming_disabled);

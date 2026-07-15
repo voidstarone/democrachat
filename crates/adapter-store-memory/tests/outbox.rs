@@ -56,16 +56,16 @@ async fn store_mutations_replicate_through_sign_feed_and_ingest() {
     let store = Arc::new(MemoryStore::new().with_node(NodeId(1)));
     let now = Timestamp(1_000);
     let server_id = ServerId(7);
-    ServerStore::insert_server(&*store, Server::new(server_id, "town", "Town", UserId(1), now)).unwrap();
+    ServerStore::insert_server(&*store, Server::new(server_id, "town", "Town", UserId(1), now)).await.unwrap();
 
-    let chan_id = ChannelStore::next_channel_id(&*store).unwrap();
-    ChannelStore::insert_channel(&*store, Channel::new(chan_id, server_id, "general", "", now)).unwrap();
+    let chan_id = ChannelStore::next_channel_id(&*store).await.unwrap();
+    ChannelStore::insert_channel(&*store, Channel::new(chan_id, server_id, "general", "", now)).await.unwrap();
 
-    let msg_id = MessageStore::next_message_id(&*store).unwrap();
+    let msg_id = MessageStore::next_message_id(&*store).await.unwrap();
     MessageStore::insert_message(
         &*store,
         Message::new(msg_id, chan_id, server_id, UserId(1), "hello", None, now),
-    ).unwrap();
+    ).await.unwrap();
 
     // Produce A's signed feed straight from the store's outbox…
     let feed = sign_feed(&*store, &node_a, &reg, &NoParents, 0, 100).await;
@@ -104,11 +104,11 @@ async fn a_peer_store_applies_the_feed_without_echoing_it() {
     let store_a = Arc::new(MemoryStore::new().with_node(NodeId(1)));
     let now = Timestamp(1_000);
     let sid = ServerId(7);
-    ServerStore::insert_server(&*store_a, Server::new(sid, "town", "Town", UserId(1), now)).unwrap();
-    let chan = ChannelStore::next_channel_id(&*store_a).unwrap();
-    ChannelStore::insert_channel(&*store_a, Channel::new(chan, sid, "general", "", now)).unwrap();
-    let msg = MessageStore::next_message_id(&*store_a).unwrap();
-    MessageStore::insert_message(&*store_a, Message::new(msg, chan, sid, UserId(1), "hi", None, now)).unwrap();
+    ServerStore::insert_server(&*store_a, Server::new(sid, "town", "Town", UserId(1), now)).await.unwrap();
+    let chan = ChannelStore::next_channel_id(&*store_a).await.unwrap();
+    ChannelStore::insert_channel(&*store_a, Channel::new(chan, sid, "general", "", now)).await.unwrap();
+    let msg = MessageStore::next_message_id(&*store_a).await.unwrap();
+    MessageStore::insert_message(&*store_a, Message::new(msg, chan, sid, UserId(1), "hi", None, now)).await.unwrap();
 
     let feed = sign_feed(&*store_a, &node_a, &reg, &NoParents, 0, 100).await;
 
@@ -119,9 +119,9 @@ async fn a_peer_store_applies_the_feed_without_echoing_it() {
     assert!(res.rejected.is_empty());
 
     // B's replica now holds A's rows verbatim…
-    assert_eq!(ServerStore::get_server(&*store_b, sid).unwrap().map(|s| s.name), Some("Town".to_string()));
-    assert_eq!(ChannelStore::get_channel(&*store_b, chan).unwrap().map(|c| c.name), Some("general".to_string()));
-    assert_eq!(MessageStore::get_message(&*store_b, msg).unwrap().map(|m| m.body), Some("hi".to_string()));
+    assert_eq!(ServerStore::get_server(&*store_b, sid).await.unwrap().map(|s| s.name), Some("Town".to_string()));
+    assert_eq!(ChannelStore::get_channel(&*store_b, chan).await.unwrap().map(|c| c.name), Some("general".to_string()));
+    assert_eq!(MessageStore::get_message(&*store_b, msg).await.unwrap().map(|m| m.body), Some("hi".to_string()));
 
     // …and applying a peer's feed must NOT put those rows on B's own outbox, or the
     // change would loop around the network forever.
@@ -142,12 +142,12 @@ async fn a_sealed_dm_replicates_as_ciphertext_only() {
 
     let store_a = Arc::new(MemoryStore::new().with_node(NodeId(1)));
     let now = Timestamp(1_000);
-    let dm_id = DmStore::next_dm_id(&*store_a).unwrap();
+    let dm_id = DmStore::next_dm_id(&*store_a).await.unwrap();
     // The client already sealed the body; the store only ever sees these blobs.
     DmStore::insert_dm(
         &*store_a,
         DmMessage::new(dm_id, UserId(1), UserId(2), "5ea1edforbob00", "5ea1edforalice00", now),
-    ).unwrap();
+    ).await.unwrap();
 
     // The signed feed carries the ciphertext payload — no `body`, no plaintext.
     let feed = sign_feed(&*store_a, &node_a, &reg, &NoParents, 0, 100).await;
@@ -164,7 +164,7 @@ async fn a_sealed_dm_replicates_as_ciphertext_only() {
     let store_b = Arc::new(MemoryStore::new().with_node(NodeId(2)));
     let res = ingest(&reg, &NoParents, &*store_b, &feed).await;
     assert_eq!(res.applied, 1);
-    let convo = DmStore::conversation(&*store_b, UserId(1), UserId(2)).unwrap();
+    let convo = DmStore::conversation(&*store_b, UserId(1), UserId(2)).await.unwrap();
     assert_eq!(convo.len(), 1);
     assert_eq!(convo[0].sealed_for_recipient, "5ea1edforbob00");
     assert_eq!(convo[0].sealed_for_sender, "5ea1edforalice00");
@@ -178,9 +178,9 @@ async fn a_sealed_dm_replicates_as_ciphertext_only() {
 async fn a_snapshot_round_trip_keeps_the_outbox_seq_monotonic() {
     let store = Arc::new(MemoryStore::new());
     let now = Timestamp(1_000);
-    ServerStore::insert_server(&*store, Server::new(ServerId(7), "town", "Town", UserId(1), now)).unwrap();
-    let chan_id = ChannelStore::next_channel_id(&*store).unwrap();
-    ChannelStore::insert_channel(&*store, Channel::new(chan_id, ServerId(7), "general", "", now)).unwrap();
+    ServerStore::insert_server(&*store, Server::new(ServerId(7), "town", "Town", UserId(1), now)).await.unwrap();
+    let chan_id = ChannelStore::next_channel_id(&*store).await.unwrap();
+    ChannelStore::insert_channel(&*store, Channel::new(chan_id, ServerId(7), "general", "", now)).await.unwrap();
     // Two mutations minted seqs 1 and 2.
     assert_eq!(ChangeSource::changes_since(&*store, 0, 100).await.len(), 2);
 
@@ -195,8 +195,8 @@ async fn a_snapshot_round_trip_keeps_the_outbox_seq_monotonic() {
     // already consumed.
     ChannelStore::insert_channel(
         &*reloaded,
-        Channel::new(ChannelStore::next_channel_id(&*reloaded).unwrap(), ServerId(7), "random", "", now),
-    ).unwrap();
+        Channel::new(ChannelStore::next_channel_id(&*reloaded).await.unwrap(), ServerId(7), "random", "", now),
+    ).await.unwrap();
     let after_two = ChangeSource::changes_since(&*reloaded, 2, 100).await;
     assert_eq!(after_two.len(), 1, "a peer at cursor 2 sees exactly the new write");
     assert_eq!(after_two[0].seq, 3, "the seq continues past the persisted high-water mark");
@@ -211,9 +211,9 @@ async fn a_cursor_pull_only_returns_changes_after_it() {
 
     let store = Arc::new(MemoryStore::new().with_node(NodeId(1)));
     let now = Timestamp(1_000);
-    ServerStore::insert_server(&*store, Server::new(ServerId(7), "town", "Town", UserId(1), now)).unwrap();
-    let chan_id = ChannelStore::next_channel_id(&*store).unwrap();
-    ChannelStore::insert_channel(&*store, Channel::new(chan_id, ServerId(7), "general", "", now)).unwrap();
+    ServerStore::insert_server(&*store, Server::new(ServerId(7), "town", "Town", UserId(1), now)).await.unwrap();
+    let chan_id = ChannelStore::next_channel_id(&*store).await.unwrap();
+    ChannelStore::insert_channel(&*store, Channel::new(chan_id, ServerId(7), "general", "", now)).await.unwrap();
 
     // A peer that has already applied the first change pulls from cursor 1 and sees
     // only the second.
