@@ -14,11 +14,13 @@ use std::sync::Arc;
 
 use adapter_store_memory::{FixedClock, MemoryStore};
 use app::{
-    Clock, DmError, EnfranchiseError, EnfranchiseOutcome, FoundError, MembershipStore, MessageError,
-    MuteError, ProposeError, ServerStore, Services, SessionSigner, SocialError, UserStore, VoteError,
+    ChannelKeyError, Clock, DmError, EmojiError, EnfranchiseError, EnfranchiseOutcome, FoundError,
+    IdentitySecret, KeyError, MembershipStore, MessageError, MuteError, ProposeError, ServerStore,
+    Services, SessionSigner, SocialError, UserStore, VoteError, wrap_secret,
 };
 use domain::{
     DmPolicy, FranchiseCriteria, HistoryMode, ProposalKind, ProposalStatus, Tier, Timestamp, Unmet,
+    WrappedKey,
 };
 
 const DAY: i64 = 86_400;
@@ -182,20 +184,20 @@ fn members_cannot_vote_no_matter_how_many() {
     let f = fixture(1_000 * DAY);
     found(&f, "boss", "Town");
     let p = f
-        .services
+        .services.governance()
         .open_proposal("boss", "town", ProposalKind::AddRule { text: "no capture".into() })
         .unwrap();
 
     for i in 0..250 {
         register_and_join(&f, &format!("mob{i}"), "town");
         assert_eq!(
-            f.services.cast_vote(&format!("mob{i}"), p.id.0, true),
+            f.services.governance().cast_vote(&format!("mob{i}"), p.id.0, true),
             Err(VoteError::NotACitizen),
             "a mere member can never cast a ballot"
         );
     }
     // Not one mob ballot registered.
-    assert_eq!(f.services.proposal_head_counts(p.id.0), (0, 0));
+    assert_eq!(f.services.governance().proposal_head_counts(p.id.0), (0, 0));
 }
 
 /// A member cannot even open a proposal — the agenda itself is citizens-only.
@@ -205,7 +207,7 @@ fn members_cannot_open_proposals() {
     found(&f, "boss", "Town");
     register_and_join(&f, "nobody", "town");
     assert_eq!(
-        f.services.open_proposal("nobody", "town", ProposalKind::AddRule { text: "x".into() }),
+        f.services.governance().open_proposal("nobody", "town", ProposalKind::AddRule { text: "x".into() }),
         Err(ProposeError::NotACitizen),
     );
 }
@@ -224,15 +226,15 @@ fn a_lone_citizen_cannot_pass_a_capture_ballot() {
     let victim = f.store.find_by_handle("cit0").unwrap();
 
     let p = f
-        .services
+        .services.governance()
         .open_proposal("attacker", "town", ProposalKind::Ban { user: victim.id })
         .unwrap();
-    f.services.cast_vote("attacker", p.id.0, true).unwrap(); // votes alone
+    f.services.governance().cast_vote("attacker", p.id.0, true).unwrap(); // votes alone
 
     f.clock.set(Timestamp(1_000 * DAY + 5 * DAY)); // past the 3-day window
-    f.services.resolve_due("town");
+    f.services.governance().resolve_due("town");
 
-    let closed = f.services.list_proposals("town").into_iter().find(|x| x.id == p.id).unwrap();
+    let closed = f.services.governance().list_proposals("town").into_iter().find(|x| x.id == p.id).unwrap();
     assert_eq!(closed.status, ProposalStatus::Failed, "one vote of 101 fails quorum");
     let server = f.store.find_by_slug("town").unwrap();
     assert!(
@@ -309,11 +311,11 @@ fn granting_vote_weight_to_a_non_citizen_does_not_let_them_vote() {
     f.store.upsert(m);
 
     let p = f
-        .services
+        .services.governance()
         .open_proposal("boss", "town", ProposalKind::AddRule { text: "x".into() })
         .unwrap();
     assert_eq!(
-        f.services.cast_vote("member", p.id.0, true),
+        f.services.governance().cast_vote("member", p.id.0, true),
         Err(VoteError::NotACitizen),
         "weight without citizenship is inert"
     );
@@ -334,10 +336,10 @@ fn a_sanctioned_citizen_cannot_vote() {
     f.store.upsert(m);
 
     let p = f
-        .services
+        .services.governance()
         .open_proposal("boss", "town", ProposalKind::AddRule { text: "x".into() })
         .unwrap();
-    assert_eq!(f.services.cast_vote("rogue", p.id.0, true), Err(VoteError::NotACitizen));
+    assert_eq!(f.services.governance().cast_vote("rogue", p.id.0, true), Err(VoteError::NotACitizen));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -351,13 +353,13 @@ fn a_citizen_cannot_stuff_the_ballot_box() {
     let f = fixture(1_000 * DAY);
     found(&f, "boss", "Town");
     let p = f
-        .services
+        .services.governance()
         .open_proposal("boss", "town", ProposalKind::AddRule { text: "x".into() })
         .unwrap();
     for _ in 0..10 {
-        f.services.cast_vote("boss", p.id.0, true).unwrap();
+        f.services.governance().cast_vote("boss", p.id.0, true).unwrap();
     }
-    assert_eq!(f.services.proposal_head_counts(p.id.0), (1, 0), "ten ayes collapse to one");
+    assert_eq!(f.services.governance().proposal_head_counts(p.id.0), (1, 0), "ten ayes collapse to one");
 }
 
 /// Votes cast after the window has closed are rejected — no last-second reversal
@@ -367,12 +369,12 @@ fn votes_after_the_window_are_rejected() {
     let f = fixture(1_000 * DAY);
     found(&f, "boss", "Town");
     let p = f
-        .services
+        .services.governance()
         .open_proposal("boss", "town", ProposalKind::AddRule { text: "x".into() })
         .unwrap();
     f.clock.set(Timestamp(1_000 * DAY + 5 * DAY));
-    f.services.resolve_due("town"); // closes the ballot
-    assert_eq!(f.services.cast_vote("boss", p.id.0, true), Err(VoteError::Closed));
+    f.services.governance().resolve_due("town"); // closes the ballot
+    assert_eq!(f.services.governance().cast_vote("boss", p.id.0, true), Err(VoteError::Closed));
 }
 
 /// Training wheels: a server in the Seed phase cannot amend its own constitution
@@ -385,7 +387,7 @@ fn the_constitution_cannot_be_amended_during_seed() {
     let trivial =
         FranchiseCriteria { min_account_age_days: 0, min_membership_days: 0, min_contribution: 0 };
     assert_eq!(
-        f.services.open_proposal("boss", "town", ProposalKind::AmendCriteria { proposed: trivial }),
+        f.services.governance().open_proposal("boss", "town", ProposalKind::AmendCriteria { proposed: trivial }),
         Err(ProposeError::NotAllowedInPhase),
     );
 }
@@ -442,7 +444,7 @@ fn a_sanctioned_member_cannot_post() {
     let f = fixture(1_000 * DAY);
     found(&f, "boss", "Town");    register_and_join(&f, "loudmouth", "town");
     // They can post before sanction.
-    f.services.post_message("loudmouth", "town", "general", "hello").unwrap();
+    f.services.chat().post_message("loudmouth", "town", "general", "hello").unwrap();
     // Sanction them (as a passed Ban ballot would).
     let u = f.store.find_by_handle("loudmouth").unwrap();
     let s = f.store.find_by_slug("town").unwrap();
@@ -451,7 +453,7 @@ fn a_sanctioned_member_cannot_post() {
     f.store.upsert(m);
 
     assert_eq!(
-        f.services.post_message("loudmouth", "town", "general", "again"),
+        f.services.chat().post_message("loudmouth", "town", "general", "again"),
         Err(MessageError::Sanctioned("loudmouth".into())),
     );
 }
@@ -463,7 +465,7 @@ fn a_non_member_cannot_post() {
     let f = fixture(1_000 * DAY);
     found(&f, "boss", "Town");    f.services.register_account("outsider").unwrap(); // registered but never joined
     assert_eq!(
-        f.services.post_message("outsider", "town", "general", "let me in"),
+        f.services.chat().post_message("outsider", "town", "general", "let me in"),
         Err(MessageError::NotAMember("outsider".into())),
     );
 }
@@ -475,10 +477,10 @@ fn a_non_member_cannot_post() {
 fn plaintext_cannot_be_posted_to_an_encrypted_channel() {
     let f = fixture(1_000 * DAY);
     found(&f, "boss", "Town");
-    f.services.create_channel("boss", "town", "secret", "").unwrap();
-    f.services.enable_channel_encryption("boss", "town", "secret", HistoryMode::Ephemeral).unwrap();
+    f.services.chat().create_channel("boss", "town", "secret", "").unwrap();
+    f.services.channel_keys().enable_channel_encryption("boss", "town", "secret", HistoryMode::Ephemeral).unwrap();
     assert_eq!(
-        f.services.post_message("boss", "town", "secret", "leak"),
+        f.services.chat().post_message("boss", "town", "secret", "leak"),
         Err(MessageError::ChannelEncrypted),
     );
 }
@@ -492,14 +494,14 @@ fn a_blocked_user_can_never_dm_the_blocker() {
     f.services.register_account("victim").unwrap();
     f.services.register_account("harasser").unwrap();
     // Open DMs by default, so it's the block — not a policy — that stops them.
-    f.services.send_sealed_dm("harasser", "victim", "aa", "bb").unwrap();
-    f.services.block_user("victim", "harasser").unwrap();
+    f.services.social().send_sealed_dm("harasser", "victim", "aa", "bb").unwrap();
+    f.services.social().block_user("victim", "harasser").unwrap();
     assert_eq!(
-        f.services.send_sealed_dm("harasser", "victim", "aa", "bb"),
+        f.services.social().send_sealed_dm("harasser", "victim", "aa", "bb"),
         Err(DmError::NotAllowed),
         "a block is a hard, permanent wall",
     );
-    assert!(!f.services.can_dm("harasser", "victim"));
+    assert!(!f.services.social().can_dm("harasser", "victim"));
 }
 
 /// A friends-only inbox refuses strangers: a spammer cannot reach a user who has
@@ -510,17 +512,17 @@ fn a_friends_only_inbox_refuses_strangers() {
     f.services.register_account("target").unwrap();
     f.services.register_account("spammer").unwrap();
     f.services.register_account("pal").unwrap();
-    f.services.set_dm_policy("target", DmPolicy::FriendsOnly).unwrap();
+    f.services.social().set_dm_policy("target", DmPolicy::FriendsOnly).unwrap();
 
     assert_eq!(
-        f.services.send_sealed_dm("spammer", "target", "aa", "bb"),
+        f.services.social().send_sealed_dm("spammer", "target", "aa", "bb"),
         Err(DmError::NotAllowed),
         "a stranger can't slip into a friends-only inbox",
     );
     // A mutual friend gets through.
-    f.services.request_friend("pal", "target").unwrap();
-    f.services.accept_friend("target", "pal").unwrap();
-    assert!(f.services.send_sealed_dm("pal", "target", "aa", "bb").is_ok());
+    f.services.social().request_friend("pal", "target").unwrap();
+    f.services.social().accept_friend("target", "pal").unwrap();
+    assert!(f.services.social().send_sealed_dm("pal", "target", "aa", "bb").is_ok());
 }
 
 /// Self-directed social actions are refused — you can't block, befriend, or DM
@@ -529,9 +531,9 @@ fn a_friends_only_inbox_refuses_strangers() {
 fn self_directed_social_actions_are_refused() {
     let f = fixture(1_000 * DAY);
     f.services.register_account("solo").unwrap();
-    assert_eq!(f.services.block_user("solo", "solo"), Err(SocialError::Self_));
-    assert_eq!(f.services.request_friend("solo", "solo"), Err(SocialError::Self_));
-    assert_eq!(f.services.send_sealed_dm("solo", "solo", "aa", "bb"), Err(DmError::Self_));
+    assert_eq!(f.services.social().block_user("solo", "solo"), Err(SocialError::Self_));
+    assert_eq!(f.services.social().request_friend("solo", "solo"), Err(SocialError::Self_));
+    assert_eq!(f.services.social().send_sealed_dm("solo", "solo", "aa", "bb"), Err(DmError::Self_));
 }
 
 /// An invite grants membership, never the franchise — even at scale. A thousand
@@ -569,15 +571,15 @@ fn a_citizen_of_one_server_cannot_vote_in_another() {
     seat_citizen(&f, "alice", "alpha"); // a citizen of Alpha only
 
     let p = f
-        .services
+        .services.governance()
         .open_proposal("boss_b", "beta", ProposalKind::AddRule { text: "beta rule".into() })
         .unwrap();
     assert_eq!(
-        f.services.cast_vote("alice", p.id.0, true),
+        f.services.governance().cast_vote("alice", p.id.0, true),
         Err(VoteError::NotACitizen),
         "Alpha citizenship carries no vote in Beta",
     );
-    assert_eq!(f.services.proposal_head_counts(p.id.0), (0, 0), "no cross-server ballot lands");
+    assert_eq!(f.services.governance().proposal_head_counts(p.id.0), (0, 0), "no cross-server ballot lands");
 }
 
 /// The agenda is per-server too: a citizen of one server cannot open a proposal in
@@ -589,7 +591,7 @@ fn a_citizen_of_one_server_cannot_open_a_proposal_in_another() {
     found(&f, "boss_b", "Beta");
     seat_citizen(&f, "alice", "alpha");
     assert_eq!(
-        f.services.open_proposal("alice", "beta", ProposalKind::AddRule { text: "x".into() }),
+        f.services.governance().open_proposal("alice", "beta", ProposalKind::AddRule { text: "x".into() }),
         Err(ProposeError::NotACitizen),
     );
 }
@@ -603,7 +605,7 @@ fn a_member_of_one_server_cannot_post_in_another() {
     found(&f, "boss_b", "Beta");
     register_and_join(&f, "alice", "alpha");
     assert_eq!(
-        f.services.post_message("alice", "beta", "general", "hello from Alpha"),
+        f.services.chat().post_message("alice", "beta", "general", "hello from Alpha"),
         Err(MessageError::NotAMember("alice".into())),
     );
 }
@@ -627,7 +629,7 @@ fn police_powers_do_not_cross_servers() {
     register_and_join(&f, "victim", "beta");
 
     assert_eq!(
-        f.services.mute_member("alice", "beta", "victim"),
+        f.services.mute().mute_member("alice", "beta", "victim"),
         Err(MuteError::NotPolice),
         "an Alpha officer has no badge in Beta",
     );
@@ -648,22 +650,22 @@ fn a_passed_ballot_applies_exactly_once() {
     seat_citizen(&f, "cit2", "town"); // 3 citizens — a real electorate
 
     let p = f
-        .services
+        .services.governance()
         .open_proposal("boss", "town", ProposalKind::AddRule { text: "no capture".into() })
         .unwrap();
     for c in ["boss", "cit1", "cit2"] {
-        f.services.cast_vote(c, p.id.0, true).unwrap();
+        f.services.governance().cast_vote(c, p.id.0, true).unwrap();
     }
     f.clock.set(Timestamp(1_000 * DAY + 5 * DAY)); // past the voting window
-    f.services.resolve_due("town");
-    let closed = f.services.list_proposals("town").into_iter().find(|x| x.id == p.id).unwrap();
+    f.services.governance().resolve_due("town");
+    let closed = f.services.governance().list_proposals("town").into_iter().find(|x| x.id == p.id).unwrap();
     assert!(matches!(closed.status, ProposalStatus::Passed { .. }));
-    assert_eq!(f.services.list_rules("town").len(), 1, "the rule enacts on the first sweep");
+    assert_eq!(f.services.governance().list_rules("town").len(), 1, "the rule enacts on the first sweep");
 
     // Hammer the resolver: a closed ballot is never re-applied.
-    f.services.resolve_due("town");
-    f.services.resolve_due("town");
-    assert_eq!(f.services.list_rules("town").len(), 1, "extra sweeps enact nothing further");
+    f.services.governance().resolve_due("town");
+    f.services.governance().resolve_due("town");
+    assert_eq!(f.services.governance().list_rules("town").len(), 1, "extra sweeps enact nothing further");
 }
 
 /// An already-enfranchised citizen cannot be enfranchised again — no double-seating
@@ -691,4 +693,340 @@ fn a_non_member_cannot_be_enfranchised() {
         f.services.try_enfranchise("outsider", "town"),
         Err(EnfranchiseError::NotAMember(_)),
     ));
+}
+
+/// Revoke a seated citizen's franchise (drop them back to a mere member). Mirrors
+/// what a passed sanction or a failed re-qualification does to the roll; used to
+/// prove revoked standing silently stops counting.
+fn revoke_franchise(f: &Fixture, handle: &str, slug: &str) {
+    let u = f.store.find_by_handle(handle).unwrap();
+    let s = f.store.find_by_slug(slug).unwrap();
+    let mut m = f.store.get(u.id, s.id).unwrap();
+    m.tier = Tier::Member;
+    m.enfranchised_at = None;
+    f.store.upsert(m);
+}
+
+/// Pass a proposal unanimously among the named citizens and sweep it in.
+fn pass_ballot(f: &Fixture, proposer: &str, slug: &str, voters: &[&str], kind: ProposalKind) {
+    let p = f.services.governance().open_proposal(proposer, slug, kind).unwrap();
+    for v in voters {
+        f.services.governance().cast_vote(v, p.id.0, true).unwrap();
+    }
+    let now = f.clock.now().0;
+    f.clock.set(Timestamp(now + 4 * DAY));
+    f.services.governance().resolve_due(slug);
+    f.clock.set(Timestamp(now)); // restore the clock for the caller
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// H. Encrypted-channel key-grant abuse — sealed material stays scoped
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Turning a channel encrypted is a citizens-only act: a mere member cannot flip a
+/// channel to encrypted (nor, by the same door, downgrade the room's guarantees).
+#[test]
+fn enabling_channel_encryption_is_citizens_only() {
+    let f = fixture(1_000 * DAY);
+    found(&f, "boss", "Town");
+    f.services.chat().create_channel("boss", "town", "vault", "").unwrap();
+    register_and_join(&f, "member", "town");
+    assert_eq!(
+        f.services.channel_keys().enable_channel_encryption("member", "town", "vault", HistoryMode::Ephemeral),
+        Err(ChannelKeyError::NotACitizen),
+    );
+}
+
+/// An outsider cannot inject channel-key material: minting a grant requires the
+/// granter to be a member of the server, so a non-member's grant is refused.
+#[test]
+fn an_outsider_cannot_mint_a_channel_key_grant() {
+    let f = fixture(1_000 * DAY);
+    found(&f, "boss", "Town");
+    f.services.chat().create_channel("boss", "town", "vault", "").unwrap();
+    f.services.channel_keys().enable_channel_encryption("boss", "town", "vault", HistoryMode::Ephemeral).unwrap();
+    register_and_join(&f, "insider", "town");
+    f.services.register_account("outsider").unwrap(); // registered, never joined
+    assert_eq!(
+        f.services.channel_keys().grant_channel_key("outsider", "town", "vault", 0, "insider", "sealed"),
+        Err(ChannelKeyError::NotAMember("outsider".into())),
+    );
+}
+
+/// A grant cannot be published against a plaintext channel — no smuggling in a
+/// bogus "key" for a room that has no encryption to key.
+#[test]
+fn a_grant_needs_an_encrypted_channel() {
+    let f = fixture(1_000 * DAY);
+    found(&f, "boss", "Town");
+    f.services.chat().create_channel("boss", "town", "lobby", "").unwrap(); // never encrypted
+    register_and_join(&f, "member", "town");
+    assert_eq!(
+        f.services.channel_keys().grant_channel_key("boss", "town", "lobby", 0, "member", "sealed"),
+        Err(ChannelKeyError::NotEncrypted),
+    );
+}
+
+/// A sealed key grant is scoped to its grantee: one member cannot read the key
+/// blob sealed to another. The server hands each member only their own grants.
+#[test]
+fn a_key_grant_is_not_visible_to_other_members() {
+    let f = fixture(1_000 * DAY);
+    found(&f, "boss", "Town");
+    f.services.chat().create_channel("boss", "town", "vault", "").unwrap();
+    f.services.channel_keys().enable_channel_encryption("boss", "town", "vault", HistoryMode::Ephemeral).unwrap();
+    register_and_join(&f, "alice", "town");
+    register_and_join(&f, "mallory", "town");
+
+    f.services.channel_keys().grant_channel_key("boss", "town", "vault", 0, "alice", "alices-sealed-key").unwrap();
+
+    assert_eq!(f.services.channel_keys().my_channel_grants("alice", "town", "vault").unwrap().len(), 1);
+    assert!(
+        f.services.channel_keys().my_channel_grants("mallory", "town", "vault").unwrap().is_empty(),
+        "a member sees no grant sealed to someone else",
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// I. Key directory — no identity takeover
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Publishing is keyed to the authenticated caller: an attacker publishing their
+/// own entry cannot overwrite a victim's public key, so no MITM by directory
+/// poisoning. Each handle's entry is its own.
+#[test]
+fn publishing_cannot_overwrite_another_users_identity() {
+    let f = fixture(1_000 * DAY);
+    f.services.register_account("victim").unwrap();
+    f.services.register_account("attacker").unwrap();
+
+    let victim_secret = IdentitySecret::generate();
+    let victim_pub = victim_secret.public().to_hex();
+    let vw = wrap_secret("victim-password-value", &victim_secret).unwrap();
+    f.services.keys().publish_keys("victim", &victim_pub, WrappedKey::from(vw)).unwrap();
+
+    // The attacker publishes their own (different) identity.
+    let attacker_secret = IdentitySecret::generate();
+    let aw = wrap_secret("attacker-password-val", &attacker_secret).unwrap();
+    f.services.keys().publish_keys("attacker", &attacker_secret.public().to_hex(), WrappedKey::from(aw)).unwrap();
+
+    // The victim's directory entry is untouched — a sender still fetches the real key.
+    assert_eq!(f.services.keys().public_key_of("victim").unwrap(), victim_pub);
+    assert_ne!(f.services.keys().public_key_of("attacker").unwrap(), victim_pub);
+}
+
+/// Republishing under a foreign handle is impossible: there is no cross-user
+/// publish path, so `my_keys` only ever returns the caller's own wrapped secret.
+#[test]
+fn my_keys_never_yields_another_users_secret() {
+    let f = fixture(1_000 * DAY);
+    f.services.register_account("owner").unwrap();
+    let secret = IdentitySecret::generate();
+    let wrapped = wrap_secret("owner-password-here-0", &secret).unwrap();
+    f.services.keys().publish_keys("owner", &secret.public().to_hex(), WrappedKey::from(wrapped.clone())).unwrap();
+
+    // A different caller has no entry at all — not the owner's.
+    f.services.register_account("snoop").unwrap();
+    assert!(matches!(f.services.keys().my_keys("snoop"), Err(KeyError::NotPublished(_))));
+    // The owner's own call returns exactly the owner's blob.
+    assert_eq!(f.services.keys().my_keys("owner").unwrap().wrapped_secret, WrappedKey::from(wrapped));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// J. Emoji ranking — capture by numbers, again
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The emoji ranking is a citizens-only franchise too: a mere member cannot add an
+/// emoji, so the roster can't be spammed by fresh accounts.
+#[test]
+fn a_mere_member_cannot_add_an_emoji() {
+    let f = fixture(1_000 * DAY);
+    found(&f, "boss", "Town");
+    register_and_join(&f, "member", "town");
+    assert_eq!(
+        f.services.emoji().add_emoji("member", "town", "shipit", "http://img/x.png"),
+        Err(EmojiError::NotACitizen),
+    );
+}
+
+/// A flood of members has zero weight on the ranking: every non-citizen vote is
+/// refused, so numbers alone move no emoji up the list.
+#[test]
+fn a_flood_of_members_cannot_swing_the_emoji_ranking() {
+    let f = fixture(1_000 * DAY);
+    found(&f, "boss", "Town");
+    let e = f.services.emoji().add_emoji("boss", "town", "party", "http://img/p.png").unwrap();
+    for i in 0..200 {
+        register_and_join(&f, &format!("mob{i}"), "town");
+        assert_eq!(
+            f.services.emoji().vote_emoji(&format!("mob{i}"), "town", e.id.0, true),
+            Err(EmojiError::NotACitizen),
+        );
+    }
+    let ranked = f.services.emoji().ranked_emojis("town", "boss");
+    assert_eq!(ranked.iter().find(|r| r.id == e.id.0).unwrap().score, 0, "no member vote counts");
+}
+
+/// One citizen, one emoji vote: hammering `vote_emoji` upserts, so a citizen's
+/// hundredth up-vote is still worth exactly one.
+#[test]
+fn an_emoji_vote_is_one_per_citizen() {
+    let f = fixture(1_000 * DAY);
+    found(&f, "boss", "Town");
+    let e = f.services.emoji().add_emoji("boss", "town", "fire", "http://img/f.png").unwrap();
+    for _ in 0..100 {
+        f.services.emoji().vote_emoji("boss", "town", e.id.0, true).unwrap();
+    }
+    let ranked = f.services.emoji().ranked_emojis("town", "boss");
+    assert_eq!(ranked.iter().find(|r| r.id == e.id.0).unwrap().score, 1, "a hundred ayes collapse to one");
+}
+
+/// A revoked franchise silently stops counting toward the ranking without touching
+/// the stored vote — so a de-citizened account cannot keep propping up an emoji.
+#[test]
+fn a_revoked_franchise_stops_counting_toward_emoji_ranking() {
+    let f = fixture(1_000 * DAY);
+    found(&f, "boss", "Town");
+    seat_citizen(&f, "cit", "town");
+    let e = f.services.emoji().add_emoji("boss", "town", "star", "http://img/s.png").unwrap();
+    f.services.emoji().vote_emoji("cit", "town", e.id.0, true).unwrap();
+    assert_eq!(
+        f.services.emoji().ranked_emojis("town", "boss").iter().find(|r| r.id == e.id.0).unwrap().score,
+        1,
+    );
+
+    revoke_franchise(&f, "cit", "town");
+    assert_eq!(
+        f.services.emoji().ranked_emojis("town", "boss").iter().find(|r| r.id == e.id.0).unwrap().score,
+        0,
+        "the revoked citizen's vote no longer counts",
+    );
+}
+
+/// A known emoji's name cannot be hijacked: a second citizen cannot re-add the same
+/// `:name:` to swap its image for a lookalike, so `:shipit:` can't be poisoned.
+#[test]
+fn an_existing_emoji_name_cannot_be_hijacked() {
+    let f = fixture(1_000 * DAY);
+    found(&f, "boss", "Town");
+    seat_citizen(&f, "cit", "town");
+    f.services.emoji().add_emoji("boss", "town", "shipit", "http://img/real.png").unwrap();
+    assert_eq!(
+        f.services.emoji().add_emoji("cit", "town", "shipit", "http://evil/fake.png"),
+        Err(EmojiError::NameTaken("shipit".into())),
+    );
+}
+
+/// The emoji franchise is per-server: a citizen of one server cannot vote on
+/// another server's emoji.
+#[test]
+fn a_citizen_cannot_vote_emoji_in_a_foreign_server() {
+    let f = fixture(1_000 * DAY);
+    found(&f, "boss_a", "Alpha");
+    found(&f, "boss_b", "Beta");
+    seat_citizen(&f, "alice", "alpha");
+    let e = f.services.emoji().add_emoji("boss_b", "beta", "wave", "http://img/w.png").unwrap();
+    assert_eq!(
+        f.services.emoji().vote_emoji("alice", "beta", e.id.0, true),
+        Err(EmojiError::NotACitizen),
+        "Alpha citizenship carries no emoji vote in Beta",
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// K. Roles are cosmetic — never a side door into the franchise
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A role confers nothing but membership in a mention group: assigning a mere
+/// member to a role (by ballot) does not let them vote — they are still not a
+/// citizen. Roles cannot be used to smuggle power to a non-citizen.
+#[test]
+fn holding_a_role_grants_no_vote() {
+    let f = fixture(1_000 * DAY);
+    found(&f, "boss", "Town");
+    seat_citizen(&f, "cit1", "town");
+    seat_citizen(&f, "cit2", "town"); // a real electorate of 3
+    register_and_join(&f, "mole", "town"); // a mere member
+
+    let citizens = ["boss", "cit1", "cit2"];
+    pass_ballot(&f, "boss", "town", &citizens, ProposalKind::CreateRole { name: "Ops".into() });
+    let role = f.services.roles().list_roles("town").into_iter().find(|r| r.name == "ops").unwrap();
+    let mole = f.store.find_by_handle("mole").unwrap();
+    pass_ballot(&f, "boss", "town", &citizens, ProposalKind::AssignRole { user: mole.id, role: role.id });
+
+    // The mole now holds the role...
+    assert!(f.services.roles().role_holders("town", "ops").contains(&"mole".to_string()));
+
+    // ...but still cannot cast a ballot.
+    let p = f
+        .services.governance()
+        .open_proposal("boss", "town", ProposalKind::AddRule { text: "x".into() })
+        .unwrap();
+    assert_eq!(
+        f.services.governance().cast_vote("mole", p.id.0, true),
+        Err(VoteError::NotACitizen),
+        "a role holder without citizenship is voteless",
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// L. Mute abuse — the instant-mute power stays bounded
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// An officer cannot mute themselves (officers are unmutable), so the police power
+/// can't be turned into a self-inflicted or reciprocal silencing loophole.
+#[test]
+fn an_officer_cannot_mute_themselves() {
+    let f = fixture(1_000 * DAY);
+    found(&f, "boss", "Town");
+    seat_citizen(&f, "cop", "town");
+    let u = f.store.find_by_handle("cop").unwrap();
+    let s = f.store.find_by_slug("town").unwrap();
+    let mut m = f.store.get(u.id, s.id).unwrap();
+    m.is_police = true;
+    f.store.upsert(m);
+    assert_eq!(
+        f.services.mute().mute_member("cop", "town", "cop"),
+        Err(MuteError::CannotMutePolice),
+    );
+}
+
+/// A police officer cannot mute a non-member: the target must belong to the server,
+/// so the power can't reach across the wall to an outsider.
+#[test]
+fn an_officer_cannot_mute_a_non_member() {
+    let f = fixture(1_000 * DAY);
+    found(&f, "boss", "Town");
+    seat_citizen(&f, "cop", "town");
+    let u = f.store.find_by_handle("cop").unwrap();
+    let s = f.store.find_by_slug("town").unwrap();
+    let mut m = f.store.get(u.id, s.id).unwrap();
+    m.is_police = true;
+    f.store.upsert(m);
+    f.services.register_account("stranger").unwrap(); // registered, never joined
+    assert_eq!(
+        f.services.mute().mute_member("cop", "town", "stranger"),
+        Err(MuteError::NotAMember("stranger".into())),
+    );
+}
+
+/// A muted member is silenced everywhere but #appeals — so a captured-then-muted
+/// critic cannot keep posting to the general floor.
+#[test]
+fn a_muted_member_cannot_post_to_the_floor() {
+    let f = fixture(1_000 * DAY);
+    found(&f, "boss", "Town");
+    register_and_join(&f, "loud", "town");
+    f.services.chat().post_message("loud", "town", "general", "hi").unwrap();
+
+    let u = f.store.find_by_handle("loud").unwrap();
+    let s = f.store.find_by_slug("town").unwrap();
+    let mut m = f.store.get(u.id, s.id).unwrap();
+    m.mute(None);
+    f.store.upsert(m);
+
+    assert_eq!(
+        f.services.chat().post_message("loud", "town", "general", "again"),
+        Err(MessageError::Muted("loud".into())),
+    );
 }
