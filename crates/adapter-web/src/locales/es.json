@@ -7,6 +7,8 @@
   "err.dev_disabled": "los endpoints de desarrollo están deshabilitados",
   "err.forbidden_not_self": "solo puedes actuar en tu propio nombre",
   "err.no_such_user": "usuario inexistente",
+  "err.no_such_channel": "canal inexistente",
+  "err.forbidden": "no permitido",
   "err.not_signed_in": "sesión no iniciada",
   "err.bad_origin": "origen no válido",
   "err.no_such_proposal": "no existe esa propuesta",

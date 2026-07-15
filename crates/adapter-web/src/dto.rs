@@ -88,6 +88,9 @@ pub struct ChannelDto {
     pub history_mode: String,
     /// "open" (every member) or "appeals" (the restricted mute-appeals room).
     pub visibility: String,
+    /// Discovery tags on this channel (normalized, sorted).
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// Turn on encryption for a channel. `history_mode` is "open" or "ephemeral".
@@ -146,6 +149,9 @@ pub struct ServerDetail {
     /// Whether any member may currently mint invite codes (policy is `Open`).
     #[serde(default)]
     pub are_invites_open: bool,
+    /// Discovery tags on this server (normalized, sorted).
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// A server's jury-sizing rule, flattened for the client. `mode` is the variant
@@ -493,6 +499,24 @@ pub struct SocialMeDto {
     pub incoming_requests: Vec<String>,
     /// Users this user has blocked (permanent; display-only, no unblock).
     pub blocked: Vec<String>,
+    /// The viewer's own discovery tags (normalized, sorted).
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// Replace an entity's tags. `tags` is free-form — comma- or whitespace-separated —
+/// and normalized server-side (lowercased, deduped, fenced).
+#[derive(Deserialize)]
+pub struct TagsReq {
+    #[serde(default)]
+    pub tags: String,
+}
+
+/// A tag-search query string: `?tag=rust`.
+#[derive(Deserialize)]
+pub struct TagQuery {
+    #[serde(default)]
+    pub tag: String,
 }
 
 #[derive(Serialize)]

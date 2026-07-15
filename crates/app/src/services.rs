@@ -20,6 +20,7 @@ use crate::mute_service::MuteService;
 use crate::outcome::EnfranchiseOutcome;
 use crate::role_service::RoleService;
 use crate::social_service::SocialService;
+use crate::tag_service::TagService;
 use crate::stores::Stores;
 use crate::{
     ChannelStore, Clock, EnfranchiseError, FoundError, InviteError, InviteStore, JoinError,
@@ -49,6 +50,7 @@ pub struct Services {
     mute: MuteService,
     channel_keys: ChannelKeyService,
     keys: KeyDirectoryService,
+    tags: TagService,
 }
 
 impl Services {
@@ -115,6 +117,11 @@ impl Services {
             keys: stores.keys.clone(),
             users: stores.users.clone(),
         };
+        let tags = TagService {
+            channels: stores.channels.clone(),
+            servers: stores.servers.clone(),
+            users: stores.users.clone(),
+        };
         Self {
             clock,
             users: stores.users,
@@ -130,6 +137,7 @@ impl Services {
             mute,
             channel_keys,
             keys,
+            tags,
         }
     }
 
@@ -171,6 +179,11 @@ impl Services {
     /// Key-directory use-cases: publish and fetch device keys.
     pub fn keys(&self) -> &KeyDirectoryService {
         &self.keys
+    }
+
+    /// Tag use-cases: label servers/channels/users and discover by tag.
+    pub fn tags(&self) -> &TagService {
+        &self.tags
     }
 
     /// Register a new platform account **without** a password. For seeding, the

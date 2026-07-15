@@ -216,6 +216,7 @@ pub async fn server_detail(
         channels,
         is_private: g.is_private,
         are_invites_open: g.allows_member_invites(),
+        tags: g.tags.iter().map(String::from).collect(),
         slug: g.slug,
         name: g.name,
     }))
@@ -249,6 +250,88 @@ pub async fn create_channel(
     Ok(Json(channel_dto(c)))
 }
 
+/// Map a tag edit's failure onto an HTTP status: a permission denial is `403`, a
+/// missing target `404`, and anything else (a store fault) a `400`.
+fn tag_err(e: app::TagError) -> (StatusCode, String) {
+    use app::TagError::*;
+    match e {
+        Forbidden => (StatusCode::FORBIDDEN, "err.forbidden".into()),
+        NoSuchServer(_) => not_found("err.no_such_server"),
+        NoSuchChannel(_) => not_found("err.no_such_channel"),
+        NoSuchUser(_) => not_found("err.no_such_user"),
+        other => bad(other),
+    }
+}
+
+/// Replace a server's discovery tags (founder-only). Body: `{ "tags": "a, b" }`.
+pub async fn set_server_tags(
+    State(st): State<AppState>,
+    Path(slug): Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<TagsReq>,
+) -> Res<serde_json::Value> {
+    let me = require_actor(&st, &headers).await?;
+    st.services.tags().set_server_tags(&me, &slug, &req.tags).await.map_err(tag_err)?;
+    st.persist();
+    st.publish(json!({ "type": "server" }).to_string());
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// Replace a channel's discovery tags (founder-only).
+pub async fn set_channel_tags(
+    State(st): State<AppState>,
+    Path((slug, name)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(req): Json<TagsReq>,
+) -> Res<serde_json::Value> {
+    let me = require_actor(&st, &headers).await?;
+    st.services.tags().set_channel_tags(&me, &slug, &name, &req.tags).await.map_err(tag_err)?;
+    st.persist();
+    st.publish(json!({ "type": "channel", "server": slug }).to_string());
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// Servers carrying a tag: `GET /api/search/servers?tag=rust`.
+pub async fn search_servers_by_tag(
+    State(st): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<TagQuery>,
+) -> Res<Vec<serde_json::Value>> {
+    let hits = st.services.tags().servers_with_tag(&q.tag).await.map_err(tag_err)?;
+    Ok(Json(
+        hits.into_iter()
+            .map(|s| json!({ "slug": s.slug, "name": s.name, "tags": s.tags.iter().collect::<Vec<_>>() }))
+            .collect(),
+    ))
+}
+
+/// Channels carrying a tag (across servers): `GET /api/search/channels?tag=rust`.
+pub async fn search_channels_by_tag(
+    State(st): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<TagQuery>,
+) -> Res<Vec<serde_json::Value>> {
+    let hits = st.services.tags().channels_with_tag(&q.tag).await.map_err(tag_err)?;
+    let mut out = Vec::with_capacity(hits.len());
+    for c in hits {
+        // Resolve the owning server's slug so a hit is addressable client-side.
+        let server = st.services.server_slug(c.server_id).await.unwrap_or_default();
+        out.push(json!({ "server": server, "name": c.name, "tags": c.tags.iter().collect::<Vec<_>>() }));
+    }
+    Ok(Json(out))
+}
+
+/// Accounts carrying a tag: `GET /api/search/users?tag=rust`.
+pub async fn search_users_by_tag(
+    State(st): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<TagQuery>,
+) -> Res<Vec<serde_json::Value>> {
+    let hits = st.services.tags().users_with_tag(&q.tag).await.map_err(tag_err)?;
+    Ok(Json(
+        hits.into_iter()
+            .map(|u| json!({ "handle": u.handle, "tags": u.tags.iter().collect::<Vec<_>>() }))
+            .collect(),
+    ))
+}
+
 /// Map a domain [`Channel`] to its wire shape, surfacing its encryption state.
 fn channel_dto(c: domain::Channel) -> ChannelDto {
     ChannelDto {
@@ -257,6 +340,7 @@ fn channel_dto(c: domain::Channel) -> ChannelDto {
         is_encrypted: c.is_encrypted,
         history_mode: c.history_mode.as_str().into(),
         visibility: c.visibility.as_str().into(),
+        tags: c.tags.iter().map(String::from).collect(),
     }
 }
 

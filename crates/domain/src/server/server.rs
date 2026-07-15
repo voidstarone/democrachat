@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BallotKind, FranchiseCriteria, InvitePolicy, ServerId, JurySizing, Timestamp, UserId,
+    BallotKind, FranchiseCriteria, InvitePolicy, ServerId, JurySizing, Tags, Timestamp, UserId,
     VoteWeighting, WeightingScope,
 };
 
@@ -55,6 +55,10 @@ pub struct Server {
     /// once the server is officially founded.
     #[serde(default)]
     pub invite_policy: InvitePolicy,
+    /// Free-form discovery tags for this server. Empty by default; `#[serde(default)]`
+    /// keeps pre-tags datasets loadable.
+    #[serde(default)]
+    pub tags: Tags,
 }
 
 /// Deserialize the governance surface, **tolerating retired ballot kinds**. A
@@ -106,6 +110,7 @@ impl Server {
             is_rehoming_disabled: false,
             is_private: false,
             invite_policy: InvitePolicy::default(),
+            tags: Tags::default(),
         }
     }
 

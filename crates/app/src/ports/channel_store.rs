@@ -15,4 +15,8 @@ pub trait ChannelStore: Send + Sync {
     /// Delete a channel by id (a passed DeleteChannel ballot). Returns whether it
     /// existed. Messages in it are left orphaned — the store may prune them.
     async fn remove_channel(&self, id: ChannelId) -> Result<bool, StoreError>;
+    /// Channels carrying the exact tag `tag` (a plain tag — the store handles any
+    /// normalization/fencing internally). Global across servers, for discovery;
+    /// order is unspecified.
+    async fn search_by_tag(&self, tag: &str) -> Result<Vec<Channel>, StoreError>;
 }

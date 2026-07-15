@@ -7,6 +7,8 @@
   "err.dev_disabled": "dev endpoints are disabled",
   "err.forbidden_not_self": "you can only act as yourself",
   "err.no_such_user": "no such user",
+  "err.no_such_channel": "no such channel",
+  "err.forbidden": "not permitted",
   "err.not_signed_in": "not signed in",
   "err.bad_origin": "bad origin",
   "err.no_such_proposal": "no such proposal",

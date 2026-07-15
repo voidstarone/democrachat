@@ -47,9 +47,9 @@ pub async fn social_me(
 ) -> Res<SocialMeDto> {
     require_self(&st, &headers, &me).await?;
     let s = &st.services;
-    if s.find_user(&me).await.is_none() {
+    let Some(me_user) = s.find_user(&me).await else {
         return Err((StatusCode::NOT_FOUND, "err.no_such_user".into()));
-    }
+    };
 
     let friends = s.social().friends_of(&me).await;
     let mut partners = Vec::new();
@@ -66,6 +66,7 @@ pub async fn social_me(
         friends,
         incoming_requests: s.social().incoming_friend_requests(&me).await,
         blocked: s.social().blocked_users(&me).await,
+        tags: me_user.tags.iter().map(String::from).collect(),
         handle: me,
     }))
 }
@@ -248,6 +249,20 @@ pub async fn set_policy(
         DmPolicy::Everyone
     };
     st.services.social().set_dm_policy(&me, policy).await.map_err(bad)?;
+    st.persist();
+    st.publish(social_event(&me, &me));
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// Replace the viewer's own discovery tags. Body: `{ "tags": "rust, gaming" }`.
+pub async fn set_tags(
+    State(st): State<AppState>,
+    Path(me): Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<TagsReq>,
+) -> Res<serde_json::Value> {
+    require_self(&st, &headers, &me).await?;
+    st.services.tags().set_user_tags(&me, &req.tags).await.map_err(bad)?;
     st.persist();
     st.publish(social_event(&me, &me));
     Ok(Json(json!({ "ok": true })))

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::chat::channel_visibility::ChannelVisibility;
 use crate::chat::history_mode::HistoryMode;
-use crate::{ChannelId, ServerId, Timestamp};
+use crate::{ChannelId, ServerId, Tags, Timestamp};
 
 /// A text channel — an ordered stream of messages within a server. Whether a
 /// channel comes into being by founder provisioning (Seed) or by a ballot
@@ -30,6 +30,10 @@ pub struct Channel {
     /// way too; the restricted `#appeals` channel is the sole exception.
     #[serde(default)]
     pub visibility: ChannelVisibility,
+    /// Free-form discovery tags for this channel. Empty by default;
+    /// `#[serde(default)]` keeps pre-tags datasets loadable.
+    #[serde(default)]
+    pub tags: Tags,
 }
 
 impl Channel {
@@ -49,6 +53,7 @@ impl Channel {
             is_encrypted: false,
             history_mode: HistoryMode::Open,
             visibility: ChannelVisibility::Open,
+            tags: Tags::default(),
         }
     }
 

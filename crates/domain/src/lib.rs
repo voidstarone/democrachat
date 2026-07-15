@@ -37,6 +37,7 @@ pub mod node;
 pub mod roles;
 pub mod rules;
 pub mod social;
+pub mod tags;
 pub mod time;
 pub mod user;
 pub mod weighting;
@@ -149,6 +150,7 @@ pub use social::dm_policy::DmPolicy;
 pub use social::friend_status::FriendStatus;
 pub use social::friendship::Friendship;
 
+pub use tags::tags::Tags;
 pub use time::Timestamp;
 pub use user::user::User;
 

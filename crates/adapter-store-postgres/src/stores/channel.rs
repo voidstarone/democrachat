@@ -13,7 +13,12 @@ impl ChannelStore for PgStore {
 
     async fn insert_channel(&self, channel: Channel) -> Result<(), StoreError> {
         let mut tx = self.pool().begin().await.map_err(to_store_err)?;
-        sqlx::query("INSERT INTO channels (id, server_id, name, data) VALUES ($1, $2, $3, $4)")
+        // Upsert: the memory store's insert overwrites, and callers rely on that to
+        // persist channel edits (enable-encryption, tags) by re-inserting the row.
+        sqlx::query(
+            "INSERT INTO channels (id, server_id, name, data) VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, data = EXCLUDED.data",
+        )
             .bind(channel.id.0 as i64)
             .bind(channel.server_id.0 as i64)
             .bind(&channel.name)
@@ -75,5 +80,17 @@ impl ChannelStore for PgStore {
         push_outbox(&mut *tx, "channels", ChangeOp::Delete, &channel).await?;
         tx.commit().await.map_err(to_store_err)?;
         Ok(true)
+    }
+
+    async fn search_by_tag(&self, tag: &str) -> Result<Vec<Channel>, StoreError> {
+        let Some(needle) = domain::Tags::search_needle(tag) else {
+            return Ok(Vec::new());
+        };
+        let rows = sqlx::query("SELECT data FROM channels WHERE strpos(data->>'tags', $1) > 0 ORDER BY id")
+            .bind(needle)
+            .fetch_all(self.pool())
+            .await
+            .map_err(to_store_err)?;
+        rows.iter().map(decode).collect()
     }
 }

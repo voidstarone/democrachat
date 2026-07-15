@@ -107,9 +107,14 @@ async fn every_port_round_trips_against_a_live_postgres() {
     assert_eq!(ServerStore::find_by_slug(s, "town").await.unwrap().unwrap().id, sid);
     let mut town = ServerStore::get_server(s, sid).await.unwrap().unwrap();
     town.is_private = true;
+    town.tags = domain::Tags::from_tags(["rust", "gaming"]);
     ServerStore::update_server(s, town).await.unwrap();
     assert!(ServerStore::get_server(s, sid).await.unwrap().unwrap().is_private);
     assert_eq!(ServerStore::list_all(s).await.unwrap().len(), 1);
+    // The `strpos` tag search takes a plain tag (fencing is internal): an exact
+    // match hits, a prefix does not.
+    assert_eq!(ServerStore::search_by_tag(s, "rust").await.unwrap().len(), 1);
+    assert!(ServerStore::search_by_tag(s, "rus").await.unwrap().is_empty());
 
     // ── memberships (tier + enfranchised_at column filters) ──────────────────
     let mut m_a = Membership::joined(uid_a, sid, T);

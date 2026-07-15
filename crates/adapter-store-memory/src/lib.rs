@@ -608,6 +608,15 @@ impl UserStore for MemoryStore {
         self.0.lock().unwrap().users.values().cloned().collect()
         })
     }
+    async fn search_by_tag(&self, tag: &str) -> Result<Vec<User>, StoreError> {
+        let Some(needle) = domain::Tags::search_needle(tag) else {
+            return Ok(Vec::new());
+        };
+        Ok(self.0.lock().unwrap().users.values()
+            .filter(|u| u.tags.as_str().contains(&needle))
+            .cloned()
+            .collect())
+    }
 }
 
 #[async_trait]
@@ -655,6 +664,15 @@ impl ServerStore for MemoryStore {
         v.sort_by_key(|g| g.id.0);
         v
         })
+    }
+    async fn search_by_tag(&self, tag: &str) -> Result<Vec<Server>, StoreError> {
+        let Some(needle) = domain::Tags::search_needle(tag) else {
+            return Ok(Vec::new());
+        };
+        Ok(self.0.lock().unwrap().servers.values()
+            .filter(|s| s.tags.as_str().contains(&needle))
+            .cloned()
+            .collect())
     }
 }
 
@@ -798,6 +816,15 @@ impl ChannelStore for MemoryStore {
         inner.messages.retain(|_, m| m.channel_id != id);
         true
         })
+    }
+    async fn search_by_tag(&self, tag: &str) -> Result<Vec<Channel>, StoreError> {
+        let Some(needle) = domain::Tags::search_needle(tag) else {
+            return Ok(Vec::new());
+        };
+        Ok(self.0.lock().unwrap().channels.values()
+            .filter(|c| c.tags.as_str().contains(&needle))
+            .cloned()
+            .collect())
     }
 }
 

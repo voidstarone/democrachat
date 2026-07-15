@@ -64,4 +64,16 @@ impl UserStore for PgStore {
             .map_err(to_store_err)?;
         rows.iter().map(decode).collect()
     }
+
+    async fn search_by_tag(&self, tag: &str) -> Result<Vec<User>, StoreError> {
+        let Some(needle) = domain::Tags::search_needle(tag) else {
+            return Ok(Vec::new());
+        };
+        let rows = sqlx::query("SELECT data FROM users WHERE strpos(data->>'tags', $1) > 0 ORDER BY id")
+            .bind(needle)
+            .fetch_all(self.pool())
+            .await
+            .map_err(to_store_err)?;
+        rows.iter().map(decode).collect()
+    }
 }

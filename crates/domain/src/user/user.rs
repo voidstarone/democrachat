@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{DmPolicy, Timestamp, UserId};
+use crate::{DmPolicy, Tags, Timestamp, UserId};
 
 /// A platform-wide account. A user joins many servers; their standing *within* a
 /// server lives in [`crate::Membership`], never here.
@@ -31,6 +31,10 @@ pub struct User {
     /// loadable.
     #[serde(default)]
     pub password_hash: String,
+    /// Free-form self-description tags for this account. Empty by default;
+    /// `#[serde(default)]` keeps pre-tags datasets loadable.
+    #[serde(default)]
+    pub tags: Tags,
 }
 
 impl User {
@@ -42,6 +46,7 @@ impl User {
             is_franchise_barred: false,
             dm_policy: DmPolicy::Everyone,
             password_hash: String::new(),
+            tags: Tags::default(),
         }
     }
 

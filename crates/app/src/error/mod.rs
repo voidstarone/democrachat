@@ -18,4 +18,5 @@ pub mod register_error;
 pub mod role_error;
 pub mod social_error;
 pub mod store_error;
+pub mod tag_error;
 pub mod vote_error;

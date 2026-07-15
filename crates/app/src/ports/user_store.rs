@@ -17,4 +17,7 @@ pub trait UserStore: Send + Sync {
     /// Every account. Used at federation startup to claim the user-home scopes this
     /// node minted (the node that allocated a user's id homes them).
     async fn list_all(&self) -> Result<Vec<User>, StoreError>;
+    /// Accounts carrying the exact tag `tag` (a plain tag — the store handles any
+    /// normalization/fencing internally). Order is unspecified.
+    async fn search_by_tag(&self, tag: &str) -> Result<Vec<User>, StoreError>;
 }

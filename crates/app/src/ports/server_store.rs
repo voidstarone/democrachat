@@ -14,4 +14,7 @@ pub trait ServerStore: Send + Sync {
     async fn update_server(&self, server: Server) -> Result<(), StoreError>;
     /// Every server, for a directory listing. Order is unspecified; callers sort.
     async fn list_all(&self) -> Result<Vec<Server>, StoreError>;
+    /// Servers carrying the exact tag `tag` (a plain tag — the store handles any
+    /// normalization/fencing internally). Order is unspecified; callers sort.
+    async fn search_by_tag(&self, tag: &str) -> Result<Vec<Server>, StoreError>;
 }
