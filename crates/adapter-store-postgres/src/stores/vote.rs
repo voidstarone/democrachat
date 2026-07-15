@@ -42,4 +42,25 @@ impl VoteStore for PgStore {
             .map_err(to_store_err)?;
         rows.iter().map(decode).collect()
     }
+
+    async fn clear_for_proposal(&self, proposal: ProposalId) -> Result<(), StoreError> {
+        let mut tx = self.pool().begin().await.map_err(to_store_err)?;
+        // Read the votes first so each removal can be published to the change feed.
+        let rows = sqlx::query("SELECT data FROM votes WHERE proposal_id = $1 FOR UPDATE")
+            .bind(proposal.0 as i64)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(to_store_err)?;
+        let votes: Vec<Vote> = rows.iter().map(decode).collect::<Result<_, _>>()?;
+        sqlx::query("DELETE FROM votes WHERE proposal_id = $1")
+            .bind(proposal.0 as i64)
+            .execute(&mut *tx)
+            .await
+            .map_err(to_store_err)?;
+        for vote in &votes {
+            push_outbox(&mut *tx, "votes", ChangeOp::Delete, vote).await?;
+        }
+        tx.commit().await.map_err(to_store_err)?;
+        Ok(())
+    }
 }

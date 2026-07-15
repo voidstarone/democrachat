@@ -23,6 +23,7 @@ mod federation;
 mod friend_router;
 mod nonce_log;
 mod pg_nonce_log;
+mod seed;
 mod vote_router;
 
 /// The media storage directory (a separate concern from the shard snapshot).
@@ -205,7 +206,11 @@ fn run_serve(
     node: domain::NodeId,
     data_key: Option<app::VaultKey>,
 ) {
-    let is_dev = args.iter().any(|a| a == "--dev");
+    // `--demo` builds the rich testbed world (every channel & content kind) instead
+    // of the minimal welcome seed, and implies dev tooling (clock control, known
+    // passwords). See `scripts/reset-testbed.sh`.
+    let is_demo = args.iter().any(|a| a == "--demo");
+    let is_dev = is_demo || args.iter().any(|a| a == "--dev");
     let addr: SocketAddr = arg_value(args, "--addr")
         .unwrap_or_else(|| "127.0.0.1:3737".to_string())
         .parse()
@@ -215,15 +220,20 @@ fn run_serve(
         });
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-    rt.block_on(seed_if_empty(&services));
+    if is_demo {
+        rt.block_on(seed::seed_demo(&services, &store, &clock));
+    } else {
+        rt.block_on(seed_if_empty(&services));
+    }
     save(&store, &path, data_key.as_ref());
 
-    // Wire the dev clock fast-forward to the same FixedClock.
+    // Wire the dev clock fast-forward to the same FixedClock. The argument is a
+    // number of seconds, so the browser can nudge time by minutes/hours/days.
     let advance: Arc<dyn Fn(i64) + Send + Sync> = {
         let c = clock.clone();
-        Arc::new(move |days| {
+        Arc::new(move |seconds| {
             let now = c.now();
-            c.set(now.plus_days(days));
+            c.set(now.plus_seconds(seconds));
         })
     };
     // Persist after each mutation, matching the CLI's save-on-exit behaviour.
@@ -271,7 +281,7 @@ fn run_serve(
             is_dev,
             secure_cookies,
             signer,
-            advance_days: advance,
+            advance_secs: advance,
             save: save_hook,
         };
         adapter_web::serve(services, config, routers).await
@@ -367,7 +377,7 @@ fn serve_postgres(args: &[String], database_url: String) {
             is_dev,
             secure_cookies,
             signer,
-            advance_days: advance,
+            advance_secs: advance,
             save: save_hook.clone(),
         };
         // Bring federation up over the Postgres store if this node is configured for

@@ -1,12 +1,13 @@
-//! Persistence for custom roles and their memberships.
+//! Persistence for custom roles.
 
-use domain::{Role, RoleAssignment, RoleId, ServerId, UserId};
+use domain::{Role, RoleId, ServerId};
 use crate::StoreError;
 use async_trait::async_trait;
 
-/// Persistence for custom roles and their assignments. Roles and their membership
-/// are one concern — deleting a role purges its assignments — so a single port
-/// owns both.
+/// Persistence for custom roles. Role *membership* is not stored here — it is
+/// derived on read by evaluating each member against the role's
+/// [`RoleCriteria`](domain::RoleCriteria) (see `RoleService`), so a role has no
+/// assignment rows to keep. This port owns only the roles themselves.
 #[async_trait]
 pub trait RoleStore: Send + Sync {
     async fn next_role_id(&self) -> Result<RoleId, StoreError>;
@@ -14,15 +15,8 @@ pub trait RoleStore: Send + Sync {
     async fn get_role(&self, id: RoleId) -> Result<Option<Role>, StoreError>;
     /// A role by (normalized) name within a server.
     async fn find_role(&self, server: ServerId, name: &str) -> Result<Option<Role>, StoreError>;
-    /// Delete a role and every assignment to it; returns whether it existed.
+    /// Delete a role; returns whether it existed.
     async fn remove_role(&self, id: RoleId) -> Result<bool, StoreError>;
     /// Every custom role in a server, in id order.
     async fn list_for_server(&self, server: ServerId) -> Result<Vec<Role>, StoreError>;
-
-    /// Record a role assignment; returns `false` if it already existed.
-    async fn assign(&self, assignment: RoleAssignment) -> Result<bool, StoreError>;
-    /// Remove a role assignment; returns `false` if it wasn't present.
-    async fn unassign(&self, role: RoleId, user: UserId) -> Result<bool, StoreError>;
-    /// The users holding a role.
-    async fn holders(&self, role: RoleId) -> Result<Vec<UserId>, StoreError>;
 }

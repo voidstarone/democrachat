@@ -138,13 +138,6 @@ CREATE TABLE IF NOT EXISTS roles (
 CREATE INDEX IF NOT EXISTS roles_server ON roles (server_id);
 CREATE UNIQUE INDEX IF NOT EXISTS roles_server_name ON roles (server_id, name);
 
-CREATE TABLE IF NOT EXISTS role_assignments (
-  role_id BIGINT NOT NULL,
-  user_id BIGINT NOT NULL,
-  data JSONB NOT NULL,
-  PRIMARY KEY (role_id, user_id)
-);
-
 CREATE TABLE IF NOT EXISTS role_color_votes (
   role_id BIGINT NOT NULL,
   voter_id BIGINT NOT NULL,

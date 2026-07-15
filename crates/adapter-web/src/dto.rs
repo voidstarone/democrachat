@@ -27,6 +27,9 @@ pub struct CreateChannelReq {
     pub name: String,
     #[serde(default)]
     pub topic: String,
+    /// "text" (default) or "voice". Anything else is treated as text.
+    #[serde(default)]
+    pub kind: String,
 }
 
 #[derive(Deserialize)]
@@ -47,7 +50,12 @@ pub struct ReactReq {
 
 #[derive(Deserialize)]
 pub struct AdvanceReq {
+    #[serde(default)]
     pub days: i64,
+    #[serde(default)]
+    pub hours: i64,
+    #[serde(default)]
+    pub minutes: i64,
 }
 
 #[derive(Serialize)]
@@ -82,6 +90,8 @@ pub struct AcceptInviteReq {
 pub struct ChannelDto {
     pub name: String,
     pub topic: String,
+    /// "text" or "voice". A voice channel also carries the normal message stream.
+    pub kind: String,
     /// Whether message bodies in this channel are end-to-end encrypted.
     pub is_encrypted: bool,
     /// "open" or "ephemeral" — only meaningful when encrypted.
@@ -287,7 +297,7 @@ pub struct MentionableDto {
 pub enum ProposeKindReq {
     AddRule { text: String },
     RemoveRule { rule: u64 },
-    CreateChannel { name: String, #[serde(default)] topic: String },
+    CreateChannel { name: String, #[serde(default)] topic: String, #[serde(default)] is_voice: bool },
     DeleteChannel { name: String },
     /// Ban a member, addressed by handle (resolved to an id server-side).
     Ban { handle: String },
@@ -299,14 +309,22 @@ pub enum ProposeKindReq {
     AppointPolice { handle: String },
     /// Dismiss a police officer, by handle.
     DismissPolice { handle: String },
-    /// Create a custom mention role.
-    CreateRole { name: String },
+    /// Create a custom mention role and the criteria a member must meet to hold it
+    /// automatically. Omitted criteria fields default to no gate (the role then
+    /// applies to every member).
+    CreateRole {
+        name: String,
+        #[serde(default)]
+        min_account_age_days: Option<i64>,
+        #[serde(default)]
+        min_membership_days: Option<i64>,
+        #[serde(default)]
+        min_contribution: Option<i64>,
+        #[serde(default)]
+        requires_citizen: Option<bool>,
+    },
     /// Delete a custom role by name (resolved to an id server-side).
     DeleteRole { role: String },
-    /// Add a member (by handle) to a role (by name).
-    AssignRole { handle: String, role: String },
-    /// Remove a member (by handle) from a role (by name).
-    UnassignRole { handle: String, role: String },
     /// Enable or disable automatic rehoming of this server across the federation.
     SetRehomingPolicy { is_disabled: bool },
     /// Open or close who may mint invite codes (`is_open: false` seals admission).
@@ -538,6 +556,10 @@ pub struct MeDto {
     /// Whether the caller is currently muted on this server.
     #[serde(default)]
     pub is_muted: bool,
+    /// Whether the caller has opted out of the `@moderator` role on this server.
+    /// `null` for a non-member (the setting only exists for members).
+    #[serde(default)]
+    pub declines_moderator: Option<bool>,
 }
 
 /// A server member, for the ban picker and police moderation panel.
@@ -551,6 +573,36 @@ pub struct MemberDto {
     pub is_police: bool,
 }
 
+/// An online member of a server, for the "active users" roster.
+#[derive(Serialize)]
+pub struct ActiveUserDto {
+    pub handle: String,
+    /// "member" or "citizen".
+    pub tier: String,
+    pub is_founder: bool,
+    pub is_police: bool,
+}
+
+/// The `?q=` message-search query string.
+#[derive(Deserialize)]
+pub struct SearchQueryReq {
+    #[serde(default)]
+    pub q: String,
+}
+
+/// One message-search result, with the channel and author resolved for display.
+#[derive(Serialize)]
+pub struct SearchHitDto {
+    pub id: u64,
+    pub channel: String,
+    pub author: String,
+    /// A plaintext snippet (possibly truncated). Empty when `is_encrypted`.
+    pub snippet: String,
+    pub created_at: i64,
+    pub is_encrypted: bool,
+    pub has_attachment: bool,
+}
+
 /// Address a member by handle — used by the instant mute/unmute endpoints.
 #[derive(Deserialize)]
 pub struct MuteReq {
@@ -561,4 +613,10 @@ pub struct MuteReq {
 #[derive(Deserialize)]
 pub struct HistorySharingReq {
     pub shares: bool,
+}
+
+/// Toggle the caller's opt-out of the `@moderator` role on a server.
+#[derive(Deserialize)]
+pub struct ModeratorOptoutReq {
+    pub declined: bool,
 }

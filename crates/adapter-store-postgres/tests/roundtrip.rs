@@ -25,8 +25,8 @@ use app::{
 };
 use domain::{
     enfranchisement_slots, Block, Channel, ChannelKeyGrant, DmMessage, Emoji, EmojiVote, Friendship,
-    Invite, Membership, Message, Proposal, ProposalKind, Reaction, Role, RoleAssignment, RoleColor,
-    RoleColorVote, Rule, Server, Tier, Timestamp, User, UserKeys, Vote, WrappedKey,
+    Invite, Membership, Message, Proposal, ProposalKind, Reaction, Role, RoleColor,
+    RoleColorVote, RoleCriteria, Rule, Server, Tier, Timestamp, User, UserKeys, Vote, WrappedKey,
 };
 
 const T: Timestamp = Timestamp(1_000);
@@ -218,15 +218,12 @@ async fn every_port_round_trips_against_a_live_postgres() {
     assert!(FriendStore::between(s, uid_a, uid_b).await.unwrap().unwrap().are_friends());
     assert_eq!(FriendStore::involving(s, uid_b).await.unwrap().len(), 1);
 
-    // ── roles + assignments ──────────────────────────────────────────────────
+    // ── roles (membership is derived from criteria, not stored) ──────────────
     let role_id = RoleStore::next_role_id(s).await.unwrap();
-    RoleStore::insert_role(s, Role::new(role_id, sid, "mods", T)).await.unwrap();
-    assert_eq!(RoleStore::find_role(s, sid, "mods").await.unwrap().unwrap().id, role_id);
-    assert!(RoleStore::assign(s, RoleAssignment::new(sid, role_id, uid_a)).await.unwrap());
-    assert!(!RoleStore::assign(s, RoleAssignment::new(sid, role_id, uid_a)).await.unwrap(), "dup");
-    assert_eq!(RoleStore::holders(s, role_id).await.unwrap(), vec![uid_a]);
-    assert!(RoleStore::unassign(s, role_id, uid_a).await.unwrap());
-    assert!(RoleStore::holders(s, role_id).await.unwrap().is_empty());
+    RoleStore::insert_role(s, Role::new(role_id, sid, "mods", RoleCriteria::default(), T)).await.unwrap();
+    let fetched = RoleStore::find_role(s, sid, "mods").await.unwrap().unwrap();
+    assert_eq!(fetched.id, role_id);
+    assert_eq!(fetched.criteria, RoleCriteria::default());
     assert_eq!(RoleStore::list_for_server(s, sid).await.unwrap().len(), 1);
     assert!(RoleStore::remove_role(s, role_id).await.unwrap());
 

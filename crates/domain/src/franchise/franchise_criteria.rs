@@ -17,12 +17,14 @@ pub struct FranchiseCriteria {
 }
 
 impl FranchiseCriteria {
-    /// The cautious platform default every new server starts from.
+    /// The platform default every new server starts from: 28 days of membership in
+    /// this server, and nothing else. A server's electorate can add stricter gates
+    /// (account age, endorsed contribution) later by constitutional vote.
     pub fn platform_default() -> Self {
         Self {
-            min_account_age_days: 30,
-            min_membership_days: 14,
-            min_contribution: 5,
+            min_account_age_days: 0,
+            min_membership_days: 28,
+            min_contribution: 0,
         }
     }
 }

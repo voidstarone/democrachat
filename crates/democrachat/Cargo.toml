@@ -22,6 +22,7 @@ adapter-cli = { workspace = true }
 adapter-web = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
+image = { workspace = true }
 
 [dev-dependencies]
 hex = { workspace = true }

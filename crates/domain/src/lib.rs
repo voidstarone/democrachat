@@ -45,6 +45,7 @@ pub mod weighting;
 pub use chat::attachment::Attachment;
 pub use chat::build_message_tree::build_message_tree;
 pub use chat::channel::Channel;
+pub use chat::channel_kind::ChannelKind;
 pub use chat::channel_visibility::ChannelVisibility;
 pub use chat::media_kind::MediaKind;
 pub use chat::channel_key_grant::ChannelKeyGrant;
@@ -131,8 +132,8 @@ pub use node::sequence_bits::SEQUENCE_BITS;
 pub use node::sequence_mask::SEQUENCE_MASK;
 
 pub use roles::normalize_role_name::normalize_role_name;
-pub use roles::role::Role;
-pub use roles::role_assignment::RoleAssignment;
+pub use roles::role::{Role, MODERATOR_ROLE_NAME};
+pub use roles::role_criteria::RoleCriteria;
 pub use roles::role_color::RoleColor;
 pub use roles::role_color_vote::RoleColorVote;
 pub use roles::standing_role::StandingRole;

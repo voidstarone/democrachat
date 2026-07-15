@@ -247,6 +247,23 @@
   .composer input { flex:1; }
   #replybar { font-size:12px; color:var(--muted); margin-bottom:.4rem; display:none; }
 
+  /* Voice channel strip — sits above the message pane (a voice channel carries text
+     too). Shows the roster of a full-mesh P2P call plus mute/deafen/leave controls. */
+  #voicebar { border-bottom:1px solid var(--line); background:var(--surface2); padding:.55rem 1.4rem; }
+  .vbar { display:flex; align-items:center; gap:.55rem; }
+  .vtitle { display:flex; align-items:center; gap:.4rem; font-weight:600; color:var(--ink); }
+  .vbar .sub { color:var(--muted); font-size:12px; }
+  .vbar button.primary { background:var(--accent); color:#fff; border-color:transparent; font-weight:600; }
+  .vbar .iconbtn.on { background:var(--accent); color:#fff; }
+  .vroster { display:flex; flex-wrap:wrap; gap:.4rem; margin-top:.55rem; }
+  .vrow { display:flex; align-items:center; gap:.35rem; padding:.28rem .6rem; border-radius:999px;
+          background:var(--surface); border:1px solid var(--line); font-size:13px; transition:box-shadow .12s, border-color .12s; }
+  .vrow.self { border-color:var(--accent); }
+  .vrow.muted { color:var(--muted); }
+  .vrow.speaking { border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-soft); }
+  .vrow .vconn { color:var(--muted); font-size:11px; }
+  .chic { display:inline-flex; vertical-align:-2px; color:var(--accent-ink); }
+
   /* Empty states */
   .empty { height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center;
            text-align:center; color:var(--muted); gap:.5rem; padding:2rem; }
@@ -275,7 +292,8 @@
   .bar { height:7px; background:var(--line); border-radius:999px; overflow:hidden; margin:.4rem 0; }
   .bar > i { display:block; height:100%; background:var(--accent); transition:width .4s var(--ease); }
   .prop { background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:.6rem .7rem; margin-bottom:.6rem; box-shadow:var(--shadow-sm); }
-  .prop .head { font-size:13px; font-weight:600; }
+  .prop .head { font-size:13px; font-weight:600; cursor:pointer; }
+  .prop .head:hover { color:var(--accent-ink); }
   .prop .st-open { color:var(--accent-ink); } .prop .st-passed { color:var(--ok); } .prop .st-failed { color:var(--bad); }
   .prop .votes { margin-top:.4rem; display:flex; gap:.4rem; align-items:center; }
   .prop .tal { font-size:12px; color:var(--muted); margin-left:auto; }
@@ -301,6 +319,36 @@
   .demitem .st.passed { background:var(--warn-soft); color:var(--ok); }
   .demitem .st.failed { background:var(--line); color:var(--muted); }
   .demitem .amc { font-size:10px; color:var(--muted); }
+  .dem-archive-hd { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); padding:.5rem .55rem .2rem; }
+  .dem-more { display:block; width:100%; text-align:left; background:none; border:none; cursor:pointer;
+    font-size:12px; color:var(--accent-ink); padding:.35rem .55rem; }
+  .dem-more:hover { text-decoration:underline; }
+  .clockbtns { display:flex; flex-wrap:wrap; gap:.3rem; margin-top:.5rem; }
+  .clockbtns button { flex:1 1 auto; min-width:3rem; }
+
+  /* Right-rail message search + active-users roster. */
+  .searchbox { position:relative; display:flex; align-items:center; margin-bottom:.7rem; }
+  .searchbox .searchic { position:absolute; left:.55rem; color:var(--muted); display:flex; pointer-events:none; }
+  .searchbox input { width:100%; padding:.4rem .5rem .4rem 1.7rem; border:1px solid var(--line); border-radius:8px;
+    background:var(--surface); color:inherit; font-size:13px; }
+  .searchbox input:focus { outline:none; border-color:var(--accent); }
+  .searchbox .searchclear { position:absolute; right:.4rem; background:none; border:none; color:var(--muted);
+    cursor:pointer; font-size:12px; line-height:1; padding:.2rem; }
+  #searchResults { margin-bottom:.9rem; max-height:42vh; overflow-y:auto; }
+  .sr-head { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); padding:.1rem 0 .35rem; }
+  .sr-hit { padding:.4rem .5rem; border-radius:8px; cursor:pointer; margin-bottom:.2rem; }
+  .sr-hit:hover { background:var(--surface); }
+  .sr-meta { font-size:11px; color:var(--muted); margin-bottom:.1rem; }
+  .sr-meta .sr-ch { color:var(--accent-ink); font-weight:600; }
+  .sr-body { font-size:12.5px; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+  .sr-enc, .sr-att { color:var(--muted); display:inline-flex; align-items:center; gap:.2rem; }
+  .au-row { display:flex; align-items:center; gap:.45rem; padding:.25rem .3rem; border-radius:8px; cursor:pointer; }
+  .au-row:hover { background:var(--surface); }
+  .au-dot { width:8px; height:8px; border-radius:50%; background:var(--ok); flex:none; margin-left:-.2rem; box-shadow:0 0 0 2px var(--bg); }
+  .au-name { font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .au-tag { font-size:9.5px; text-transform:uppercase; letter-spacing:.04em; padding:.05rem .3rem; border-radius:999px; flex:none; }
+  .au-tag.founder { background:var(--warn-soft); color:var(--ok); }
+  .au-tag.police { background:var(--accent-soft); color:var(--accent-ink); }
 
   /* The proposal discussion view fills #messages: a pinned vote card at the top,
      then the scrolling debate below it. */
@@ -532,14 +580,28 @@
   /* Login overlay */
   /* Menu (hamburger) button — only shown on phones. */
   .menuonly { display:none; }
-  #navScrim { display:none; }
+  .railonly { display:none; }
+  .gov-close { position:absolute; top:.6rem; right:.6rem; z-index:1; }
+  #navScrim, #govScrim { display:none; }
 
   /* ── Responsive: tablet & phone ──────────────────────────────────── */
   /* Give the chat column room by dropping the right rail on narrow viewports. */
   @media (max-width: 980px) {
     #app.chat { grid-template-columns:72px 210px 1fr; }
     #app.dms  { grid-template-columns:240px 1fr; }
-    #gov, #dmRel { display:none; }
+    #dmRel { display:none; }
+    /* The right rail (members, search, standing) leaves the grid and becomes a
+       drawer opened from the header's panel button. */
+    #gov {
+      position:fixed; top:0; right:0; bottom:0; width:88%; max-width:340px; z-index:40;
+      transform:translateX(100%); transition:transform var(--dur,.2s) var(--ease,ease);
+      box-shadow:var(--shadow-md); overflow-y:auto; padding-top:2.6rem;
+    }
+    body.gov-open #gov { transform:none; }
+    #govScrim { display:block; position:fixed; inset:0; background:rgba(0,0,0,.42);
+                z-index:39; opacity:0; pointer-events:none; transition:opacity var(--dur,.2s); }
+    body.gov-open #govScrim { opacity:1; pointer-events:auto; }
+    .railonly { display:inline-flex !important; }
   }
   /* Phones: a single column; the left rail becomes a slide-in drawer. */
   @media (max-width: 680px) {
@@ -607,6 +669,7 @@
     <button id="tabDms" data-act="setModeDms"><span data-t="ui.nav.dms">Direct Messages</span> <span class="dot hidden" id="dmBadge">0</span></button>
   </div>
   <div class="header-actions">
+    <button class="icon railonly" id="govBtn" data-act="toggleGov" title="Members &amp; search" data-t-title="ui.rail.toggle_title" aria-label="Members and search"><svg aria-hidden="true" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="14" y1="3" x2="14" y2="21"/></svg></button>
     <span class="online" id="online">•</span>
     <span class="sub row" style="gap:.35rem">@<b id="meHandle">—</b></span>
     <button class="icon" id="settingsBtn" title="Display settings" data-t-title="ui.header.settings_title" data-act="openSettings"><svg class="i" aria-hidden="true" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
@@ -615,6 +678,7 @@
   </div>
 </header>
 <div id="navScrim" data-act="closeNav"></div>
+<div id="govScrim" data-act="closeGov"></div>
 
 <div id="app" class="chat">
   <!-- ── Chat screen ───────────────────────────────────────────── -->
@@ -643,6 +707,7 @@
     </div>
 
     <div id="main">
+      <div id="voicebar" style="display:none"></div>
       <div id="messages"><div class="empty"><div class="big"><svg aria-hidden="true" viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div><div data-t="ui.messages.empty">Select a server to begin.</div></div></div>
       <div class="composer">
         <div id="acPopup"></div>
@@ -658,9 +723,18 @@
     </div>
 
     <div id="gov" class="col">
+      <button class="icon railonly gov-close" data-act="closeGov" title="Close" data-t-title="ui.rail.close_title" aria-label="Close panel"><svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+      <div class="searchbox">
+        <span class="searchic"><svg aria-hidden="true" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
+        <input id="msgSearch" placeholder="Search messages…" data-t-ph="ui.search.placeholder" autocomplete="off" />
+        <button class="searchclear" id="searchClear" data-act="clearSearch" style="display:none" title="Clear" data-t-title="ui.search.clear">✕</button>
+      </div>
+      <div id="searchResults" style="display:none"></div>
+      <div class="row" id="activeRow" style="display:none"><h2 class="section grow" data-t="ui.active.heading">Active</h2><span class="sub" id="activeCount"></span></div>
+      <div id="activeUsers"></div>
       <h2 class="section" data-t="ui.gov.standing">Your standing</h2>
       <div class="card" id="govBody"><span class="sub" data-t="ui.common.select_server">Select a server.</span></div>
-      <div class="row"><h2 class="section grow" data-t="ui.gov.proposals">Proposals</h2><button class="sm" id="newProposalBtn" data-act="newProposal" style="display:none">＋</button></div>
+      <div class="row"><h2 class="section grow" data-t="ui.gov.open_votes">Open votes</h2><button class="sm" id="newProposalBtn" data-act="newProposal" style="display:none">＋</button></div>
       <div id="proposals"></div>
       <h2 class="section" data-t="ui.gov.roles">Roles</h2>
       <div id="roles"></div>
@@ -672,7 +746,14 @@
         <h2 class="section" data-t="ui.gov.dev_clock">Dev clock</h2>
         <div class="card">
           <div class="sub" id="clockNow"></div>
-          <button class="ghost sm full" style="margin-top:.5rem" data-act="advance15" data-t="ui.gov.fast_forward">fast-forward 15 days</button>
+          <div class="clockbtns">
+            <button class="ghost sm" data-act="advanceBy" data-m="10">+10m</button>
+            <button class="ghost sm" data-act="advanceBy" data-h="1">+1h</button>
+            <button class="ghost sm" data-act="advanceBy" data-h="6">+6h</button>
+            <button class="ghost sm" data-act="advanceBy" data-d="1">+1d</button>
+            <button class="ghost sm" data-act="advanceBy" data-d="2">+2d</button>
+            <button class="ghost sm" data-act="advanceBy" data-d="7">+7d</button>
+          </div>
         </div>
       </div>
     </div>

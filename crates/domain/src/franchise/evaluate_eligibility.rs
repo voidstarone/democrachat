@@ -74,13 +74,27 @@ mod tests {
     #[test]
     fn fully_qualified_member_is_eligible() {
         let now = Timestamp(100 * DAY);
+        // The default gate is 28 days of membership and nothing else.
         let e = evaluate_eligibility(
             &user_aged(40, now),
-            &member_aged(20, 9, now),
+            &member_aged(30, 0, now),
             &FranchiseCriteria::platform_default(),
             now,
         );
         assert!(e.is_eligible(), "expected eligible, got {:?}", e.unmet);
+    }
+
+    #[test]
+    fn membership_shorter_than_the_default_dwell_is_ineligible() {
+        let now = Timestamp(100 * DAY);
+        let e = evaluate_eligibility(
+            &user_aged(40, now),
+            &member_aged(27, 0, now), // one day short of the 28-day default
+            &FranchiseCriteria::platform_default(),
+            now,
+        );
+        assert!(!e.is_eligible());
+        assert_eq!(e.unmet.len(), 1, "only the membership axis is unmet by default");
     }
 
     #[test]
@@ -101,12 +115,9 @@ mod tests {
     #[test]
     fn fresh_flood_account_is_blocked_on_every_axis() {
         let now = Timestamp(100 * DAY);
-        let e = evaluate_eligibility(
-            &user_aged(1, now),
-            &member_aged(1, 0, now),
-            &FranchiseCriteria::platform_default(),
-            now,
-        );
+        // A server that has voted in the stricter three-axis constitution.
+        let strict = FranchiseCriteria { min_account_age_days: 30, min_membership_days: 14, min_contribution: 5 };
+        let e = evaluate_eligibility(&user_aged(1, now), &member_aged(1, 0, now), &strict, now);
         assert!(!e.is_eligible());
         assert_eq!(e.unmet.len(), 3); // young account, short membership, no contribution
     }
@@ -114,7 +125,7 @@ mod tests {
     #[test]
     fn sanction_alone_disqualifies() {
         let now = Timestamp(100 * DAY);
-        let mut m = member_aged(20, 9, now);
+        let mut m = member_aged(30, 0, now); // otherwise clears the default 28-day dwell
         m.is_sanctioned = true;
         let e = evaluate_eligibility(
             &user_aged(40, now),

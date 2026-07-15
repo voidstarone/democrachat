@@ -670,6 +670,7 @@ dependencies = [
  "domain",
  "federation",
  "hex",
+ "image",
  "tokio",
 ]
 

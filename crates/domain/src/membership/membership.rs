@@ -43,6 +43,12 @@ pub struct Membership {
     /// being one confers no vote.
     #[serde(default)]
     pub is_police: bool,
+    /// Whether this member has opted **out** of the `@moderator` role. Custom roles
+    /// are earned automatically by meeting their criteria with no way to refuse —
+    /// except moderator, a duty rather than a mere label, which a member may decline
+    /// so they never hold it even while qualified. The one self-serve role control.
+    #[serde(default)]
+    pub has_declined_moderator: bool,
     /// Whether this member is currently **muted** — silenced everywhere but the
     /// `#appeals` channel. A mute never touches the franchise (a muted citizen still
     /// votes); it only gags posting. Imposed instantly by police or by a `Mute`
@@ -84,6 +90,7 @@ impl Membership {
             granted_weight: 1,
             shares_history_with_newcomers: true,
             is_police: false,
+            has_declined_moderator: false,
             is_muted: false,
             muted_by: None,
             remute_blocked_officer: None,

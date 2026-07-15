@@ -1,11 +1,14 @@
 //! Role use-cases: read custom roles and their holders, and resolve the
 //! `@mentions` in a message body.
 //!
-//! Roles are created and populated **only by ballot** (see the `AssignRole` /
-//! `CreateRole` arms of `apply_effect`), so there is deliberately no `assign` or
-//! `create` method here — those are effects of governance, not direct calls. What
-//! lives here is read-side: listing roles for a picker, and turning the tokens in
-//! a message into the members they address.
+//! A role's *existence* is decided by ballot (the `CreateRole` / `DeleteRole` arms
+//! of `apply_effect`); its *membership* is not decided at all — it is **derived**
+//! on read by evaluating each member against the role's
+//! [`RoleCriteria`](domain::RoleCriteria). So there is no `assign` method here; a
+//! holder is simply a member who currently qualifies (and, for `@moderator`, has
+//! not opted out). What lives here is read-side: listing roles, computing their
+//! current holders, and turning the tokens in a message into the members they
+//! address.
 
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
@@ -16,11 +19,14 @@ use domain::{
 };
 
 use crate::{MentionKind, ResolvedMention, RoleColorView, UserRoles};
-use crate::{MembershipStore, RoleColorVoteStore, RoleError, RoleStore, ServerStore, UserStore};
+use crate::{
+    Clock, MembershipStore, RoleColorVoteStore, RoleError, RoleStore, ServerStore, UserStore,
+};
 
 /// Role use-cases held on their own handle, reached via [`Services::roles`].
 #[derive(Clone)]
 pub struct RoleService {
+    pub(crate) clock: Arc<dyn Clock>,
     pub(crate) memberships: Arc<dyn MembershipStore>,
     pub(crate) role_color_votes: Arc<dyn RoleColorVoteStore>,
     pub(crate) roles: Arc<dyn RoleStore>,
@@ -62,7 +68,7 @@ impl RoleService {
             return Vec::new();
         };
         let mut out = Vec::new();
-        for id in self.roles.holders(role.id).await.unwrap_or_default() {
+        for id in self.holders_of(&role).await {
             if let Some(u) = self.users.get_user(id).await.ok().flatten() {
                 out.push(u.handle);
             }
@@ -114,7 +120,7 @@ impl RoleService {
 
         let mut roles = Vec::new();
         for r in self.roles.list_for_server(server.id).await.unwrap_or_default() {
-            if !self.roles.holders(r.id).await.unwrap_or_default().contains(&user.id) {
+            if !self.holders_of(&r).await.contains(&user.id) {
                 continue;
             }
             let color = winning_color(
@@ -175,6 +181,66 @@ impl RoleService {
         Ok(())
     }
 
+    /// Whether the caller has opted **out** of the `@moderator` role on a server,
+    /// if they are a member. `false` (the default) means they hold moderator
+    /// whenever they meet its criteria; `true` means they never do.
+    pub async fn moderator_optout(&self, handle: &str, server_slug: &str) -> Option<bool> {
+        let user = self.users.find_by_handle(handle.trim()).await.ok().flatten()?;
+        let server = self.servers.find_by_slug(server_slug.trim()).await.ok().flatten()?;
+        self.memberships
+            .get(user.id, server.id).await.ok().flatten()
+            .map(|m| m.has_declined_moderator)
+    }
+
+    /// Set the caller's opt-out of the `@moderator` role on a server. The one
+    /// self-serve role control: every other role is earned automatically by meeting
+    /// its criteria with no way to refuse, but moderating is a duty, so a member may
+    /// decline it (`declined: true`) and never hold it even while qualified.
+    pub async fn set_moderator_optout(
+        &self,
+        handle: &str,
+        server_slug: &str,
+        declined: bool,
+    ) -> Result<(), RoleError> {
+        let user = self
+            .users
+            .find_by_handle(handle.trim()).await?
+            .ok_or_else(|| RoleError::NoSuchUser(handle.to_string()))?;
+        let server = self
+            .servers
+            .find_by_slug(server_slug.trim()).await?
+            .ok_or_else(|| RoleError::NoSuchServer(server_slug.to_string()))?;
+        let mut m = self
+            .memberships
+            .get(user.id, server.id).await?
+            .ok_or_else(|| RoleError::NotAMember(handle.to_string()))?;
+        m.has_declined_moderator = declined;
+        self.memberships.upsert(m).await?;
+        Ok(())
+    }
+
+    /// The user ids currently holding `role` — every member of the role's server
+    /// who meets its [`RoleCriteria`](domain::RoleCriteria) right now, minus anyone
+    /// who has declined it (moderator only). Derived, never stored: membership is a
+    /// live function of standing, so it needs no assignment records and never goes
+    /// stale. Returned in membership (join) order.
+    async fn holders_of(&self, role: &Role) -> Vec<UserId> {
+        let now = self.clock.now();
+        let mut out = Vec::new();
+        for m in self.memberships.list_for_server(role.server_id).await.unwrap_or_default() {
+            if role.is_moderator() && m.has_declined_moderator {
+                continue;
+            }
+            let Some(user) = self.users.get_user(m.user_id).await.ok().flatten() else {
+                continue;
+            };
+            if role.criteria.admits(&user, &m, now) {
+                out.push(m.user_id);
+            }
+        }
+        out
+    }
+
     /// The user ids of a server's currently-franchised citizens — the electorate
     /// whose votes are tallied.
     async fn franchised_set(&self, server: ServerId) -> HashSet<UserId> {
@@ -217,10 +283,10 @@ impl RoleService {
             return ResolvedMention { token, kind: MentionKind::StandingRole, handles };
         }
 
-        // 2. A custom, ballot-created role.
+        // 2. A custom, criteria-derived role.
         if let Some(role) = self.roles.find_role(sid, &token).await.ok().flatten() {
             let mut handles = Vec::new();
-            for id in self.roles.holders(role.id).await.unwrap_or_default() {
+            for id in self.holders_of(&role).await {
                 if let Some(u) = self.users.get_user(id).await.ok().flatten() {
                     handles.push(u.handle);
                 }

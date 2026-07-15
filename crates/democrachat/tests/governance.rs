@@ -161,9 +161,9 @@ async fn only_a_citizen_may_open_or_vote() {
 async fn citizens_can_vote_to_disable_server_rehoming() {
     let f = fixture(1_000 * DAY);
     f.services.register_account("ada").await.unwrap();
-    f.services.found_server("ada", "Town Square").await.unwrap();    // Seat 9 more citizens → 10 with the founder, reaching Chartering, where a
+    f.services.found_server("ada", "Town Square").await.unwrap();    // Seat 4 more citizens → 5 with the founder, reaching Chartering, where a
     // Constitutional ballot (rehoming policy) is permitted.
-    let voters = ["bob", "cid", "dan", "eve", "fay", "gus", "hal", "ike", "jan"];
+    let voters = ["bob", "cid", "dan", "eve"];
     for h in voters {
         seat_citizen(&f, h, "town-square", 5).await;
     }
@@ -180,7 +180,7 @@ async fn citizens_can_vote_to_disable_server_rehoming() {
         )
         .await
         .unwrap();
-    for h in ["ada", "bob", "cid", "dan", "eve", "fay", "gus", "hal", "ike", "jan"] {
+    for h in ["ada", "bob", "cid", "dan", "eve"] {
         f.services.governance().cast_vote(h, p.id.0, true).await.unwrap();
     }
 
@@ -271,7 +271,8 @@ async fn citizens_can_amend_who_may_vote() {
     let f = fixture(1_000 * DAY);
     f.services.register_account("ada").await.unwrap();
     f.services.found_server("ada", "Town Square").await.unwrap();
-    let voters = ["bob", "cid", "dan", "eve", "fay", "gus", "hal", "ike", "jan"];
+    // Four more citizens → five with the founder, reaching Chartering.
+    let voters = ["bob", "cid", "dan", "eve"];
     for h in voters {
         seat_citizen(&f, h, "town-square", 5).await;
     }
@@ -283,7 +284,7 @@ async fn citizens_can_amend_who_may_vote() {
         .open_proposal("ada", "town-square", ProposalKind::AmendCriteria { proposed: proposed.clone() })
         .await
         .unwrap();
-    for h in ["ada", "bob", "cid", "dan", "eve", "fay", "gus", "hal", "ike", "jan"] {
+    for h in ["ada", "bob", "cid", "dan", "eve"] {
         f.services.governance().cast_vote(h, p.id.0, true).await.unwrap();
     }
 
@@ -317,7 +318,7 @@ async fn an_amended_bundle_enacts_all_its_changes_together() {
         .await
         .unwrap();
     f.services.governance()
-        .amend_proposal("bob", p.id.0, ProposalKind::CreateChannel { name: "lounge".into(), topic: "".into() })
+        .amend_proposal("bob", p.id.0, ProposalKind::CreateChannel { name: "lounge".into(), topic: "".into(), is_voice: false })
         .await
         .unwrap();
 
@@ -336,6 +337,38 @@ async fn an_amended_bundle_enacts_all_its_changes_together() {
 }
 
 #[tokio::test]
+async fn a_passed_ballot_can_charter_a_voice_channel() {
+    let f = fixture(1_000 * DAY);
+    setup(&f).await;
+    let p = f
+        .services.governance()
+        .open_proposal(
+            "ada",
+            "town-square",
+            ProposalKind::CreateChannel { name: "lounge".into(), topic: "".into(), is_voice: true },
+        )
+        .await
+        .unwrap();
+    f.services.governance().cast_vote("ada", p.id.0, true).await.unwrap();
+    f.services.governance().cast_vote("bob", p.id.0, true).await.unwrap();
+    f.services.governance().cast_vote("cid", p.id.0, true).await.unwrap();
+
+    // Before the window closes, resolving changes nothing.
+    assert!(!f.services.governance().resolve_due("town-square").await, "nothing due yet");
+
+    f.clock.set(Timestamp(1_000 * DAY + 4 * DAY));
+    // The resolution that closes-and-applies reports that it moved state, so the
+    // web layer knows to persist and nudge clients.
+    assert!(f.services.governance().resolve_due("town-square").await, "closed and applied");
+    // A second resolve is a no-op — nothing left to do.
+    assert!(!f.services.governance().resolve_due("town-square").await, "idempotent");
+
+    let channels = f.services.chat().list_channels("town-square").await.unwrap();
+    let lounge = channels.iter().find(|c| c.name == "lounge").expect("channel chartered");
+    assert_eq!(lounge.kind, domain::ChannelKind::Voice, "chartered as a voice channel");
+}
+
+#[tokio::test]
 async fn a_defeated_bundle_enacts_none_of_its_changes() {
     let f = fixture(1_000 * DAY);
     setup(&f).await;
@@ -345,7 +378,7 @@ async fn a_defeated_bundle_enacts_none_of_its_changes() {
         .await
         .unwrap();
     f.services.governance()
-        .amend_proposal("ada", p.id.0, ProposalKind::CreateChannel { name: "lounge".into(), topic: "".into() })
+        .amend_proposal("ada", p.id.0, ProposalKind::CreateChannel { name: "lounge".into(), topic: "".into(), is_voice: false })
         .await
         .unwrap();
     // The bundle fails its threshold.

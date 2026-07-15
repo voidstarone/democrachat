@@ -5,6 +5,8 @@ use std::sync::Arc;
 use app::{BlockRouter, DmRouter, FriendRouter, Services, SessionSigner, VoteRouter};
 use tokio::sync::broadcast;
 
+use crate::signal::SignalHub;
+
 /// A live event pushed to connected clients, already JSON-encoded.
 pub type Event = String;
 
@@ -14,6 +16,8 @@ pub struct AppState {
     pub services: Arc<Services>,
     /// Fan-out channel: every mutation publishes here; each WebSocket subscribes.
     pub events: broadcast::Sender<Event>,
+    /// Voice signaling relay + ephemeral roster (targeted, per-connection routing).
+    pub signal: Arc<SignalHub>,
     /// Signs/verifies session cookies. The request's authenticated identity comes
     /// from this — never from a client-supplied field.
     pub signer: Arc<SessionSigner>,
@@ -23,7 +27,7 @@ pub struct AppState {
     pub is_dev: bool,
     /// Advance the (dev) clock by N days — wired to the composition root's
     /// controllable clock so the browser can watch the time-based franchise rules.
-    pub advance_days: Arc<dyn Fn(i64) + Send + Sync>,
+    pub advance_secs: Arc<dyn Fn(i64) + Send + Sync>,
     /// Persist the store to disk — called after every successful mutation so a
     /// serve session survives a restart, matching the CLI.
     pub save: Arc<dyn Fn() + Send + Sync>,

@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use domain::{
     Channel, DiscussionPost, Emoji, Phase, Proposal, ProposalId, ProposalKind, ProposalStatus, Role,
-    RoleAssignment, Rule, Server, ServerId, Tally, Timestamp, Vote,
+    Rule, Server, ServerId, Tally, Timestamp, Vote,
 };
 
 use crate::{
@@ -34,8 +34,12 @@ pub struct GovernanceService {
     pub(crate) votes: Arc<dyn VoteStore>,
 }
 
-/// How long a ballot accepts votes before it can be closed.
-const VOTING_WINDOW_DAYS: i64 = 3;
+/// How long a freshly-opened ballot accepts votes before it can be closed.
+const VOTING_WINDOW_HOURS: i64 = 48;
+
+/// How long the clock is reset to when an amendment is folded in — the ballot has
+/// changed, so voters get a fresh (shorter) window to weigh in on the new bundle.
+const AMENDMENT_WINDOW_HOURS: i64 = 24;
 
 impl GovernanceService {
     /// Open a proposal. Gated on: the proposer is an enfranchised citizen, the
@@ -73,7 +77,7 @@ impl GovernanceService {
             user.id,
             kind,
             now,
-            now.plus_days(VOTING_WINDOW_DAYS),
+            now.plus_hours(VOTING_WINDOW_HOURS),
         );
         self.proposals.insert_proposal(proposal.clone()).await?;
         Ok(proposal)
@@ -168,7 +172,12 @@ impl GovernanceService {
             .ok_or(ProposeError::NotACitizen)?;
         self.ensure_ballot_admissible(&server, &kind).await?;
 
-        proposal.amend(kind);
+        // The bundle people were voting on has changed: reset the deadline to a
+        // fresh 24-hour window and nullify every vote already cast, so nobody is
+        // recorded as endorsing an amendment they never saw.
+        let now = self.clock.now();
+        proposal.amend(kind, now.plus_hours(AMENDMENT_WINDOW_HOURS));
+        self.votes.clear_for_proposal(proposal.id).await?;
         self.proposals.update_proposal(proposal.clone()).await?;
         Ok(proposal)
     }
@@ -218,21 +227,25 @@ impl GovernanceService {
 
     /// Resolve every proposal in a server whose window has closed: tally the
     /// weighted votes, decide, and — for a passed, matured ballot — apply the
-    /// effect exactly once. Idempotent; safe to call on every read.
-    pub async fn resolve_due(&self, server_slug: &str) {
+    /// effect exactly once. Idempotent; safe to call on every read. Returns
+    /// `true` when it changed anything (closed a ballot or enacted an effect),
+    /// so a caller can persist and notify clients only when state actually moved.
+    pub async fn resolve_due(&self, server_slug: &str) -> bool {
         let Some(server) = self.servers.find_by_slug(server_slug.trim()).await.ok().flatten() else {
-            return;
+            return false;
         };
         let now = self.clock.now();
         let citizens = self.memberships.citizen_count(server.id).await.unwrap_or_default();
         let phase = Phase::from_citizen_count(citizens);
 
+        let mut did_change = false;
         for mut p in self.proposals.list_for_server(server.id).await.unwrap_or_default() {
             // Close a ballot whose voting window has elapsed.
             if p.status == ProposalStatus::Open && now >= p.closes_at {
                 let tally = self.weighted_tally(&server, &p, now);
                 p.close(tally.await, citizens, phase, now);
                 self.proposals.update_proposal(p.clone()).await.unwrap_or_default();
+                did_change = true;
             }
             // Apply a passed, matured (past any timelock), not-yet-applied effect.
             if let ProposalStatus::Passed { effective_at } = p.status {
@@ -240,9 +253,11 @@ impl GovernanceService {
                     self.apply_effect(&p, now).await;
                     p.is_applied = true;
                     self.proposals.update_proposal(p).await.unwrap_or_default();
+                    did_change = true;
                 }
             }
         }
+        did_change
     }
 
     /// Sum ayes and nays in units of vote weight, honouring the server's
@@ -286,16 +301,16 @@ impl GovernanceService {
     /// meaning of a ballot kind.
     async fn apply_kind(&self, kind: &ProposalKind, sid: ServerId, now: Timestamp) {
         match kind {
-            ProposalKind::CreateChannel { name, topic } => {
+            ProposalKind::CreateChannel { name, topic, is_voice } => {
                 let name = domain::normalize_channel_name(name);
                 if !name.is_empty() && self.channels.find_by_name(sid, &name).await.ok().flatten().is_none() {
-                    self.channels.insert_channel(Channel::new(
-                        self.channels.next_channel_id().await.unwrap_or_default(),
-                        sid,
-                        name,
-                        topic.clone(),
-                        now,
-                    )).await.unwrap_or_default();
+                    let id = self.channels.next_channel_id().await.unwrap_or_default();
+                    let channel = if *is_voice {
+                        Channel::voice(id, sid, name, topic.clone(), now)
+                    } else {
+                        Channel::new(id, sid, name, topic.clone(), now)
+                    };
+                    self.channels.insert_channel(channel).await.unwrap_or_default();
                 }
             }
             ProposalKind::DeleteChannel { name } => {
@@ -392,27 +407,18 @@ impl GovernanceService {
                     self.memberships.upsert(m).await.unwrap_or_default();
                 }
             }
-            ProposalKind::CreateRole { name } => {
+            ProposalKind::CreateRole { name, criteria } => {
                 let name = domain::normalize_role_name(name);
                 if !name.is_empty() && self.roles.find_role(sid, &name).await.ok().flatten().is_none() {
+                    let id = self.roles.next_role_id().await.unwrap_or_default();
                     self.roles
-                        .insert_role(Role::new(self.roles.next_role_id().await.unwrap_or_default(), sid, name, now)).await.unwrap_or_default();
+                        .insert_role(Role::new(id, sid, name, criteria.clone(), now)).await.unwrap_or_default();
                 }
             }
             ProposalKind::DeleteRole { role } => {
                 // Only delete a role that belongs to this server.
                 if self.roles.get_role(*role).await.ok().flatten().is_some_and(|r| r.server_id == sid) {
                     self.roles.remove_role(*role).await.unwrap_or_default();
-                }
-            }
-            ProposalKind::AssignRole { user, role } => {
-                if self.roles.get_role(*role).await.ok().flatten().is_some_and(|r| r.server_id == sid) {
-                    self.roles.assign(RoleAssignment::new(sid, *role, *user)).await.unwrap_or_default();
-                }
-            }
-            ProposalKind::UnassignRole { user, role } => {
-                if self.roles.get_role(*role).await.ok().flatten().is_some_and(|r| r.server_id == sid) {
-                    self.roles.unassign(*role, *user).await.unwrap_or_default();
                 }
             }
             ProposalKind::SetRehomingPolicy { is_disabled } => {

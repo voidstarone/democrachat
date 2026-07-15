@@ -27,7 +27,27 @@ fn not_found(what: impl ToString) -> (StatusCode, String) {
 /// without trusting a stored handle).
 pub async fn config(State(st): State<AppState>, headers: HeaderMap) -> Json<serde_json::Value> {
     let me = crate::auth::current_actor(&st, &headers).await;
-    Json(json!({ "is_dev": st.is_dev, "now": st.services.now().0, "me": me }))
+    Json(json!({
+        "is_dev": st.is_dev,
+        "now": st.services.now().0,
+        "me": me,
+        // WebRTC ICE servers for voice (see `docs/voice-channels.md`). A STUN server
+        // is required for NAT discovery; a TURN relay is the symmetric-NAT fallback.
+        // Operators override both via `DEMOCRACHAT_ICE_SERVERS` (a JSON array in the
+        // RTCIceServer shape); the default is a public STUN with no TURN.
+        "ice_servers": ice_servers(),
+    }))
+}
+
+/// The configured WebRTC ICE servers, parsed from `DEMOCRACHAT_ICE_SERVERS` (a JSON
+/// array of `{ "urls": ..., "username"?: ..., "credential"?: ... }`). Falls back to a
+/// single public STUN server when the var is unset or unparseable.
+fn ice_servers() -> serde_json::Value {
+    std::env::var("DEMOCRACHAT_ICE_SERVERS")
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .filter(serde_json::Value::is_array)
+        .unwrap_or_else(|| json!([{ "urls": "stun:stun.l.google.com:19302" }]))
 }
 
 /// Log in with a handle + password. On success, sets the signed `sid` session
@@ -241,10 +261,13 @@ pub async fn create_channel(
     Json(req): Json<CreateChannelReq>,
 ) -> Res<ChannelDto> {
     let me = require_actor(&st, &headers).await?;
-    let c = st
-        .services.chat()
-        .create_channel(&me, &slug, &req.name, &req.topic).await
-        .map_err(bad)?;
+    let chat = st.services.chat();
+    let c = if req.kind == "voice" {
+        chat.create_voice_channel(&me, &slug, &req.name, &req.topic).await
+    } else {
+        chat.create_channel(&me, &slug, &req.name, &req.topic).await
+    }
+    .map_err(bad)?;
     st.persist();
     st.publish(json!({ "type": "channel", "server": slug }).to_string());
     Ok(Json(channel_dto(c)))
@@ -337,6 +360,7 @@ fn channel_dto(c: domain::Channel) -> ChannelDto {
     ChannelDto {
         name: c.name,
         topic: c.topic,
+        kind: c.kind.as_str().into(),
         is_encrypted: c.is_encrypted,
         history_mode: c.history_mode.as_str().into(),
         visibility: c.visibility.as_str().into(),
@@ -381,8 +405,17 @@ pub async fn my_status(
             shares_history: None,
             is_police: false,
             is_muted: false,
+            declines_moderator: None,
         }));
     };
+    // Citizenship is automatic: sweep the server so any member (this viewer
+    // included) who now meets the criteria is admitted before we report standing.
+    // On an admission, persist and nudge every client so rosters and vote buttons
+    // update without a manual "become citizen" step.
+    if st.services.auto_enfranchise(&slug).await > 0 {
+        st.persist();
+        st.publish(json!({ "type": "server" }).to_string());
+    }
     match st.services.member_tier(&me, &slug).await {
         None => Ok(Json(MeDto {
             tier: "guest".into(),
@@ -392,6 +425,7 @@ pub async fn my_status(
             shares_history: None,
             is_police: false,
             is_muted: false,
+            declines_moderator: None,
         })),
         Some(tier) => {
             let elig = st.services.eligibility(&me, &slug).await.map_err(bad)?;
@@ -405,6 +439,7 @@ pub async fn my_status(
                 shares_history: st.services.chat().history_sharing(&me, &slug).await,
                 is_police,
                 is_muted,
+                declines_moderator: st.services.roles().moderator_optout(&me, &slug).await,
             }))
         }
     }
@@ -420,6 +455,23 @@ pub async fn set_history_sharing(
     let me = require_actor(&st, &headers).await?;
     st.services.chat().set_history_sharing(&me, &slug, req.shares).await.map_err(bad)?;
     st.persist();
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// Set the caller's opt-out of the `@moderator` role on a server. The sole
+/// self-serve role control — every other role is earned automatically by criteria.
+pub async fn set_moderator_optout(
+    State(st): State<AppState>,
+    Path(slug): Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<ModeratorOptoutReq>,
+) -> Res<serde_json::Value> {
+    let me = require_actor(&st, &headers).await?;
+    st.services.roles().set_moderator_optout(&me, &slug, req.declined).await.map_err(bad)?;
+    st.persist();
+    // The moderator roster is derived, so this changes who @moderator addresses —
+    // nudge clients to refresh role chips and mention resolution.
+    st.publish(json!({ "type": "server" }).to_string());
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -718,6 +770,13 @@ pub async fn list_proposals(
 ) -> Res<Vec<ProposalDto>> {
     let me = crate::auth::current_actor(&st, &headers).await.unwrap_or_default();
     let now = st.services.now().0;
+    // Resolving may enact effects (create a channel, ban a member, …). When it
+    // does, persist the mutated store and nudge every client to re-read — else a
+    // passed ballot's changes stay invisible until the next unrelated refresh.
+    if st.services.governance().resolve_due(&slug).await {
+        st.persist();
+        st.publish(json!({ "type": "channel", "server": &slug }).to_string());
+    }
     let mut dtos = Vec::new();
     for p in st.services.governance().list_proposals(&slug).await {
         let (aye, nay) = st.services.governance().proposal_head_counts(p.id.0).await;
@@ -976,8 +1035,8 @@ async fn to_proposal_kind(
     Ok(match req {
         ProposeKindReq::AddRule { text } => K::AddRule { text: text.clone() },
         ProposeKindReq::RemoveRule { rule } => K::RemoveRule { rule: domain::RuleId(*rule) },
-        ProposeKindReq::CreateChannel { name, topic } => {
-            K::CreateChannel { name: name.clone(), topic: topic.clone() }
+        ProposeKindReq::CreateChannel { name, topic, is_voice } => {
+            K::CreateChannel { name: name.clone(), topic: topic.clone(), is_voice: *is_voice }
         }
         ProposeKindReq::DeleteChannel { name } => K::DeleteChannel { name: name.clone() },
         ProposeKindReq::Ban { handle } => {
@@ -992,16 +1051,22 @@ async fn to_proposal_kind(
         ProposeKindReq::DismissPolice { handle } => {
             K::DismissPolice { user: resolve_member(st, slug, handle).await? }
         }
-        ProposeKindReq::CreateRole { name } => K::CreateRole { name: name.clone() },
+        ProposeKindReq::CreateRole {
+            name,
+            min_account_age_days,
+            min_membership_days,
+            min_contribution,
+            requires_citizen,
+        } => K::CreateRole {
+            name: name.clone(),
+            criteria: domain::RoleCriteria {
+                min_account_age_days: min_account_age_days.unwrap_or(0),
+                min_membership_days: min_membership_days.unwrap_or(0),
+                min_contribution: min_contribution.unwrap_or(0),
+                requires_citizen: requires_citizen.unwrap_or(false),
+            },
+        },
         ProposeKindReq::DeleteRole { role } => K::DeleteRole { role: resolve_role(st, slug, role).await? },
-        ProposeKindReq::AssignRole { handle, role } => K::AssignRole {
-            user: resolve_member(st, slug, handle).await?,
-            role: resolve_role(st, slug, role).await?,
-        },
-        ProposeKindReq::UnassignRole { handle, role } => K::UnassignRole {
-            user: resolve_member(st, slug, handle).await?,
-            role: resolve_role(st, slug, role).await?,
-        },
         ProposeKindReq::SetRehomingPolicy { is_disabled } => {
             K::SetRehomingPolicy { is_disabled: *is_disabled }
         }
@@ -1063,7 +1128,9 @@ async fn summarize_kind(st: &AppState, kind: &domain::ProposalKind) -> String {
     match kind {
         K::AddRule { text } => format!("Add rule: “{text}”"),
         K::RemoveRule { rule } => format!("Repeal rule #{}", rule.0),
-        K::CreateChannel { name, .. } => format!("Create channel #{name}"),
+        K::CreateChannel { name, is_voice, .. } => {
+            format!("Create {}channel #{name}", if *is_voice { "voice " } else { "" })
+        }
         K::DeleteChannel { name } => format!("Delete channel #{name}"),
         K::Ban { user } => format!("Ban @{}", st.services.chat().user_handle(*user).await.unwrap_or_default()),
         K::Timeout { user, .. } => format!("Time out @{}", st.services.chat().user_handle(*user).await.unwrap_or_default()),
@@ -1085,18 +1152,19 @@ async fn summarize_kind(st: &AppState, kind: &domain::ProposalKind) -> String {
         }
         K::SetGovernanceSurface { .. } => "Change what this server votes on".into(),
         K::RemoveContent { target } => format!("Remove content {target}"),
-        K::CreateRole { name } => format!("Create role @{name}"),
+        K::CreateRole { name, criteria } => {
+            let mut gates = Vec::new();
+            if criteria.requires_citizen { gates.push("citizens".to_string()); }
+            if criteria.min_membership_days > 0 { gates.push(format!("{}d member", criteria.min_membership_days)); }
+            if criteria.min_account_age_days > 0 { gates.push(format!("{}d account", criteria.min_account_age_days)); }
+            if criteria.min_contribution > 0 { gates.push(format!("{} contribution", criteria.min_contribution)); }
+            if gates.is_empty() {
+                format!("Create role @{name} (all members)")
+            } else {
+                format!("Create role @{name} (auto: {})", gates.join(", "))
+            }
+        }
         K::DeleteRole { role } => format!("Delete role #{}", role.0),
-        K::AssignRole { user, role } => format!(
-            "Add @{} to role #{}",
-            st.services.chat().user_handle(*user).await.unwrap_or_default(),
-            role.0
-        ),
-        K::UnassignRole { user, role } => format!(
-            "Remove @{} from role #{}",
-            st.services.chat().user_handle(*user).await.unwrap_or_default(),
-            role.0
-        ),
         K::SetRehomingPolicy { is_disabled } => if *is_disabled {
             "Disable server rehoming (pin to home node)"
         } else {
@@ -1190,6 +1258,69 @@ pub async fn list_members(State(st): State<AppState>, Path(slug): Path<String>) 
     Ok(Json(dtos))
 }
 
+/// The server's members who currently hold a live WebSocket — the "active users"
+/// roster. Intersects the global online set with this server's membership, so it
+/// never reveals who is online in servers the viewer doesn't share. Founder first,
+/// then citizens, then members; each group alphabetical.
+pub async fn active_members(State(st): State<AppState>, Path(slug): Path<String>) -> Res<Vec<ActiveUserDto>> {
+    let online: std::collections::HashSet<String> = st.signal.online_handles().into_iter().collect();
+    let founder_handle = match st.services.server_snapshot(&slug).await {
+        Some((g, _, _)) => st.services.chat().user_handle(g.founder_id).await.unwrap_or_default(),
+        None => String::new(),
+    };
+    let mut dtos: Vec<ActiveUserDto> = st
+        .services.mute()
+        .list_members(&slug).await
+        .into_iter()
+        .filter(|m| online.contains(&m.handle))
+        .map(|m| ActiveUserDto {
+            is_founder: m.handle == founder_handle,
+            is_police: m.is_police,
+            tier: m.tier.as_str().into(),
+            handle: m.handle,
+        })
+        .collect();
+    dtos.sort_by(|a, b| {
+        let rank = |u: &ActiveUserDto| if u.is_founder { 0 } else if u.tier == "citizen" { 1 } else { 2 };
+        rank(a).cmp(&rank(b)).then_with(|| a.handle.cmp(&b.handle))
+    });
+    Ok(Json(dtos))
+}
+
+/// Message search across a server's visible channels (see
+/// [`app::ChatService::search_messages`]). Requires a signed-in viewer; results are
+/// scoped to what that viewer may read.
+pub async fn search_messages(
+    State(st): State<AppState>,
+    Path(slug): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<SearchQueryReq>,
+    headers: HeaderMap,
+) -> Res<Vec<SearchHitDto>> {
+    let me = require_actor(&st, &headers).await?;
+    let hits = st.services.chat().search_messages(&me, &slug, &q.q).await;
+    let dtos = hits
+        .into_iter()
+        .map(|h| {
+            let is_encrypted = h.message.key_epoch.is_some();
+            let snippet = if is_encrypted {
+                String::new()
+            } else {
+                h.message.body.chars().take(160).collect()
+            };
+            SearchHitDto {
+                id: h.message.id.0,
+                channel: h.channel_name,
+                author: h.author_handle,
+                snippet,
+                created_at: h.message.created_at.0,
+                is_encrypted,
+                has_attachment: !h.message.attachments.is_empty(),
+            }
+        })
+        .collect();
+    Ok(Json(dtos))
+}
+
 /// Instantly mute a member (police only).
 pub async fn mute(
     State(st): State<AppState>,
@@ -1244,7 +1375,8 @@ pub async fn advance_clock(
     if !st.is_dev {
         return Err((StatusCode::FORBIDDEN, "err.dev_disabled".into()));
     }
-    (st.advance_days)(req.days);
+    let seconds = req.days * 86_400 + req.hours * 3_600 + req.minutes * 60;
+    (st.advance_secs)(seconds);
     st.publish(json!({ "type": "clock" }).to_string());
     Ok(Json(json!({ "now": st.services.now().0 })))
 }

@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 /// A server's invite policy — the governed answer to "who can let new people in?".
 ///
 /// **Open** (the default) is the bootstrap posture: any member may mint an invite
-/// code, so a young server grows virally toward its first ten voters. Once a server
-/// is officially founded (reaches [`Phase::Chartering`](crate::Phase), 10 voters)
+/// code, so a young server grows virally toward its first few voters. Once a server
+/// is officially founded (reaches [`Phase::Chartering`](crate::Phase), 5 voters)
 /// its citizens may vote to **close** the door — after which no member may mint a
 /// code and admission is decided by the community, not by whoever holds a link.
 /// Reopening is likewise a vote. An invite never grants the franchise regardless of

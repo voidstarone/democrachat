@@ -10,16 +10,16 @@ use serde::{Deserialize, Serialize};
 /// rules) to bootstrap it; from **Chartering** on, those changes become ballots.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Phase {
-    /// 1–9 citizens. No constitutional amendments; founder may provision.
+    /// 1–4 citizens. No constitutional amendments; founder may provision.
     Seed,
-    /// 10–24 citizens. Amendments allowed but under stricter thresholds.
+    /// 5–24 citizens. Amendments allowed but under stricter thresholds.
     Chartering,
     /// 25+ citizens. Full self-governance; percentage math now works naturally.
     Sovereign,
 }
 
 impl Phase {
-    pub const CHARTERING_AT: u64 = 10;
+    pub const CHARTERING_AT: u64 = 5;
     pub const SOVEREIGN_AT: u64 = 25;
 
     pub fn from_citizen_count(citizens: u64) -> Phase {
@@ -55,8 +55,8 @@ mod tests {
     #[test]
     fn phase_boundaries() {
         assert_eq!(Phase::from_citizen_count(0), Phase::Seed);
-        assert_eq!(Phase::from_citizen_count(9), Phase::Seed);
-        assert_eq!(Phase::from_citizen_count(10), Phase::Chartering);
+        assert_eq!(Phase::from_citizen_count(4), Phase::Seed);
+        assert_eq!(Phase::from_citizen_count(5), Phase::Chartering);
         assert_eq!(Phase::from_citizen_count(24), Phase::Chartering);
         assert_eq!(Phase::from_citizen_count(25), Phase::Sovereign);
         assert_eq!(Phase::from_citizen_count(10_000), Phase::Sovereign);

@@ -112,7 +112,7 @@ pub use ports::vote_router::VoteRouter;
 pub use ports::vote_store::VoteStore;
 
 pub use channel_key_service::ChannelKeyService;
-pub use chat_service::ChatService;
+pub use chat_service::{ChatService, SearchHit};
 pub use emoji_service::EmojiService;
 pub use governance_service::GovernanceService;
 pub use key_directory_service::KeyDirectoryService;

@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use domain::{
     Block, Channel, ChannelKeyGrant, DmMessage, Emoji, EmojiVote, Friendship, Invite, Membership,
-    Message, Proposal, Reaction, Role, RoleAssignment, RoleColorVote, Rule, Server, User, UserKeys,
+    Message, Proposal, Reaction, Role, RoleColorVote, Rule, Server, User, UserKeys,
     Vote,
 };
 use federation::{ChangeOp, ChangeRecord, ChangeSink, ChangeSource, SignedPart};
@@ -274,24 +274,7 @@ impl ChangeSink for PgStore {
             }
             ("roles", ChangeOp::Delete) => {
                 let r: Role = from_part(part)?;
-                sqlx::query("DELETE FROM role_assignments WHERE role_id = $1").bind(r.id.0 as i64)
-                    .execute(pool).await.map_err(err)?;
                 sqlx::query("DELETE FROM roles WHERE id = $1").bind(r.id.0 as i64)
-                    .execute(pool).await.map_err(err)?;
-            }
-            ("role_assignments", ChangeOp::Upsert) => {
-                let a: RoleAssignment = from_part(part)?;
-                sqlx::query(
-                    "INSERT INTO role_assignments (role_id, user_id, data) VALUES ($1, $2, $3) \
-                     ON CONFLICT (role_id, user_id) DO NOTHING",
-                )
-                .bind(a.role_id.0 as i64).bind(a.user.0 as i64).bind(to_json(&a))
-                .execute(pool).await.map_err(err)?;
-            }
-            ("role_assignments", ChangeOp::Delete) => {
-                let a: RoleAssignment = from_part(part)?;
-                sqlx::query("DELETE FROM role_assignments WHERE role_id = $1 AND user_id = $2")
-                    .bind(a.role_id.0 as i64).bind(a.user.0 as i64)
                     .execute(pool).await.map_err(err)?;
             }
             ("role_color_votes", ChangeOp::Upsert) => {

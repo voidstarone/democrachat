@@ -90,10 +90,10 @@ async fn a_flood_of_fresh_members_cannot_enfranchise() {
     }
     let mut admitted = 0;
     for i in 0..200 {
-        // Fresh accounts: too young, too new to the server, zero contribution.
+        // Fresh accounts: too new to the server (the sole default gate — 28 days).
         match f.services.try_enfranchise(&format!("mob{i}"), "town").await.unwrap() {
             EnfranchiseOutcome::NotEligible(unmet) => {
-                assert!(unmet.contains(&Unmet::AccountTooYoung { need_days: 30, have_days: 0 }));
+                assert!(unmet.contains(&Unmet::MembershipTooShort { need_days: 28, have_days: 0 }));
             }
             EnfranchiseOutcome::Admitted => admitted += 1,
             other => panic!("unexpected {other:?}"),
@@ -116,11 +116,11 @@ async fn the_rate_cap_bounds_a_flood_of_qualified_members() {
     }
     assert_eq!(citizen_count(&f, "town").await, 100);
 
-    // 300 attackers join now, then wait out the age criteria and earn contribution.
+    // 300 attackers join now, then wait out the membership dwell criterion.
     for i in 0..300 {
         register_and_join(&f, &format!("mob{i}"), "town").await;
     }
-    f.clock.set(Timestamp(1_040 * DAY)); // +40d: clears account age (30) & dwell (14)
+    f.clock.set(Timestamp(1_040 * DAY)); // +40d: clears the 28-day membership dwell
     for i in 0..300 {
         set_contribution(&f, &format!("mob{i}"), "town", 5).await;
     }
@@ -945,9 +945,9 @@ async fn a_citizen_cannot_vote_emoji_in_a_foreign_server() {
 // K. Roles are cosmetic — never a side door into the franchise
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// A role confers nothing but membership in a mention group: assigning a mere
-/// member to a role (by ballot) does not let them vote — they are still not a
-/// citizen. Roles cannot be used to smuggle power to a non-citizen.
+/// A role confers nothing but membership in a mention group: a mere member who
+/// meets a role's criteria holds it, but that does not let them vote — they are
+/// still not a citizen. Roles cannot be used to smuggle power to a non-citizen.
 #[tokio::test]
 async fn holding_a_role_grants_no_vote() {
     let f = fixture(1_000 * DAY);
@@ -957,12 +957,17 @@ async fn holding_a_role_grants_no_vote() {
     register_and_join(&f, "mole", "town").await; // a mere member
 
     let citizens = ["boss", "cit1", "cit2"];
-    pass_ballot(&f, "boss", "town", &citizens, ProposalKind::CreateRole { name: "Ops".into() }).await;
-    let role = f.services.roles().list_roles("town").await.into_iter().find(|r| r.name == "ops").unwrap();
-    let mole = f.store.find_by_handle("mole").await.unwrap().unwrap();
-    pass_ballot(&f, "boss", "town", &citizens, ProposalKind::AssignRole { user: mole.id, role: role.id }).await;
+    // An open role (no criteria) that every member holds — so it addresses the mole.
+    pass_ballot(
+        &f,
+        "boss",
+        "town",
+        &citizens,
+        ProposalKind::CreateRole { name: "Ops".into(), criteria: domain::RoleCriteria::default() },
+    )
+    .await;
 
-    // The mole now holds the role...
+    // The mole holds the role (a mere member meets its empty criteria)...
     assert!(f.services.roles().role_holders("town", "ops").await.contains(&"mole".to_string()));
 
     // ...but still cannot cast a ballot.

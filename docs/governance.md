@@ -17,8 +17,10 @@
 
 ### Two hard invariants
 
-1. **Citizenship is criteria-only.** The *only* way to reach `Tier::Citizen` is to
-   satisfy the server's [`FranchiseCriteria`], as judged by `evaluate_eligibility`.
+1. **Citizenship is criteria-only, and automatic.** The *only* way to reach
+   `Tier::Citizen` is to satisfy the server's [`FranchiseCriteria`], as judged by
+   `evaluate_eligibility` — and once a member does, citizenship is **conferred
+   automatically** (`Services::auto_enfranchise`, swept on reads), never requested.
    There is **no** proposal, role, admin action, or invite anywhere in the domain
    that grants the franchise. The sole structural exception is the **founder**, who
    is Citizen #1 so a server of one can exist at all — an influence that *dilutes*
@@ -45,8 +47,9 @@ the outcome.
 
 A flood must beat **all four**, and each costs weeks.
 
-1. **Earned franchise** (`evaluate_eligibility`) — account age ≥ 30d, server dwell
-   ≥ 14d, a minimum of endorsement-weighted contribution, no active sanction.
+1. **Earned franchise** (`evaluate_eligibility`) — by default, server dwell ≥ 28d and
+   no active sanction. A server's electorate can vote to add stricter gates (a minimum
+   account age, a minimum of endorsement-weighted contribution) on top.
 2. **Enfranchisement rate cap** (`enfranchisement_slots`) — the citizen roll grows
    by at most +10% / 30 days (floor +5). Qualified newcomers beyond the cap queue by
    qualification date; nobody is denied, only delayed.
@@ -63,8 +66,8 @@ server runs on training wheels, derived purely from its citizen count:
 
 | Phase | Citizens | Governance |
 |---|---|---|
-| **Seed** | 1–9 | Founder is Citizen #1 and may **provisionally** set the server up (rules, emojis, channels). No constitutional amendments. |
-| **Chartering** | 10–24 | Amendments may be proposed under **stricter** thresholds; provisioning becomes ballots. |
+| **Seed** | 1–4 | Founder is Citizen #1 and may **provisionally** set the server up (rules, emojis, channels). No constitutional amendments. |
+| **Chartering** | 5–24 | Amendments may be proposed under **stricter** thresholds; provisioning becomes ballots. |
 | **Sovereign** | 25+ | Full self-governance; percentage math works naturally. |
 
 ## 5. The governance surface (`BallotKind`)
@@ -76,6 +79,23 @@ today include: `RemoveContent`, `Ban`, `Timeout`, `Recall`, `AddEmoji`,
 `SetVoteWeighting`, `SetWeightingScope`, `GrantVoteWeight`, `SetGovernanceSurface`.
 Chat-native kinds (channel create/delete, slow-mode, roles, pins) are added as the
 chat model lands (M3).
+
+### Roles are earned, not assigned
+
+A ballot decides which custom roles *exist* (`CreateRole` sets a role's name and its
+[`RoleCriteria`]; `DeleteRole` removes it) — but **no ballot, request, or admin
+action assigns a member to one**. Like the franchise, role membership is *derived*:
+a member holds a role automatically the moment they meet its criteria (server dwell,
+endorsed contribution, and/or citizenship), and loses it automatically if they fall
+below. There are no assignment records; `RoleService` computes a role's holders on
+read. This keeps roles pure addressing groups — they carry no vote or permission —
+while making "all roles apply automatically when conditions are met" structural
+rather than a matter of remembering to click.
+
+The **one** exception to *automatic* is opting **out**: the `@moderator` role is a
+duty, not just a label, so a member may set `has_declined_moderator` and never hold
+it even while qualified (the sole self-serve role control). Every other role is
+non-refusable — if you meet its conditions, you hold it.
 
 ## 6. Trial by jury (fast-path moderation)
 

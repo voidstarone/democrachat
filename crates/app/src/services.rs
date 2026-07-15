@@ -86,6 +86,7 @@ impl Services {
             users: stores.users.clone(),
         };
         let roles = RoleService {
+            clock: clock.clone(),
             memberships: stores.memberships.clone(),
             role_color_votes: stores.role_color_votes.clone(),
             roles: stores.roles.clone(),
@@ -282,7 +283,7 @@ impl Services {
     /// the public browse directory and joinable only with an invite code; a public
     /// one is listed and freely joinable. Either way the founder becomes citizen #1
     /// and the invite policy starts [`InvitePolicy::Open`](domain::InvitePolicy) so
-    /// the community can grow toward its first ten voters.
+    /// the community can grow toward its first few voters.
     pub async fn found_server_with_visibility(
         &self,
         founder_handle: &str,
@@ -541,6 +542,54 @@ impl Services {
                 Ok(EnfranchiseOutcome::RateCapped { admitted_this_window })
             }
         }
+    }
+
+    /// Automatically admit every member who now meets the franchise criteria —
+    /// earliest joiner first — up to the rate cap. In production citizenship is not
+    /// something a member asks for; it is conferred the moment the conditions hold.
+    /// Idempotent and safe to call on any read (nothing happens once everyone
+    /// eligible is admitted or the cap is full), so hot paths can sweep cheaply.
+    /// Returns how many members were newly enfranchised.
+    pub async fn auto_enfranchise(&self, server_slug: &str) -> u64 {
+        let Some(server) = self.servers.find_by_slug(server_slug.trim()).await.ok().flatten() else {
+            return 0;
+        };
+        let now = self.clock.now();
+        let window_start = Timestamp(now.0 - RATE_CAP_WINDOW_DAYS * Timestamp::SECONDS_PER_DAY);
+
+        // Collect the eligible non-citizens (a sanctioned member is barred).
+        let mut eligible: Vec<Membership> = Vec::new();
+        for m in self.memberships.list_for_server(server.id).await.unwrap_or_default() {
+            if m.is_citizen() || m.is_sanctioned {
+                continue;
+            }
+            let Some(user) = self.users.get_user(m.user_id).await.ok().flatten() else {
+                continue;
+            };
+            if evaluate_eligibility(&user, &m, &server.criteria, now).is_eligible() {
+                eligible.push(m);
+            }
+        }
+        // Fair order: the earliest joiners qualified first, so they get the slots
+        // first when the rate cap can't admit everyone at once.
+        eligible.sort_by_key(|m| m.joined_at.0);
+
+        let mut admitted = 0;
+        for mut m in eligible {
+            m.tier = Tier::Citizen;
+            m.enfranchised_at = Some(now);
+            match self
+                .memberships
+                .admit_within_cap(m, window_start, &enfranchisement_slots)
+                .await
+            {
+                Ok(CapAdmission::Admitted) => admitted += 1,
+                // Cap full for this window — everyone still queued waits their turn.
+                Ok(CapAdmission::RateCapped { .. }) => break,
+                Err(_) => continue,
+            }
+        }
+        admitted
     }
 
     /// Read-only: how a member currently stands against the franchise criteria.

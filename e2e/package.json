@@ -1,0 +1,8 @@
+{
+  "name": "democrachat-e2e",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "description": "End-to-end browser tests (voice mesh) driving the real server + Chrome.",
+  "dependencies": { "puppeteer-core": "^23.0.0" }
+}

@@ -36,8 +36,15 @@ pub enum ProposalKind {
     /// Recall a leader from office.
     Recall { leader: UserId },
     /// Create a new channel — chat-native layout governance (past Seed, where the
-    /// founder no longer provisions channels unilaterally).
-    CreateChannel { name: String, topic: String },
+    /// founder no longer provisions channels unilaterally). `is_voice` charters a
+    /// voice channel (a live audio room over the same message stream); `#[serde(default)]`
+    /// keeps pre-voice ballots loadable as text.
+    CreateChannel {
+        name: String,
+        topic: String,
+        #[serde(default)]
+        is_voice: bool,
+    },
     /// Delete a channel by name.
     DeleteChannel { name: String },
     /// Add a community rule.
@@ -61,16 +68,18 @@ pub enum ProposalKind {
     /// Change the server's governance surface — which ballot kinds are enabled.
     /// The always-on kinds ([`BallotKind::always_on`]) are re-added regardless.
     SetGovernanceSurface { enabled: BTreeSet<BallotKind> },
-    /// Create a custom mention role with the given (normalized) name. Grants no
-    /// vote or permission — see [`crate::Role`].
-    CreateRole { name: String },
-    /// Delete a custom role and every assignment to it.
+    /// Create a custom mention role with the given (normalized) name and the
+    /// [`RoleCriteria`] a member must meet to hold it. Membership is thereafter
+    /// **earned automatically** by meeting those criteria — there is no assign step.
+    /// Grants no vote or permission — see [`crate::Role`]. `#[serde(default)]` on the
+    /// criteria keeps pre-criteria ballots loadable (defaulting to "everyone").
+    CreateRole {
+        name: String,
+        #[serde(default)]
+        criteria: crate::RoleCriteria,
+    },
+    /// Delete a custom role.
     DeleteRole { role: RoleId },
-    /// Add a member to a custom role. Not a path into the franchise: a role
-    /// confers nothing but membership in a mention group.
-    AssignRole { user: UserId, role: RoleId },
-    /// Remove a member from a custom role.
-    UnassignRole { user: UserId, role: RoleId },
     /// Enable or disable automatic rehoming of this server across the federation.
     /// `is_disabled: true` opts the server out — if its home node fails it stays
     /// down until that node returns rather than migrating elsewhere (the
@@ -108,10 +117,9 @@ impl ProposalKind {
             ProposalKind::SetGovernanceSurface { .. } => BallotKind::SetGovernanceSurface,
             ProposalKind::SetRehomingPolicy { .. } => BallotKind::SetRehomingPolicy,
             ProposalKind::SetInvitePolicy { .. } => BallotKind::SetInvitePolicy,
-            ProposalKind::CreateRole { .. }
-            | ProposalKind::DeleteRole { .. }
-            | ProposalKind::AssignRole { .. }
-            | ProposalKind::UnassignRole { .. } => BallotKind::ManageRoles,
+            ProposalKind::CreateRole { .. } | ProposalKind::DeleteRole { .. } => {
+                BallotKind::ManageRoles
+            }
         }
     }
 
@@ -143,9 +151,7 @@ impl ProposalKind {
             | ProposalKind::SetGovernanceSurface { .. }
             | ProposalKind::SetInvitePolicy { .. }
             | ProposalKind::CreateRole { .. }
-            | ProposalKind::DeleteRole { .. }
-            | ProposalKind::AssignRole { .. }
-            | ProposalKind::UnassignRole { .. } => DecisionClass::RuleChange,
+            | ProposalKind::DeleteRole { .. } => DecisionClass::RuleChange,
         }
     }
 }

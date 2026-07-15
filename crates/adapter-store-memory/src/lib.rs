@@ -18,7 +18,7 @@ use domain::{
     compose_id, Block, Channel, ChannelId, ChannelKeyGrant, DmId, DmMessage, Emoji, EmojiId,
     EmojiVote, Friendship, Invite, Membership, Message, MessageId, NodeId, Proposal, ProposalId,
     Reaction,
-    Role, RoleAssignment, RoleColor, RoleColorVote, RoleId, Rule, RuleId, Server, ServerId,
+    Role, RoleColor, RoleColorVote, RoleId, Rule, RuleId, Server, ServerId,
     Timestamp, User, UserId, UserKeys,
     Vote,
 };
@@ -75,7 +75,6 @@ struct Inner {
     blocks: Vec<Block>,
     friends: Vec<Friendship>,
     roles: HashMap<RoleId, Role>,
-    role_assignments: Vec<RoleAssignment>,
     role_color_votes: Vec<RoleColorVote>,
     /// Server invite codes, keyed by their SHA-256 digest (never the raw code).
     invites: HashMap<String, Invite>,
@@ -232,6 +231,10 @@ fn apply_row(inner: &mut Inner, part: &SignedPart) -> Result<(), String> {
             inner.votes.retain(|x| !(x.proposal_id == v.proposal_id && x.voter == v.voter));
             inner.votes.push(v);
         }
+        ("votes", ChangeOp::Delete) => {
+            let v: Vote = row!(Vote);
+            inner.votes.retain(|x| !(x.proposal_id == v.proposal_id && x.voter == v.voter));
+        }
         ("emojis", ChangeOp::Upsert) => {
             let e: Emoji = row!(Emoji);
             inner.emojis.insert(e.id, e);
@@ -284,23 +287,6 @@ fn apply_row(inner: &mut Inner, part: &SignedPart) -> Result<(), String> {
         ("roles", ChangeOp::Delete) => {
             let r: Role = row!(Role);
             inner.roles.remove(&r.id);
-            inner.role_assignments.retain(|a| a.role_id != r.id);
-        }
-        ("role_assignments", ChangeOp::Upsert) => {
-            let a: RoleAssignment = row!(RoleAssignment);
-            let dup = inner
-                .role_assignments
-                .iter()
-                .any(|x| x.role_id == a.role_id && x.user == a.user);
-            if !dup {
-                inner.role_assignments.push(a);
-            }
-        }
-        ("role_assignments", ChangeOp::Delete) => {
-            let a: RoleAssignment = row!(RoleAssignment);
-            inner
-                .role_assignments
-                .retain(|x| !(x.role_id == a.role_id && x.user == a.user));
         }
         ("role_color_votes", ChangeOp::Upsert) => {
             let v: RoleColorVote = row!(RoleColorVote);
@@ -385,7 +371,6 @@ impl MemoryStore {
             blocks: inner.blocks.clone(),
             friends: inner.friends.clone(),
             roles: inner.roles.values().cloned().collect(),
-            role_assignments: inner.role_assignments.clone(),
             role_color_votes: inner.role_color_votes.clone(),
             invites: inner.invites.values().cloned().collect(),
             user_keys: inner.user_keys.values().cloned().collect(),
@@ -417,7 +402,6 @@ impl MemoryStore {
             dms: snap.dms,
             blocks: snap.blocks,
             friends: snap.friends,
-            role_assignments: snap.role_assignments,
             role_color_votes: snap.role_color_votes,
             invites: snap
                 .invites
@@ -520,8 +504,6 @@ struct Snapshot {
     friends: Vec<Friendship>,
     #[serde(default)]
     roles: Vec<Role>,
-    #[serde(default)]
-    role_assignments: Vec<RoleAssignment>,
     #[serde(default)]
     role_color_votes: Vec<RoleColorVote>,
     #[serde(default)]
@@ -1012,6 +994,11 @@ impl VoteStore for MemoryStore {
             .collect()
         })
     }
+
+    async fn clear_for_proposal(&self, proposal: ProposalId) -> Result<(), StoreError> {
+        self.0.lock().unwrap().votes.retain(|v| v.proposal_id != proposal);
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -1477,11 +1464,9 @@ impl RoleStore for MemoryStore {
         let Some(removed) = inner.roles.remove(&id) else {
             return Ok(false);
         };
-        // Carry the removed row so the consumer can derive its server scope; the
-        // cascade purge of its assignments follows on the peer.
+        // Carry the removed row so the consumer can derive its server scope. Role
+        // membership is derived from criteria, not stored, so nothing cascades.
         inner.record("roles", ChangeOp::Delete, to_payload(&removed));
-        // Purge every assignment to the deleted role so nothing dangles.
-        inner.role_assignments.retain(|a| a.role_id != id);
         true
         })
     }
@@ -1498,53 +1483,6 @@ impl RoleStore for MemoryStore {
             .collect();
         v.sort_by_key(|r| r.id.0);
         v
-        })
-    }
-    async fn assign(&self, assignment: RoleAssignment) -> Result<bool, StoreError> {
-        Ok({
-        let mut inner = self.0.lock().unwrap();
-        let exists = inner
-            .role_assignments
-            .iter()
-            .any(|a| a.role_id == assignment.role_id && a.user == assignment.user);
-        if exists {
-            return Ok(false);
-        }
-        inner.record("role_assignments", ChangeOp::Upsert, to_payload(&assignment));
-        inner.role_assignments.push(assignment);
-        true
-        })
-    }
-    async fn unassign(&self, role: RoleId, user: UserId) -> Result<bool, StoreError> {
-        Ok({
-        let mut inner = self.0.lock().unwrap();
-        // Capture the assignment before removing it — its `server_id` is what lets
-        // the consumer derive scope for the delete.
-        let removed = inner
-            .role_assignments
-            .iter()
-            .find(|a| a.role_id == role && a.user == user)
-            .cloned();
-        let Some(assignment) = removed else {
-            return Ok(false);
-        };
-        inner
-            .role_assignments
-            .retain(|a| !(a.role_id == role && a.user == user));
-        inner.record("role_assignments", ChangeOp::Delete, to_payload(&assignment));
-        true
-        })
-    }
-    async fn holders(&self, role: RoleId) -> Result<Vec<UserId>, StoreError> {
-        Ok({
-        self.0
-            .lock()
-            .unwrap()
-            .role_assignments
-            .iter()
-            .filter(|a| a.role_id == role)
-            .map(|a| a.user)
-            .collect()
         })
     }
 }

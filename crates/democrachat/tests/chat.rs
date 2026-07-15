@@ -276,3 +276,43 @@ async fn deleting_a_message_deletes_its_media() {
     f.services.chat().delete_message("alice", msg.id.0).await.unwrap();
     assert!(f.services.chat().media_blob(&key).is_none(), "the blob is gone after the message is deleted");
 }
+
+#[tokio::test]
+async fn message_search_honours_discord_operators() {
+    let f = fixture(1_000 * DAY);
+    seed_server(&f).await; // alice (founder)
+    f.services.register_account("bob").await.unwrap();
+    f.services.join_server("bob", "gamers").await.unwrap();
+    f.services.chat().create_channel("alice", "gamers", "notes", "").await.unwrap();
+    f.services.chat().post_message("alice", "gamers", "general", "deploy the new build today").await.unwrap();
+    f.services.chat().post_message("bob", "gamers", "general", "see https://example.com/plan for details").await.unwrap();
+    f.services.chat().post_message("alice", "gamers", "general", "hey @bob can you deploy").await.unwrap();
+    f.services.chat().post_message("alice", "gamers", "notes", "deploy runbook notes").await.unwrap();
+
+    let chat = f.services.chat();
+    // Plain term: matches across all visible channels.
+    assert_eq!(chat.search_messages("alice", "gamers", "deploy").await.len(), 3);
+    // from: + in: narrow to one author in one channel.
+    let r = chat.search_messages("alice", "gamers", "from:alice in:notes").await;
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].channel_name, "notes");
+    // in: scopes without a term.
+    assert_eq!(chat.search_messages("alice", "gamers", "in:notes").await.len(), 1);
+    // has:link finds the URL-bearing message.
+    let r = chat.search_messages("alice", "gamers", "has:link").await;
+    assert_eq!(r.len(), 1);
+    assert!(r[0].message.body.contains("https://"));
+    // to: matches a whole-token @mention (not @bobby).
+    assert_eq!(chat.search_messages("alice", "gamers", "to:@bob").await.len(), 1);
+    // before: a date preceding the fixture clock (~1972) excludes everything.
+    assert!(chat.search_messages("alice", "gamers", "before:1970-06-01 deploy").await.is_empty());
+    // after: that same early date keeps all current messages.
+    assert_eq!(chat.search_messages("alice", "gamers", "after:1970-06-01 deploy").await.len(), 3);
+    // A constraint-free query is refused rather than dumping the server.
+    assert!(chat.search_messages("alice", "gamers", "   ").await.is_empty());
+    // An unresolvable from: yields nothing.
+    assert!(chat.search_messages("alice", "gamers", "from:nobody").await.is_empty());
+    // Newest first.
+    let r = chat.search_messages("alice", "gamers", "deploy").await;
+    assert!(r.windows(2).all(|w| w[0].message.created_at.0 >= w[1].message.created_at.0));
+}

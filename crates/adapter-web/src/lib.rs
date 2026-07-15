@@ -9,6 +9,7 @@ mod auth;
 mod dto;
 mod handlers;
 mod middleware;
+mod signal;
 mod social_handlers;
 mod state;
 mod ws;
@@ -57,7 +58,7 @@ pub struct WebConfig {
     pub is_dev: bool,
     pub secure_cookies: bool,
     pub signer: Arc<SessionSigner>,
-    pub advance_days: Arc<dyn Fn(i64) + Send + Sync>,
+    pub advance_secs: Arc<dyn Fn(i64) + Send + Sync>,
     pub save: Arc<dyn Fn() + Send + Sync>,
 }
 
@@ -67,15 +68,16 @@ pub async fn serve(
     config: WebConfig,
     routers: Routers,
 ) -> anyhow::Result<()> {
-    let WebConfig { addr, is_dev, secure_cookies, signer, advance_days, save } = config;
+    let WebConfig { addr, is_dev, secure_cookies, signer, advance_secs, save } = config;
     let (events, _) = broadcast::channel(256);
     let state = AppState {
         services,
         events,
+        signal: Arc::new(signal::SignalHub::default()),
         signer,
         secure_cookies,
         is_dev,
-        advance_days,
+        advance_secs,
         save,
         vote_router: routers.vote,
         dm_router: routers.dm,
@@ -163,6 +165,7 @@ pub async fn serve(
         .route("/api/servers/:slug/enfranchise", post(handlers::enfranchise))
         .route("/api/servers/:slug/me", get(handlers::my_status))
         .route("/api/servers/:slug/history-sharing", post(handlers::set_history_sharing))
+        .route("/api/servers/:slug/moderator-optout", post(handlers::set_moderator_optout))
         .route(
             "/api/servers/:slug/channels/:channel/messages",
             get(handlers::list_messages).post(handlers::post_message),
@@ -195,6 +198,8 @@ pub async fn serve(
         .route("/api/servers/:slug/roles/:id/color", post(handlers::vote_role_color))
         .route("/api/servers/:slug/members/:handle/roles", get(handlers::user_roles))
         .route("/api/servers/:slug/members", get(handlers::list_members))
+        .route("/api/servers/:slug/active", get(handlers::active_members))
+        .route("/api/servers/:slug/search", get(handlers::search_messages))
         .route("/api/servers/:slug/mute", post(handlers::mute))
         .route("/api/servers/:slug/unmute", post(handlers::unmute))
         .route("/api/servers/:slug/mentionable", get(handlers::mentionable))

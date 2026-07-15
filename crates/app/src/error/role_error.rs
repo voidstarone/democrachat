@@ -8,6 +8,9 @@ pub enum RoleError {
     NoSuchUser(String),
     #[error("no such server: '{0}'")]
     NoSuchServer(String),
+    /// The caller isn't a member of the server they're trying to act on.
+    #[error("not a member of this server: '{0}'")]
+    NotAMember(String),
     /// Only an enfranchised citizen may vote on a role's colour.
     #[error("only a citizen of this server may do that")]
     NotACitizen,

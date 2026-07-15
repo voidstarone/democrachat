@@ -23,6 +23,16 @@ impl Timestamp {
     pub fn plus_days(self, days: i64) -> Timestamp {
         Timestamp(self.0 + days * Self::SECONDS_PER_DAY)
     }
+
+    /// A timestamp `hours` hours after this one (negative reaches into the past).
+    pub fn plus_hours(self, hours: i64) -> Timestamp {
+        Timestamp(self.0 + hours * 3_600)
+    }
+
+    /// A timestamp `seconds` seconds after this one (negative reaches into the past).
+    pub fn plus_seconds(self, seconds: i64) -> Timestamp {
+        Timestamp(self.0 + seconds)
+    }
 }
 
 #[cfg(test)]

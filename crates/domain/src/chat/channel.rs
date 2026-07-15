@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::chat::channel_kind::ChannelKind;
 use crate::chat::channel_visibility::ChannelVisibility;
 use crate::chat::history_mode::HistoryMode;
 use crate::{ChannelId, ServerId, Tags, Timestamp};
@@ -17,6 +18,10 @@ pub struct Channel {
     pub name: String,
     pub topic: String,
     pub created_at: Timestamp,
+    /// Text, or Voice (which *adds* a live audio room on top of the same message
+    /// stream). `#[serde(default)]` = [`ChannelKind::Text`], so pre-voice datasets load.
+    #[serde(default)]
+    pub kind: ChannelKind,
     /// Whether message bodies in this channel are end-to-end encrypted under a
     /// channel key. Default `false` (plaintext, node-readable). Turning it on is a
     /// deliberate, client-driven act — the server never holds the channel key.
@@ -50,6 +55,7 @@ impl Channel {
             name: name.into(),
             topic: topic.into(),
             created_at,
+            kind: ChannelKind::Text,
             is_encrypted: false,
             history_mode: HistoryMode::Open,
             visibility: ChannelVisibility::Open,
@@ -69,6 +75,20 @@ impl Channel {
     ) -> Self {
         let mut c = Self::new(id, server_id, name, topic, created_at);
         c.visibility = ChannelVisibility::Appeals;
+        c
+    }
+
+    /// A voice channel — a live audio room with no message stream. Same as
+    /// [`new`](Self::new) but tagged [`ChannelKind::Voice`].
+    pub fn voice(
+        id: ChannelId,
+        server_id: ServerId,
+        name: impl Into<String>,
+        topic: impl Into<String>,
+        created_at: Timestamp,
+    ) -> Self {
+        let mut c = Self::new(id, server_id, name, topic, created_at);
+        c.kind = ChannelKind::Voice;
         c
     }
 

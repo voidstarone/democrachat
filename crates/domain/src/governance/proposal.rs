@@ -78,11 +78,14 @@ impl Proposal {
             .unwrap_or(DecisionClass::Moderation)
     }
 
-    /// Fold another change into the bundle. Caller (the app use-case) is
-    /// responsible for the gating — that the proposal is still open, and that the
-    /// amendment is itself governed and permitted in the current phase.
-    pub fn amend(&mut self, kind: ProposalKind) {
+    /// Fold another change into the bundle and reset the voting deadline to
+    /// `closes_at` (the amendment restarts the clock, since the ballot people are
+    /// now voting on has changed). Caller (the app use-case) owns the gating — that
+    /// the proposal is still open, the amendment is governed and phase-permitted,
+    /// and that prior votes are cleared (they were cast on the old bundle).
+    pub fn amend(&mut self, kind: ProposalKind, closes_at: Timestamp) {
         self.amendments.push(kind);
+        self.closes_at = closes_at;
     }
 
     /// Layers 3 & 4 together — close the proposal at `closed_at`: apply the

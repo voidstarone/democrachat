@@ -2,7 +2,7 @@ const S = { me:null, mode:'chat',
             server:null, channel:null, prop:null, proposals:[], reply:null, isDev:false, tier:null, serverDetail:null,
             isPolice:false, isMuted:false,
             peer:null, social:null, friendTab:'all', mentionable:{users:[],roles:[]}, emojiMap:{}, roleColors:{},
-            ident:null, channels:[], chanKeys:{} };
+            ident:null, channels:[], chanKeys:{}, ws:null, ice:null, voice:null };
 const $ = id => document.getElementById(id);
 
 /* ── Internationalisation ─────────────────────────────────────────────
@@ -206,6 +206,10 @@ const ICONS = {
   attach:  '<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
   film:    '<rect x="2" y="3" width="20" height="18" rx="2" ry="2"/><line x1="7" y1="3" x2="7" y2="21"/><line x1="17" y1="3" x2="17" y2="21"/><line x1="2" y1="9" x2="22" y2="9"/><line x1="2" y1="15" x2="22" y2="15"/>',
   music:   '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
+  mic:     '<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>',
+  micoff:  '<line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>',
+  headset: '<path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/>',
+  phoneoff:'<path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-3.33-2.67m-2.67-3.34A19.79 19.79 0 0 1 3.07 4.18 2 2 0 0 1 5 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91"/><line x1="23" y1="1" x2="1" y2="23"/>',
 };
 function icon(name, sz){
   const s = sz||18;
@@ -276,7 +280,8 @@ async function boot() {
   applyThemeButton();
   $('settingsBtn').innerHTML = icon('gear', 17);
   const cfg = await api('/api/config'); S.isDev = cfg.is_dev;
-  if (S.isDev) { $('devBox').style.display='block'; $('clockNow').textContent = 'now: '+new Date(cfg.now*1000).toISOString().slice(0,10); }
+  S.ice = cfg.ice_servers || [{ urls: 'stun:stun.l.google.com:19302' }];
+  if (S.isDev) { $('devBox').style.display='block'; setClockDisplay(cfg.now); }
   if (cfg.me) {
     S.me = cfg.me;
     // Session restored from a cookie — no password here, so we can only use a key
@@ -415,7 +420,7 @@ const inviteToServer = guard(async () => {
     fields:[{name:'code',label:t('app.invite.code_label'),value:r.code}], submitText:t('app.btn.done')});
 });
 async function selectServer(slug) {
-  S.server = slug; S.channel = null; S.prop = null; S.reply = null;
+  S.server = slug; S.channel = null; S.prop = null; S.reply = null; S.archiveShown = 0;
   $('messages').className = '';
   const d = await api('/api/servers/'+slug); S.serverDetail = d;
   $('channelsHeading').textContent = d.name + (d.is_private ? ' ·' : '');
@@ -428,23 +433,32 @@ async function selectServer(slug) {
   d.channels.forEach(c => {
     const el = document.createElement('div');
     el.className='item'+(c.name===S.channel?' sel':'');
+    el.dataset.ch = c.name;
     const lock = c.is_encrypted ? ` <span class="clock lockic" title="${t('app.e2ee.tooltip')}">${icon('lock',12)}</span>` : '';
     const appeals = c.visibility==='appeals' ? `<span class="st open" title="${t('app.chan.appeals_hint')}">${t('app.chan.appeals_tag')}</span>` : '';
-    el.innerHTML = `<div class="t grow"><div class="nm"># ${esc(c.name)}${lock}</div></div>${appeals}`;
+    // A voice channel is prefixed with a mic glyph instead of `#`; it still carries text.
+    const isVoice = c.kind==='voice';
+    const lead = isVoice ? `<span class="chic">${icon('mic',13)}</span> ` : '# ';
+    el.innerHTML = `<div class="t grow"><div class="nm">${lead}${esc(c.name)}${lock}</div></div>${appeals}`;
     el.onclick = () => selectChannel(c.name);
     $('channelList').appendChild(el);
   });
   $('surface').innerHTML = d.surface.map(s=>`<span>${esc(s)}</span>`).join('');
-  loadServers(); loadMe(); loadProposals(); loadDemocracy(); loadRoles(); loadMentionable(); loadEmojis();
+  loadServers();
+  await loadMe(); // sets S.tier before proposals render, so vote buttons appear for citizens
+  loadProposals(); loadDemocracy(); loadRoles(); loadMentionable(); loadEmojis(); loadActive(); clearSearch();
   if (d.channels.length) selectChannel(d.channels[0].name);
   else $('messages').innerHTML = `<div class="empty"><div class="big">#</div><div>${t('app.channels.none')}</div></div>`;
 }
 const newChannel = guard(async () => {
   const v = await modal({title:t('app.newchan.title'), fields:[
     {name:'name',label:t('app.field.name'),placeholder:t('app.newchan.name_ph')},
-    {name:'topic',label:t('app.field.topic_optional'),placeholder:t('app.newchan.topic_ph')}], submitText:t('app.btn.create')});
+    {name:'topic',label:t('app.field.topic_optional'),placeholder:t('app.newchan.topic_ph')},
+    {name:'kind',label:t('app.newchan.kind'),type:'select',value:'text',options:[
+      {value:'text',label:t('app.newchan.kind_text')},
+      {value:'voice',label:t('app.newchan.kind_voice')}]}], submitText:t('app.btn.create')});
   if(!v||!v.name) return;
-  await api('/api/servers/'+S.server+'/channels','POST',{name:v.name,topic:v.topic||''}); selectServer(S.server);
+  await api('/api/servers/'+S.server+'/channels','POST',{name:v.name,topic:v.topic||'',kind:v.kind||'text'}); selectServer(S.server);
 });
 /* Load and open this channel's key grants into `S.chanKeys[name]` (epoch → key hex),
    so sealed messages can be decrypted and new ones sealed. No-op for plaintext
@@ -461,7 +475,7 @@ async function loadChannelKeys(name){
 async function selectChannel(name){ S.channel=name; S.prop=null; S.reply=null; setReplyBar();
   document.body.classList.remove('nav-open'); // close the mobile drawer on pick
   document.querySelectorAll('#demList .demitem').forEach(el=>el.classList.remove('sel'));
-  document.querySelectorAll('#channelList .item .nm').forEach(el=>el.parentElement.parentElement.classList.toggle('sel', el.textContent.startsWith('# '+name)));
+  document.querySelectorAll('#channelList .item').forEach(el=>el.classList.toggle('sel', el.dataset.ch===name));
   await loadChannelKeys(name);
   const ch=(S.channels||[]).find(c=>c.name===name);
   const isEnc = !!(ch&&ch.is_encrypted);
@@ -472,6 +486,7 @@ async function selectChannel(name){ S.channel=name; S.prop=null; S.reply=null; s
     : haveKey ? t('app.compose.enc_placeholder')
     : (S.ident ? t('app.compose.no_key') : t('app.compose.locked'));
   updateAttachUI();
+  renderVoiceBar();
   loadMessages(); }
 
 /* Highlight resolved @mentions and expand :custom_emoji: inside an escaped body.
@@ -971,25 +986,82 @@ const shareKeys = guard(async () => {
 });
 const react = guard(async (id,emoji) => { await api('/api/messages/'+id+'/react','POST',{emoji}); loadMessages(); });
 
+/* ── Active users (server-scoped online roster) ─────────────────────
+   The list is who, among this server's members, currently holds a live socket —
+   refreshed on every presence frame (see the WS `presence` branch). */
+async function loadActive(){
+  if(!S.server){ $('activeUsers').innerHTML=''; $('activeRow').style.display='none'; return; }
+  let users=[]; try { users = await api(`/api/servers/${S.server}/active`); } catch {}
+  const box=$('activeUsers'), row=$('activeRow');
+  row.style.display='flex';
+  $('activeCount').textContent = users.length ? users.length : '';
+  if(!users.length){ box.innerHTML=`<div class="sub" style="padding:.1rem .1rem .3rem">${t('app.active.none')}</div>`; return; }
+  box.innerHTML = users.map(u=>{
+    const tag = u.is_founder ? `<span class="au-tag founder">${t('app.active.founder')}</span>`
+      : u.is_police ? `<span class="au-tag police">${t('app.active.police')}</span>` : '';
+    return `<div class="au-row" data-act="showUserRoles" data-handle="${esc(u.handle)}">
+      ${avatar(u.handle,'sm')}<span class="au-dot"></span>
+      <span class="au-name grow">${esc(u.handle)}</span>${tag}</div>`;
+  }).join('');
+}
+
+/* ── Message search (Discord-style operators) ───────────────────────
+   from:@user  to:@user (mentions)  in:#channel  has:link|image
+   before:YYYY-MM-DD  after:YYYY-MM-DD  + bare words (all must match). */
+let SEARCH_TIMER=null;
+function clearSearch(){
+  const inp=$('msgSearch'); if(inp) inp.value='';
+  $('searchResults').style.display='none'; $('searchResults').innerHTML='';
+  $('searchClear').style.display='none';
+}
+const runSearch = guard(async () => {
+  const q = $('msgSearch').value.trim();
+  $('searchClear').style.display = q ? 'block' : 'none';
+  const box=$('searchResults');
+  if(!q){ box.style.display='none'; box.innerHTML=''; return; }
+  const hits = await api(`/api/servers/${S.server}/search?q=${encodeURIComponent(q)}`);
+  box.style.display='block';
+  if(!hits.length){ box.innerHTML=`<div class="sr-head">${t('app.search.results',{n:0})}</div><div class="sub" style="padding:.2rem .1rem">${t('app.search.empty')}</div>`; return; }
+  const rows = hits.map(h=>{
+    const body = h.is_encrypted ? `<span class="sr-enc">${icon('lock',11)} ${t('app.search.encrypted')}</span>`
+      : esc(h.snippet) + (h.has_attachment?` <span class="sr-att">${icon('attach',11)}</span>`:'');
+    return `<div class="sr-hit" data-act="openHit" data-ch="${esc(h.channel)}" data-id="${h.id}">
+      <div class="sr-meta"><span class="sr-ch"># ${esc(h.channel)}</span> · <span class="sr-au">${esc(h.author)}</span></div>
+      <div class="sr-body">${body}</div></div>`;
+  }).join('');
+  box.innerHTML = `<div class="sr-head">${t('app.search.results',{n:hits.length})}</div>${rows}`;
+});
+/* Open a search hit: switch to its channel, then flash the message if on screen. */
+const openHit = guard(async (el) => {
+  const ch = el.dataset.ch, id = +el.dataset.id;
+  document.body.classList.remove('gov-open'); // reveal the chat on mobile
+  if(S.channel!==ch){ await selectChannel(ch); }
+  // Give the message list a tick to render, then scroll to and flash the hit.
+  setTimeout(()=>jumpTo(id), 140);
+});
+
 /* ── Governance ─────────────────────────────────────────────────── */
+/* The right rail is a quick-vote queue: only *open* ballots, so it never
+   duplicates the left rail's archive of decided ones. Browsing and debate live in
+   the Democracy list + main pane; this is purely "act on what's live". */
 async function loadProposals(){
   if(!S.server) return;
   const ps = await api(`/api/servers/${S.server}/proposals`);
   const box = $('proposals'); box.innerHTML='';
-  if(!ps.length){ box.innerHTML=`<div class="sub" style="margin-bottom:.6rem">${t('app.props.none')}</div>`; }
-  ps.slice().reverse().forEach(p => {
+  const open = ps.filter(p=>p.status==='open').reverse();
+  if(!open.length){ box.innerHTML=`<div class="sub" style="margin-bottom:.6rem">${t('app.props.none_open')}</div>`; return; }
+  open.forEach(p => {
+    const d = Math.max(0, Math.round(p.closes_in/86400));
     const el = document.createElement('div'); el.className='prop';
-    let statusLine;
-    if(p.status==='open'){ const d=Math.max(0,Math.round(p.closes_in/86400)); statusLine=`<span class="st-open">${t('app.props.open')}</span> · ${t('app.props.closes_in',{d})}`; }
-    else if(p.status==='passed'){ statusLine=`<span class="st-passed">${t('app.props.passed')}</span>${p.is_applied?' · '+t('app.props.applied'):' · '+t('app.props.applying')}`; }
-    else statusLine=`<span class="st-failed">${t('app.props.failed')}</span>`;
     let controls='';
-    if(p.status==='open' && S.tier==='citizen'){
+    if(S.tier==='citizen'){
       controls = `<button class="vbtn ${p.my_vote===true?'on-aye':''}" data-act="vote" data-id="${p.id}" data-aye="1">${t('app.props.aye')}</button>
                   <button class="vbtn ${p.my_vote===false?'on-nay':''}" data-act="vote" data-id="${p.id}" data-aye="0">${t('app.props.nay')}</button>`;
     }
-    el.innerHTML = `<div class="head">${esc(p.summary)}</div>
-      <div class="sub">${t('app.props.by')} @${esc(p.proposer)} · ${statusLine}</div>
+    // The summary opens the full debate in the main pane — same target as the
+    // Democracy list, so the two rails agree on what "this proposal" means.
+    el.innerHTML = `<div class="head" data-act="openProp" data-id="${p.id}" role="button" tabindex="0">${esc(p.summary)}</div>
+      <div class="sub">${t('app.props.by')} @${esc(p.proposer)} · <span class="st-open">${t('app.props.open')}</span> · ${t('app.props.closes_in',{d})}</div>
       <div class="votes">${controls}<span class="tal">▲ ${p.aye} · ▼ ${p.nay}</span></div>`;
     box.appendChild(el);
   });
@@ -1005,19 +1077,42 @@ async function loadDemocracy(){
   S.proposals = ps;
   const box = $('demList'); box.innerHTML='';
   if(!ps.length){ box.innerHTML=`<div class="sub" style="padding:.2rem .55rem">${t('app.dem.none')}</div>`; return; }
-  // Show open proposals; if none are open, fall back to the most recent decided ones.
-  const open = ps.filter(p=>p.status==='open');
-  const shown = (open.length ? open : ps.slice(-4));
-  shown.slice().reverse().forEach(p=>{
+  const demItem = p => {
     const el = document.createElement('div');
     el.className = 'item demitem'+(p.id===S.prop?' sel':'');
     el.dataset.id = p.id;
     const amc = p.amendments.length ? `<span class="amc">+${p.amendments.length}</span>` : '';
     el.innerHTML = `<div class="t grow"><div class="nm">${esc(p.summary)}</div></div>${amc}<span class="st ${p.status}">${t('app.props.'+p.status)}</span>`;
     el.onclick = () => selectProposal(p.id);
-    box.appendChild(el);
-  });
+    return el;
+  };
+  // Live ballots first (newest first), then an always-visible archive of decided
+  // ones so a passed/failed proposal stays viewable after voting closes. The
+  // archive is capped and grows on demand — a long-lived server can amass
+  // hundreds of decided ballots, and dumping them all bloats the rail.
+  const open = ps.filter(p=>p.status==='open').reverse();
+  const decided = ps.filter(p=>p.status!=='open').reverse();
+  open.forEach(p=>box.appendChild(demItem(p)));
+  if(decided.length){
+    const hd = document.createElement('div');
+    hd.className='dem-archive-hd'; hd.textContent = t('app.dem.archive');
+    box.appendChild(hd);
+    // Keep the currently-open proposal visible even if it's past the cap.
+    const shownCount = Math.max(S.archiveShown||ARCHIVE_PAGE, 0);
+    const pinnedExtra = (S.prop && decided.slice(shownCount).some(p=>p.id===S.prop)) ? 1 : 0;
+    decided.slice(0, shownCount).forEach(p=>box.appendChild(demItem(p)));
+    if(pinnedExtra){ box.appendChild(demItem(decided.find(p=>p.id===S.prop))); }
+    const remaining = decided.length - shownCount;
+    if(remaining > 0){
+      const more = document.createElement('button');
+      more.className='dem-more'; more.type='button';
+      more.textContent = t('app.dem.show_more',{n:Math.min(remaining, ARCHIVE_PAGE)});
+      more.onclick = () => { S.archiveShown = shownCount + ARCHIVE_PAGE; loadDemocracy(); };
+      box.appendChild(more);
+    }
+  }
 }
+const ARCHIVE_PAGE = 15;
 
 function selectProposal(id){
   S.prop = id; S.channel = null; S.reply = null; setReplyBar();
@@ -1065,7 +1160,7 @@ function renderPinned(p){
     ? `<div class="prop-actions"><button class="ghost sm" data-act="amendProp" data-id="${p.id}" title="${t('app.dem.amend_hint')}">${t('app.dem.amend')}</button></div>` : '';
 
   return `<div class="prop-pinned">
-    <div class="eyebrow">${t('app.dem.pinned')}</div>
+    <div class="eyebrow">${open ? t('app.dem.pinned') : t('app.dem.result')}</div>
     <h3>${esc(p.summary)}</h3>
     <div class="meta">${t('app.props.by')} @${esc(p.proposer)} · ${statusText}</div>
     ${bundle}${votebar}${tally}${note}${amendBtn}
@@ -1089,7 +1184,10 @@ async function loadDiscussion(){
   if(!S.prop) return;
   let posts=[]; try { posts = await api(`/api/proposals/${S.prop}/discussion`); } catch {}
   const box = $('discList'); if(!box) return;
-  if(!posts.length){ box.innerHTML = `<div class="sub">${t('app.dem.no_discussion')}</div>`; }
+  // A closed debate can't be joined, so don't invite one; just note it was quiet.
+  const p = (S.proposals||[]).find(x=>x.id===S.prop);
+  const emptyMsg = (p && p.status!=='open') ? t('app.dem.no_discussion_closed') : t('app.dem.no_discussion');
+  if(!posts.length){ box.innerHTML = `<div class="sub">${emptyMsg}</div>`; }
   else box.innerHTML = posts.map(d=>`<div class="discpost">${avatar(d.author,'sm')}
       <div class="bubblewrap"><div class="hdr"><span class="who" data-act="showUserRoles" data-handle="${esc(d.author)}">${esc(d.author)}</span></div>
       <div class="body">${renderText(d.body,{mentions:[]})}</div></div></div>`).join('');
@@ -1184,23 +1282,30 @@ async function collectBallot(){
       {value:'Mute',label:t('app.ballot.mute')},{value:'LiftMute',label:t('app.ballot.lift_mute')},
       {value:'AppointPolice',label:t('app.ballot.appoint_police')},{value:'DismissPolice',label:t('app.ballot.dismiss_police')},
       {value:'CreateRole',label:t('app.ballot.create_role')},{value:'DeleteRole',label:t('app.ballot.delete_role')},
-      {value:'AssignRole',label:t('app.ballot.assign_role')},{value:'UnassignRole',label:t('app.ballot.unassign_role')},
       {value:'SetRehomingPolicy',label:t('app.ballot.rehoming_fed')}]}], submitText:t('app.btn.next')});
   if(!pick) return null;
   const K = pick.kind; let body={kind:K}; let v;
-  if(['DeleteRole','AssignRole','UnassignRole'].includes(K) && !roleOptions().length){ toast(t('app.toast.no_roles_first'),'err'); return null; }
+  if(K==='DeleteRole' && !roleOptions().length){ toast(t('app.toast.no_roles_first'),'err'); return null; }
   if(K==='AddRule'){ v=await modal({title:t('app.ballot.add_rule'),fields:[{name:'text',label:t('app.rule.text_label'),type:'textarea'}],submitText:t('app.btn.propose')}); if(!v||!v.text) return null; body.text=v.text; }
-  else if(K==='CreateChannel'){ v=await modal({title:t('app.ballot.create_channel'),fields:[{name:'name',label:t('app.field.name')},{name:'topic',label:t('app.field.topic_optional')}],submitText:t('app.btn.propose')}); if(!v||!v.name) return null; body.name=v.name; body.topic=v.topic||''; }
+  else if(K==='CreateChannel'){ v=await modal({title:t('app.ballot.create_channel'),fields:[{name:'name',label:t('app.field.name')},{name:'topic',label:t('app.field.topic_optional')},{name:'kind',label:t('app.newchan.kind'),type:'select',value:'text',options:[{value:'text',label:t('app.newchan.kind_text')},{value:'voice',label:t('app.newchan.kind_voice')}]}],submitText:t('app.btn.propose')}); if(!v||!v.name) return null; body.name=v.name; body.topic=v.topic||''; body.is_voice=v.kind==='voice'; }
   else if(K==='DeleteChannel'){ v=await modal({title:t('app.ballot.delete_channel'),fields:[{name:'name',label:t('app.field.channel_name')}],submitText:t('app.btn.propose')}); if(!v||!v.name) return null; body.name=v.name; }
   else if(K==='Ban'){ const h=await pickMember({title:t('app.ballot.ban'), filter:m=>!m.is_sanctioned}); if(!h) return null; body.handle=h; }
   else if(K==='Mute'){ const h=await pickMember({title:t('app.ballot.mute'), filter:m=>!m.is_police&&!m.is_muted}); if(!h) return null; body.handle=h; }
   else if(K==='LiftMute'){ const h=await pickMember({title:t('app.ballot.lift_mute'), filter:m=>m.is_muted, empty:t('app.police.none_muted')}); if(!h) return null; body.handle=h; }
   else if(K==='AppointPolice'){ const h=await pickMember({title:t('app.ballot.appoint_police'), filter:m=>!m.is_police}); if(!h) return null; body.handle=h; }
   else if(K==='DismissPolice'){ const h=await pickMember({title:t('app.ballot.dismiss_police'), filter:m=>m.is_police, empty:t('app.police.none')}); if(!h) return null; body.handle=h; }
-  else if(K==='CreateRole'){ v=await modal({title:t('app.ballot.create_role'),message:t('app.role.create_msg'),fields:[{name:'name',label:t('app.role.name_label')}],submitText:t('app.btn.propose')}); if(!v||!v.name) return null; body.name=v.name; }
+  else if(K==='CreateRole'){ v=await modal({title:t('app.ballot.create_role'),message:t('app.role.create_msg'),fields:[
+      {name:'name',label:t('app.role.name_label')},
+      {name:'who',label:t('app.role.who_label'),type:'select',value:'all',options:[{value:'all',label:t('app.role.who_all')},{value:'citizens',label:t('app.role.who_citizens')}]},
+      {name:'days',label:t('app.role.days_label'),placeholder:'0'},
+      {name:'contribution',label:t('app.role.contribution_label'),placeholder:'0'}
+    ],submitText:t('app.btn.propose')}); if(!v||!v.name) return null;
+    body.name=v.name;
+    body.requires_citizen = v.who==='citizens';
+    body.min_membership_days = Math.max(0, parseInt(v.days,10)||0);
+    body.min_contribution = Math.max(0, parseInt(v.contribution,10)||0);
+  }
   else if(K==='DeleteRole'){ v=await modal({title:t('app.ballot.delete_role'),fields:[{name:'role',label:t('app.field.role'),type:'select',options:roleOptions()}],submitText:t('app.btn.propose')}); if(!v||!v.role) return null; body.role=v.role; }
-  else if(K==='AssignRole'){ v=await modal({title:t('app.ballot.assign_role'),fields:[{name:'handle',label:t('app.field.member_handle')},{name:'role',label:t('app.field.role'),type:'select',options:roleOptions()}],submitText:t('app.btn.propose')}); if(!v||!v.handle||!v.role) return null; body.handle=v.handle; body.role=v.role; }
-  else if(K==='UnassignRole'){ v=await modal({title:t('app.ballot.unassign_role'),fields:[{name:'handle',label:t('app.field.member_handle')},{name:'role',label:t('app.field.role'),type:'select',options:roleOptions()}],submitText:t('app.btn.propose')}); if(!v||!v.handle||!v.role) return null; body.handle=v.handle; body.role=v.role; }
   else if(K==='SetRehomingPolicy'){ v=await modal({title:t('app.rehoming.title'), message:t('app.rehoming.message'), fields:[{name:'mode',label:t('app.rehoming.label'),type:'select',options:[{value:'disable',label:t('app.rehoming.disable')},{value:'enable',label:t('app.rehoming.enable')}]}],submitText:t('app.btn.propose')}); if(!v||!v.mode) return null; body.is_disabled = v.mode==='disable'; }
   return body;
 }
@@ -1283,12 +1388,18 @@ const openServerSettings = guard(async () => {
     <h4 class="setsec">${t('app.settings.sec_trials')}</h4>
     ${row(t('app.settings.jury_sizing'), esc(jurySizingText(d.jury_sizing)), 'jury')}`;
   // Personal tab — this member's own per-server preferences.
+  const declinesMod = !!(me && me.declines_moderator);
   const personalPane = isMember
     ? `<span class="msg">${t('app.settings.personal_msg')}</span>
        <h4 class="setsec">${t('app.settings.sec_history')}</h4>
        <label class="switch full" style="justify-content:space-between">
          <span>${t('app.settings.history_toggle')}<br><span class="sub">${t('app.settings.history_sub')}</span></span>
          <span style="display:flex"><input type="checkbox" id="histShare" ${shares?'checked':''}><span class="track"></span></span>
+       </label>
+       <h4 class="setsec">${t('app.settings.sec_roles')}</h4>
+       <label class="switch full" style="justify-content:space-between">
+         <span>${t('app.settings.mod_toggle')}<br><span class="sub">${t('app.settings.mod_sub')}</span></span>
+         <span style="display:flex"><input type="checkbox" id="modOptout" ${declinesMod?'checked':''}><span class="track"></span></span>
        </label>`
     : `<div class="sub" style="margin-top:.6rem">${t('app.settings.personal_guest')}</div>`;
   // Emoji tab — the server's custom-emoji ranking, continuously voted. Open to all
@@ -1328,6 +1439,11 @@ const openServerSettings = guard(async () => {
   if(hs) hs.onchange = guard(async ()=>{
     await api('/api/servers/'+S.server+'/history-sharing','POST',{shares:hs.checked});
     toast(t(hs.checked?'app.toast.history_shared':'app.toast.history_hidden'),'ok');
+  });
+  const mo = scrim.querySelector('#modOptout');
+  if(mo) mo.onchange = guard(async ()=>{
+    await api('/api/servers/'+S.server+'/moderator-optout','POST',{declined:mo.checked});
+    toast(t(mo.checked?'app.toast.mod_declined':'app.toast.mod_accepted'),'ok');
   });
   loadEmojis(); // fill the Emoji tab's ranked vote list (now inside this modal)
 });
@@ -1458,7 +1574,17 @@ const policeUnmute = guard(async (h) => {
 const join = guard(async () => { await api('/api/servers/'+S.server+'/join','POST',{}); selectServer(S.server); });
 const becomeCitizen = guard(async () => { const r=await api('/api/servers/'+S.server+'/enfranchise','POST',{}); toast(r.message, r.is_admitted?'ok':''); selectServer(S.server); });
 const devEndorse = guard(async () => { await api('/api/servers/'+S.server+'/dev/endorse','POST',{}); loadMe(); });
-const advance = guard(async days => { const r=await api('/api/dev/advance','POST',{days}); $('clockNow').textContent='now: '+new Date(r.now*1000).toISOString().slice(0,10); loadMe(); });
+/* Nudge the dev clock. Accepts a number of days or a {days,hours,minutes} object.
+   Refreshes standing + proposals so any newly-closed ballots update immediately. */
+const advance = guard(async step => {
+  const body = typeof step==='number' ? {days:step} : step;
+  const r = await api('/api/dev/advance','POST',body);
+  setClockDisplay(r.now);
+  loadMe(); loadProposals(); if(S.prop) refreshDemocracy(); else loadDemocracy();
+});
+function setClockDisplay(nowSecs){
+  const el=$('clockNow'); if(el) el.textContent = 'now: '+new Date(nowSecs*1000).toISOString().slice(0,16).replace('T',' ')+'Z';
+}
 
 /* ── Direct messages / social ───────────────────────────────────── */
 async function loadSocial(){
@@ -1664,10 +1790,217 @@ const setPolicy = guard(async isFriendsOnly => {
   toast(isFriendsOnly?t('app.toast.dms_friends'):t('app.toast.dms_open'),'ok');
 });
 
+/* ── Voice channels ─────────────────────────────────────────────────
+   Full-mesh peer-to-peer WebRTC: each participant holds one RTCPeerConnection to
+   every other, so audio is browser-to-browser (DTLS-SRTP) and no node ever sees it.
+   The server only relays SDP/ICE and tracks the ephemeral roster (see
+   docs/voice-channels.md). Rooms are small (mesh cap ~8). At most one active call. */
+
+/* Send a signaling frame up the WebSocket, addressed to our current voice room.
+   Silently dropped if the socket is gone (the call tears down on WS close). */
+function vsend(obj){
+  const v = S.voice; if(!v || !S.ws || S.ws.readyState!==1) return;
+  S.ws.send(JSON.stringify({ ...obj, server:v.server, channel:v.channel }));
+}
+
+/* Join the voice call in (server, channel). Acquires the mic, then announces to the
+   roster; existing members are learned from the `voice_roster` reply. */
+const voiceJoin = guard(async (server, channel) => {
+  if(S.voice) await voiceLeave();
+  let local;
+  try { local = await navigator.mediaDevices.getUserMedia({ audio:true, video:false }); }
+  catch { toast(t('app.voice.no_mic'), 'err'); return; }
+  S.voice = { server, channel, myId:null, local, muted:false, deafened:false, peers:{} };
+  vsend({ type:'voice_join' });
+  renderVoiceBar();
+});
+
+/* Leave the active call: close every peer connection, stop the mic, tell the room. */
+async function voiceLeave(){
+  const v = S.voice; if(!v) return;
+  vsend({ type:'voice_leave' });
+  Object.keys(v.peers).forEach(closePeer);
+  v.local && v.local.getTracks().forEach(tr=>tr.stop());
+  stopSpeaking();
+  S.voice = null;
+  renderVoiceBar();
+}
+
+/* Build (or fetch) the peer connection to `id`. `initiator` is set by the newcomer,
+   who offers to each existing member — a single-offerer rule that avoids glare. */
+function peerConn(id, handle, initiator){
+  const v = S.voice; if(!v) return null;
+  let p = v.peers[id];
+  // An existing entry with a live pc is reused. A pc-less *stub* (created by
+  // voice_peer_join purely so the roster renders) is upgraded here into a real
+  // connection — the answerer reaches this path when the newcomer's offer arrives.
+  if(p && p.pc) return p;
+  const pc = new RTCPeerConnection({ iceServers: S.ice || [] });
+  if(p){ p.pc = pc; if(handle) p.handle = handle; }
+  else p = v.peers[id] = { pc, handle, speaking:false, audio:null };
+  v.local.getTracks().forEach(tr=>pc.addTrack(tr, v.local));
+  pc.onicecandidate = e => { if(e.candidate) vsend({ type:'voice_signal', to:id, data:{ ice:e.candidate } }); };
+  pc.ontrack = e => {
+    const stream = e.streams[0];
+    let a = p.audio;
+    if(!a){ a = p.audio = new Audio(); a.autoplay = true; }
+    a.srcObject = stream;
+    a.muted = v.deafened;
+    a.play().catch(()=>{});
+    watchSpeaking(id, stream);
+  };
+  pc.onconnectionstatechange = () => {
+    if(['failed','closed'].includes(pc.connectionState)) { closePeer(id); renderVoiceBar(); }
+  };
+  if(initiator){
+    pc.createOffer()
+      .then(o=>pc.setLocalDescription(o))
+      .then(()=>vsend({ type:'voice_signal', to:id, data:pc.localDescription }))
+      .catch(()=>{});
+  }
+  renderVoiceBar();
+  return p;
+}
+
+function closePeer(id){
+  const v = S.voice; if(!v) return;
+  const p = v.peers[id]; if(!p) return;
+  try { p.pc.close(); } catch {}
+  if(p.audio){ p.audio.srcObject = null; }
+  if(v.analysers) delete v.analysers[id];
+  delete v.peers[id];
+}
+
+/* Route one relayed signaling frame. `data` is either an SDP description (has `.sdp`)
+   or an ICE candidate (`{ice}`). The server has already validated co-presence. */
+async function onVoiceSignal(from, handle, data){
+  const v = S.voice; if(!v) return;
+  if(data && data.ice){
+    const p = v.peers[from]; if(!p) return;
+    try { await p.pc.addIceCandidate(data.ice); } catch {}
+    return;
+  }
+  if(!data || !data.sdp) return;
+  // An incoming offer means `from` is the newcomer; we answer. Create the peer
+  // non-initiator if we don't yet know it.
+  const p = peerConn(from, handle, false);
+  try {
+    await p.pc.setRemoteDescription(data);
+    if(data.type==='offer'){
+      const ans = await p.pc.createAnswer();
+      await p.pc.setLocalDescription(ans);
+      vsend({ type:'voice_signal', to:from, data:p.pc.localDescription });
+    }
+  } catch {}
+}
+
+/* Dispatch a voice_* WS frame. Returns true if it was a voice frame. */
+function handleVoiceFrame(m){
+  if(m.type==='voice_roster'){
+    if(!S.voice) return true;
+    S.voice.myId = m.you;
+    (m.peers||[]).forEach(pr=>peerConn(pr.id, pr.handle, true));
+    renderVoiceBar();
+    return true;
+  }
+  if(m.type==='voice_peer_join'){
+    // The newcomer will offer to us; just note them so the roster shows immediately.
+    if(S.voice && !S.voice.peers[m.id]) S.voice.peers[m.id] = { pc:null, handle:m.handle, speaking:false, audio:null };
+    renderVoiceBar();
+    return true;
+  }
+  if(m.type==='voice_peer_leave'){ closePeer(m.id); renderVoiceBar(); return true; }
+  if(m.type==='voice_signal'){ onVoiceSignal(m.from, m.handle, m.data); return true; }
+  if(m.type==='voice_full'){ toast(t('app.voice.full',{n:8}), 'err'); if(S.voice&&!Object.keys(S.voice.peers).length) voiceLeave(); return true; }
+  return false;
+}
+
+/* Toggle mic / deafen. Muting disables the local track; deafening mutes every remote
+   audio element (and the mic too, matching the usual client convention). */
+function voiceMute(){ const v=S.voice; if(!v) return; v.muted=!v.muted; v.local.getAudioTracks().forEach(tr=>tr.enabled=!v.muted); renderVoiceBar(); }
+function voiceDeafen(){
+  const v=S.voice; if(!v) return; v.deafened=!v.deafened;
+  Object.values(v.peers).forEach(p=>{ if(p.audio) p.audio.muted=v.deafened; });
+  if(v.deafened && !v.muted) voiceMute(); else renderVoiceBar();
+}
+
+/* Speaking indicator: a shared AudioContext with one analyser per stream. A single
+   rAF loop reads RMS levels and toggles the `.speaking` class on roster rows. */
+function watchSpeaking(id, stream){
+  const v=S.voice; if(!v) return;
+  try {
+    v.ac = v.ac || new (window.AudioContext||window.webkitAudioContext)();
+    v.analysers = v.analysers || {};
+    const src = v.ac.createMediaStreamSource(stream);
+    const an = v.ac.createAnalyser(); an.fftSize = 512;
+    src.connect(an);
+    v.analysers[id] = an;
+    if(!v.raf) speakingLoop();
+  } catch {}
+}
+function speakingLoop(){
+  const v=S.voice; if(!v || !v.analysers){ return; }
+  const buf = new Uint8Array(256);
+  let changed = false;
+  Object.entries(v.analysers).forEach(([id,an])=>{
+    an.getByteTimeDomainData(buf);
+    let sum=0; for(let i=0;i<buf.length;i++){ const d=buf[i]-128; sum+=d*d; }
+    const rms = Math.sqrt(sum/buf.length);
+    const speaking = rms > 6;
+    const p = v.peers[id];
+    if(p && p.speaking!==speaking){ p.speaking=speaking; changed=true; }
+  });
+  if(changed){ document.querySelectorAll('#voicebar .vrow').forEach(row=>{
+    const p = v.peers[row.dataset.id]; row.classList.toggle('speaking', !!(p&&p.speaking));
+  }); }
+  v.raf = requestAnimationFrame(speakingLoop);
+}
+function stopSpeaking(){ const v=S.voice; if(v){ if(v.raf) cancelAnimationFrame(v.raf); if(v.ac){ try{v.ac.close();}catch{} } v.raf=null; v.ac=null; v.analysers=null; } }
+
+/* Render the voice strip above the message pane. Shown when the selected channel is
+   a voice channel, or whenever a call is active (so it persists across navigation). */
+function renderVoiceBar(){
+  const bar = $('voicebar'); if(!bar) return;
+  const ch = (S.channels||[]).find(c=>c.name===S.channel);
+  const selVoice = ch && ch.kind==='voice';
+  const v = S.voice;
+  if(!selVoice && !v){ bar.style.display='none'; bar.innerHTML=''; return; }
+  bar.style.display='block';
+  // Not in a call, viewing a voice channel: offer to join.
+  if(!v || v.channel!==(ch&&ch.name) || v.server!==S.server){
+    if(v){ // In a call on a *different* channel — show a compact "return / leave" strip.
+      bar.innerHTML = `<div class="vbar"><span class="vtitle">${icon('mic',15)} ${t('app.voice.in_other',{ch:esc(v.channel)})}</span>
+        <span class="grow"></span>
+        <button class="sm" data-act="voiceLeave">${t('app.voice.leave')}</button></div>`;
+      if(!selVoice) return; // on a text channel: just the strip
+    }
+    if(selVoice){
+      bar.innerHTML = `<div class="vbar"><span class="vtitle">${icon('mic',15)} ${esc(ch.name)}</span>
+        <span class="sub">${t('app.voice.tagline')}</span>
+        <span class="grow"></span>
+        <button class="sm primary" data-act="voiceJoinHere">${t('app.voice.join')}</button></div>`;
+    }
+    return;
+  }
+  // In this call: roster + controls.
+  const self = `<div class="vrow self${v.muted?' muted':''}" data-id="me">${icon(v.muted?'micoff':'mic',14)}<span class="vh">${esc(S.me)} ${t('app.voice.you')}</span></div>`;
+  const rows = Object.entries(v.peers).map(([id,p])=>
+    `<div class="vrow" data-id="${id}">${icon('mic',14)}<span class="vh">${esc(p.handle||'…')}</span>${p.pc?'':`<span class="sub vconn">${t('app.voice.connecting')}</span>`}</div>`).join('');
+  bar.innerHTML = `<div class="vbar">
+      <span class="vtitle">${icon('mic',15)} ${esc(v.channel)} · ${t('app.voice.count',{n:Object.keys(v.peers).length+1})}</span>
+      <span class="grow"></span>
+      <button class="iconbtn${v.muted?' on':''}" data-act="voiceMute" title="${t(v.muted?'app.voice.unmute':'app.voice.mute')}">${icon(v.muted?'micoff':'mic',16)}</button>
+      <button class="iconbtn${v.deafened?' on':''}" data-act="voiceDeafen" title="${t(v.deafened?'app.voice.undeafen':'app.voice.deafen')}">${icon('headset',16)}</button>
+      <button class="sm danger" data-act="voiceLeave">${icon('phoneoff',14)} ${t('app.voice.leave')}</button>
+    </div>
+    <div class="vroster">${self}${rows}</div>`;
+}
+
 /* ── Realtime ───────────────────────────────────────────────────── */
 function connectWS(){
   const proto = location.protocol==='https:'?'wss':'ws';
   const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  S.ws = ws;
   ws.onopen = () => {
     $('online').textContent = t('app.ws.live');
     // Catch up on anything that changed while we were disconnected.
@@ -1676,7 +2009,8 @@ function connectWS(){
   };
   ws.onmessage = ev => {
     let m; try { m = JSON.parse(ev.data); } catch { return; }
-    if (m.type==='presence') { $('online').textContent = t('app.ws.online',{n:m.online}); return; }
+    if (m.type && m.type.startsWith('voice_')) { handleVoiceFrame(m); return; }
+    if (m.type==='presence') { $('online').textContent = t('app.ws.online',{n:m.online}); if(S.server) loadActive(); return; }
     if ((m.type==='message'||m.type==='reaction') && m.server===S.server && m.channel===S.channel) loadMessages();
     if (m.type==='server') { loadServers(); loadMe(); loadProposals(); }
     if (m.type==='channel' && m.server===S.server) selectServer(S.server);
@@ -1689,19 +2023,27 @@ function connectWS(){
     }
     if (m.type==='mute' && m.server===S.server) { loadMe(); loadPolicing(); if(!S.prop) selectServer(S.server); }
     if (m.type==='emoji' && m.server===S.server) { loadEmojis(); loadMessages(); }
-    if (m.type==='clock') loadMe();
+    if (m.type==='clock') { loadMe(); loadProposals(); if(S.prop) refreshDemocracy(); else loadDemocracy(); }
     if (m.type==='social' && (m.a===S.me || m.b===S.me)) {
       loadSocial();
       if(S.peer && (m.a===S.peer || m.b===S.peer)) loadConversation();
     }
   };
-  ws.onclose = () => { $('online').textContent = t('app.ws.reconnecting'); setTimeout(connectWS, 1500); };
+  ws.onclose = () => {
+    S.ws = null;
+    // The signaling relay is gone — the mesh can't be maintained, so end any call.
+    if (S.voice) voiceLeave();
+    $('online').textContent = t('app.ws.reconnecting'); setTimeout(connectWS, 1500);
+  };
   ws.onerror = () => { try { ws.close(); } catch {} };
 }
 
 function esc(s){ return (s+'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 ['handleInput','passwordInput'].forEach(id=>$(id)?.addEventListener('keydown', e=>{ if(e.key==='Enter') submitAuth(); }));
 $('dmInput').addEventListener('keydown', e=>{ if(e.key==='Enter') sendDm(); });
+// Message search: debounce typing, run immediately on Enter, clear on Escape.
+$('msgSearch')?.addEventListener('input', ()=>{ clearTimeout(SEARCH_TIMER); SEARCH_TIMER=setTimeout(runSearch, 260); });
+$('msgSearch')?.addEventListener('keydown', e=>{ if(e.key==='Enter'){ clearTimeout(SEARCH_TIMER); runSearch(); } else if(e.key==='Escape'){ clearSearch(); } });
 
 /* ── Event delegation ───────────────────────────────────────────────
    The CSP forbids inline handlers (`script-src 'self'`, no 'unsafe-inline'),
@@ -1718,8 +2060,10 @@ const ACTIONS = {
   sendFriendRequest: () => sendFriendRequest(),
   openDmBtn:   el => openDm(el.dataset.handle),
   openSettings:   () => openSettings(),
-  toggleNav:      () => document.body.classList.toggle('nav-open'),
+  toggleNav:      () => { document.body.classList.remove('gov-open'); document.body.classList.toggle('nav-open'); },
   closeNav:       () => document.body.classList.remove('nav-open'),
+  toggleGov:      () => { document.body.classList.remove('nav-open'); document.body.classList.toggle('gov-open'); },
+  closeGov:       () => document.body.classList.remove('gov-open'),
   toggleTheme:    () => toggleTheme(),
   logout:         () => logout(),
   newServer:      () => newServer(),
@@ -1729,6 +2073,10 @@ const ACTIONS = {
   inviteToServer: () => inviteToServer(),
   openServerSettings: () => openServerSettings(),
   newChannel:     () => newChannel(),
+  voiceJoinHere:  () => { const ch=(S.channels||[]).find(c=>c.name===S.channel); if(ch&&ch.kind==='voice') voiceJoin(S.server, ch.name); },
+  voiceLeave:     () => voiceLeave(),
+  voiceMute:      () => voiceMute(),
+  voiceDeafen:    () => voiceDeafen(),
   sendMessage:    () => sendMessage(),
   attachFile:     () => $('attachInput').click(),
   removeAtt:   el => { const i=+el.dataset.i, p=PENDING[i]; if(p){ if(p.url) URL.revokeObjectURL(p.url); PENDING.splice(i,1); renderPending(); } },
@@ -1737,10 +2085,14 @@ const ACTIONS = {
   revealMedia:   el => el.classList.add('revealed'),
   openMedia:   el => window.open(el.dataset.url, '_blank', 'noopener'),
   newProposal:    () => newProposal(),
+  openProp:    el => selectProposal(+el.dataset.id),
+  clearSearch:    () => clearSearch(),
+  openHit:     el => openHit(el),
   amendProp:   el => amendProposal(+el.dataset.id),
   policeMute:     () => policeMute(),
   policeUnmute: el => policeUnmute(el.dataset.h),
   advance15:      () => advance(15),
+  advanceBy:   el => advance({ days:+(el.dataset.d||0), hours:+(el.dataset.h||0), minutes:+(el.dataset.m||0) }),
   startDm:        () => startDm(),
   sendDm:         () => sendDm(),
   join:           () => join(),

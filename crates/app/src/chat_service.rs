@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use domain::{Channel, Message, Phase, Reaction};
+use domain::{Channel, ChannelKind, MediaKind, Message, Phase, Reaction};
 
 use crate::{
     ChannelError, ChannelStore, Clock, ImageTranscoder, MediaStore, MembershipStore, MessageError,
@@ -74,6 +74,32 @@ impl ChatService {
         name: &str,
         topic: &str,
     ) -> Result<Channel, ChannelError> {
+        self.create_channel_of_kind(founder_handle, server_slug, name, topic, ChannelKind::Text)
+            .await
+    }
+
+    /// Create a voice channel — a normal channel that *additionally* hosts a live
+    /// audio room (see [`create_channel`](Self::create_channel) for the governance
+    /// rules, which are identical).
+    pub async fn create_voice_channel(
+        &self,
+        founder_handle: &str,
+        server_slug: &str,
+        name: &str,
+        topic: &str,
+    ) -> Result<Channel, ChannelError> {
+        self.create_channel_of_kind(founder_handle, server_slug, name, topic, ChannelKind::Voice)
+            .await
+    }
+
+    async fn create_channel_of_kind(
+        &self,
+        founder_handle: &str,
+        server_slug: &str,
+        name: &str,
+        topic: &str,
+        kind: ChannelKind,
+    ) -> Result<Channel, ChannelError> {
         let user = self
             .users
             .find_by_handle(founder_handle.trim()).await?
@@ -97,13 +123,14 @@ impl ChatService {
             return Err(ChannelError::NameTaken(name));
         }
 
-        let channel = Channel::new(
+        let mut channel = Channel::new(
             self.channels.next_channel_id().await?,
             server.id,
             name,
             topic.trim(),
             self.clock.now(),
         );
+        channel.kind = kind;
         self.channels.insert_channel(channel.clone()).await?;
         Ok(channel)
     }
@@ -437,6 +464,96 @@ impl ChatService {
         Ok(out)
     }
 
+    /// Full-text message search across a server's **visible** channels, honouring
+    /// the same appeals gating and per-author history-sharing as reading a channel
+    /// (search never surfaces a message the viewer could not otherwise read). The
+    /// query is Discord-style: bare words are AND-ed substring terms, and the
+    /// operators `from:@user`, `to:@user` (mentions), `in:#channel`, `has:link`,
+    /// `has:image`, `before:YYYY-MM-DD`, and `after:YYYY-MM-DD` narrow the set.
+    /// Content operators (terms, `to:`, `has:link`) match only plaintext — an
+    /// end-to-end-encrypted body is opaque to the server. Newest hit first; capped.
+    pub async fn search_messages(
+        &self,
+        viewer_handle: &str,
+        server_slug: &str,
+        query: &str,
+    ) -> Vec<SearchHit> {
+        let filters = SearchFilters::parse(query);
+        // A query that constrains nothing would match the whole server — refuse it
+        // rather than dump every message.
+        if filters.is_empty() {
+            return Vec::new();
+        }
+        let Some(channels) = self.visible_channels(viewer_handle, server_slug).await else {
+            return Vec::new();
+        };
+        // Resolve `from:` up front; an unresolvable author can match nothing.
+        let from_id = match &filters.from {
+            Some(h) => match self.users.find_by_handle(h.trim()).await.ok().flatten() {
+                Some(u) => Some(u.id),
+                None => return Vec::new(),
+            },
+            None => None,
+        };
+        let mut hits: Vec<SearchHit> = Vec::new();
+        for ch in channels {
+            if let Some(want) = &filters.in_channel {
+                if domain::normalize_channel_name(want) != ch.name {
+                    continue;
+                }
+            }
+            let msgs = self
+                .channel_messages_for(viewer_handle, server_slug, &ch.name)
+                .await
+                .unwrap_or_default();
+            for m in msgs {
+                if m.is_deleted {
+                    continue;
+                }
+                if let Some(fid) = from_id {
+                    if m.author != fid {
+                        continue;
+                    }
+                }
+                if let Some(before) = filters.before {
+                    if m.created_at.0 >= before {
+                        continue;
+                    }
+                }
+                if let Some(after) = filters.after {
+                    if m.created_at.0 < after {
+                        continue;
+                    }
+                }
+                if filters.has_image && !m.attachments.iter().any(|a| a.kind == MediaKind::Image) {
+                    continue;
+                }
+                // Content matching needs a readable body; a sealed message (some epoch)
+                // is ciphertext to us, so any content filter excludes it.
+                let plaintext = m.key_epoch.is_none();
+                let body_lower = if plaintext { m.body.to_lowercase() } else { String::new() };
+                if filters.has_link && !(plaintext && contains_url(&body_lower)) {
+                    continue;
+                }
+                if let Some(to) = &filters.to {
+                    if !(plaintext && mentions_handle(&body_lower, to)) {
+                        continue;
+                    }
+                }
+                if !filters.terms.is_empty()
+                    && !(plaintext && filters.terms.iter().all(|t| body_lower.contains(t)))
+                {
+                    continue;
+                }
+                let author_handle = self.user_handle(m.author).await.unwrap_or_default();
+                hits.push(SearchHit { message: m, channel_name: ch.name.clone(), author_handle });
+            }
+        }
+        hits.sort_by(|a, b| b.message.created_at.0.cmp(&a.message.created_at.0));
+        hits.truncate(MAX_SEARCH_HITS);
+        hits
+    }
+
     /// This member's personal history-sharing preference for a server, if they are
     /// a member. `true` (share with newcomers) is the default.
     pub async fn history_sharing(&self, handle: &str, server_slug: &str) -> Option<bool> {
@@ -636,4 +753,118 @@ impl ChatService {
             self.memberships.upsert(m).await.unwrap_or_default();
         }
     }
+}
+
+/// Cap on returned search hits — a bound on both the response size and the work a
+/// single query can trigger over a large server.
+const MAX_SEARCH_HITS: usize = 50;
+
+/// One message that matched a [`search_messages`](ChatService::search_messages)
+/// query, carried with the human-readable channel and author for rendering.
+pub struct SearchHit {
+    pub message: Message,
+    pub channel_name: String,
+    pub author_handle: String,
+}
+
+/// A parsed search query: the free-text `terms` (all must match, case-insensitive)
+/// plus the operator filters. Absent operators are `None`/`false`.
+#[derive(Default)]
+struct SearchFilters {
+    terms: Vec<String>,
+    from: Option<String>,
+    to: Option<String>,
+    in_channel: Option<String>,
+    has_link: bool,
+    has_image: bool,
+    before: Option<i64>,
+    after: Option<i64>,
+}
+
+impl SearchFilters {
+    /// Split a raw query into terms and operators. Unknown `word:value` shapes fall
+    /// back to plain terms, so a stray colon never silently drops the query.
+    fn parse(query: &str) -> Self {
+        let mut f = SearchFilters::default();
+        for tok in query.split_whitespace() {
+            let (key, value) = match tok.split_once(':') {
+                Some((k, v)) if !v.is_empty() => (k.to_ascii_lowercase(), v),
+                _ => {
+                    f.terms.push(tok.to_lowercase());
+                    continue;
+                }
+            };
+            let val = value.trim_start_matches(['@', '#']);
+            match key.as_str() {
+                "from" => f.from = Some(val.to_string()),
+                "to" => f.to = Some(val.to_lowercase()),
+                "in" => f.in_channel = Some(val.to_string()),
+                "has" => match value.to_ascii_lowercase().as_str() {
+                    "link" | "url" => f.has_link = true,
+                    "image" | "img" => f.has_image = true,
+                    _ => {}
+                },
+                "before" => f.before = parse_civil_date(value),
+                "after" => f.after = parse_civil_date(value),
+                _ => f.terms.push(tok.to_lowercase()),
+            }
+        }
+        f
+    }
+
+    /// Whether the query constrains nothing at all (so it would match everything).
+    fn is_empty(&self) -> bool {
+        self.terms.is_empty()
+            && self.from.is_none()
+            && self.to.is_none()
+            && self.in_channel.is_none()
+            && !self.has_link
+            && !self.has_image
+            && self.before.is_none()
+            && self.after.is_none()
+    }
+}
+
+/// Whether an already-lowercased body carries an `http(s)://` URL.
+fn contains_url(body_lower: &str) -> bool {
+    body_lower.contains("http://") || body_lower.contains("https://")
+}
+
+/// Whether an already-lowercased body `@`-mentions `handle` (also lowercased) as a
+/// whole token — `@ada` matches, `@adamant` does not.
+fn mentions_handle(body_lower: &str, handle_lower: &str) -> bool {
+    let needle = format!("@{handle_lower}");
+    let mut from = 0;
+    while let Some(pos) = body_lower[from..].find(&needle) {
+        let end = from + pos + needle.len();
+        let next_is_word = body_lower[end..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-');
+        if !next_is_word {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
+
+/// Parse a `YYYY-MM-DD` date to the Unix timestamp (UTC midnight) of that day, or
+/// `None` if malformed. Uses Howard Hinnant's days-from-civil algorithm — no
+/// calendar crate needed for a whole-day boundary.
+fn parse_civil_date(s: &str) -> Option<i64> {
+    let mut parts = s.split('-');
+    let y: i64 = parts.next()?.parse().ok()?;
+    let m: i64 = parts.next()?.parse().ok()?;
+    let d: i64 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as i64; // [0, 399]
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    let days = era * 146097 + doe - 719468; // days since 1970-01-01
+    Some(days * 86400)
 }

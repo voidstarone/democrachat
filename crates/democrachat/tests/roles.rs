@@ -1,14 +1,15 @@
 //! Integration tests for governed roles and `@mention` resolution.
 //!
-//! Roles are created and populated only by ballot, so these tests drive the full
-//! open → vote → close → apply lifecycle and then check both the role state and
-//! how a message body's mentions resolve.
+//! A role's *existence* is decided by ballot; its *membership* is not — a member
+//! holds a role automatically the moment they meet its `RoleCriteria`, with no
+//! assignment step. These tests drive the create/delete lifecycle and then check
+//! that holders (and the mentions that address them) are derived from standing.
 
 use std::sync::Arc;
 
 use adapter_store_memory::{FixedClock, MemoryStore};
 use app::{Clock, MembershipStore, MentionKind, ServerStore, Services, UserStore};
-use domain::{ProposalKind, Tier, Timestamp};
+use domain::{ProposalKind, RoleCriteria, Tier, Timestamp};
 
 const DAY: i64 = 86_400;
 
@@ -37,9 +38,18 @@ async fn seat_citizen(f: &Fixture, handle: &str, slug: &str) {
     f.store.upsert(m).await.unwrap();
 }
 
+async fn set_contribution(f: &Fixture, handle: &str, slug: &str, n: i64) {
+    let user = f.store.find_by_handle(handle).await.unwrap().unwrap();
+    let server = f.store.find_by_slug(slug).await.unwrap().unwrap();
+    let mut m = f.store.get(user.id, server.id).await.unwrap().unwrap();
+    m.contribution = n;
+    f.store.upsert(m).await.unwrap();
+}
+
 async fn setup(f: &Fixture) {
     f.services.register_account("ada").await.unwrap();
-    f.services.found_server("ada", "Town Square").await.unwrap();    seat_citizen(f, "bob", "town-square").await;
+    f.services.found_server("ada", "Town Square").await.unwrap();
+    seat_citizen(f, "bob", "town-square").await;
     seat_citizen(f, "cid", "town-square").await;
 }
 
@@ -52,6 +62,12 @@ async fn pass(f: &Fixture, kind: ProposalKind) {
     let now = f.clock.now().0;
     f.clock.set(Timestamp(now + 4 * DAY));
     f.services.governance().resolve_due("town-square").await;
+    f.clock.set(Timestamp(now)); // rewind so criteria evaluate against real time
+}
+
+/// Criteria that only an enfranchised citizen satisfies.
+fn citizens_only() -> RoleCriteria {
+    RoleCriteria { requires_citizen: true, ..Default::default() }
 }
 
 #[tokio::test]
@@ -60,7 +76,7 @@ async fn a_role_is_created_only_by_ballot() {
     setup(&f).await;
     assert!(f.services.roles().list_roles("town-square").await.is_empty());
 
-    pass(&f, ProposalKind::CreateRole { name: "Mapmakers".into() }).await;
+    pass(&f, ProposalKind::CreateRole { name: "Mapmakers".into(), criteria: RoleCriteria::default() }).await;
 
     let roles = f.services.roles().list_roles("town-square").await;
     assert_eq!(roles.len(), 1);
@@ -68,26 +84,49 @@ async fn a_role_is_created_only_by_ballot() {
 }
 
 #[tokio::test]
-async fn a_member_is_assigned_to_a_role_by_ballot_and_shows_as_a_holder() {
+async fn a_member_holds_a_role_the_moment_they_meet_its_criteria() {
     let f = fixture(1_000 * DAY);
     setup(&f).await;
-    pass(&f, ProposalKind::CreateRole { name: "mapmakers".into() }).await;
-    let role = f.services.roles().list_roles("town-square").await[0].clone();
-    let bob = f.store.find_by_handle("bob").await.unwrap().unwrap();
+    // A plain member who has not earned the franchise.
+    f.services.register_account("newbie").await.unwrap();
+    f.services.join_server("newbie", "town-square").await.unwrap();
 
-    pass(&f, ProposalKind::AssignRole { user: bob.id, role: role.id }).await;
+    // A citizens-only role: no assignment ballot, membership follows standing.
+    pass(&f, ProposalKind::CreateRole { name: "veterans".into(), criteria: citizens_only() }).await;
 
-    assert_eq!(f.services.roles().role_holders("town-square", "mapmakers").await, vec!["bob".to_string()]);
+    let mut holders = f.services.roles().role_holders("town-square", "veterans").await;
+    holders.sort();
+    assert_eq!(holders, vec!["ada".to_string(), "bob".to_string(), "cid".to_string()]);
+    assert!(!holders.contains(&"newbie".to_string()), "a Member does not meet a citizens-only role");
 }
 
 #[tokio::test]
-async fn a_role_mention_resolves_to_its_holders() {
+async fn a_member_loses_a_role_when_they_fall_below_its_criteria() {
     let f = fixture(1_000 * DAY);
     setup(&f).await;
-    pass(&f, ProposalKind::CreateRole { name: "mapmakers".into() }).await;
-    let role = f.services.roles().list_roles("town-square").await[0].clone();
-    let bob = f.store.find_by_handle("bob").await.unwrap().unwrap();
-    pass(&f, ProposalKind::AssignRole { user: bob.id, role: role.id }).await;
+    set_contribution(&f, "bob", "town-square", 10).await;
+    // A role only bob's contribution clears.
+    pass(&f, ProposalKind::CreateRole {
+        name: "top".into(),
+        criteria: RoleCriteria { min_contribution: 10, ..Default::default() },
+    }).await;
+    assert_eq!(f.services.roles().role_holders("town-square", "top").await, vec!["bob".to_string()]);
+
+    // Bob's endorsement is withdrawn — he drops below the bar and out of the role,
+    // automatically, with no unassign step.
+    set_contribution(&f, "bob", "town-square", 2).await;
+    assert!(f.services.roles().role_holders("town-square", "top").await.is_empty());
+}
+
+#[tokio::test]
+async fn a_role_mention_resolves_to_its_derived_holders() {
+    let f = fixture(1_000 * DAY);
+    setup(&f).await;
+    set_contribution(&f, "bob", "town-square", 10).await;
+    pass(&f, ProposalKind::CreateRole {
+        name: "mapmakers".into(),
+        criteria: RoleCriteria { min_contribution: 10, ..Default::default() },
+    }).await;
 
     let resolved = f.services.roles().resolve_mentions("town-square", "ping @mapmakers please").await;
     assert_eq!(resolved.len(), 1);
@@ -132,14 +171,12 @@ async fn an_unknown_or_non_member_mention_is_marked_unknown() {
 }
 
 #[tokio::test]
-async fn deleting_a_role_removes_its_assignments() {
+async fn deleting_a_role_removes_it_and_its_derived_holders() {
     let f = fixture(1_000 * DAY);
     setup(&f).await;
-    pass(&f, ProposalKind::CreateRole { name: "temp".into() }).await;
+    pass(&f, ProposalKind::CreateRole { name: "temp".into(), criteria: citizens_only() }).await;
+    assert!(!f.services.roles().role_holders("town-square", "temp").await.is_empty());
     let role = f.services.roles().list_roles("town-square").await[0].clone();
-    let bob = f.store.find_by_handle("bob").await.unwrap().unwrap();
-    pass(&f, ProposalKind::AssignRole { user: bob.id, role: role.id }).await;
-    assert_eq!(f.services.roles().role_holders("town-square", "temp").await.len(), 1);
 
     pass(&f, ProposalKind::DeleteRole { role: role.id }).await;
     assert!(f.services.roles().list_roles("town-square").await.is_empty());
@@ -147,13 +184,37 @@ async fn deleting_a_role_removes_its_assignments() {
 }
 
 #[tokio::test]
+async fn the_moderator_role_can_be_declined_even_while_qualified() {
+    let f = fixture(1_000 * DAY);
+    setup(&f).await;
+    // Every citizen qualifies for @moderator.
+    pass(&f, ProposalKind::CreateRole { name: "moderator".into(), criteria: citizens_only() }).await;
+    let mut holders = f.services.roles().role_holders("town-square", "moderator").await;
+    holders.sort();
+    assert_eq!(holders, vec!["ada".to_string(), "bob".to_string(), "cid".to_string()]);
+
+    // Bob opts out — moderating is a duty, not a mere label.
+    f.services.roles().set_moderator_optout("bob", "town-square", true).await.unwrap();
+    let mut holders = f.services.roles().role_holders("town-square", "moderator").await;
+    holders.sort();
+    assert_eq!(holders, vec!["ada".to_string(), "cid".to_string()], "bob is excluded once he declines");
+    assert_eq!(f.services.roles().moderator_optout("bob", "town-square").await, Some(true));
+
+    // The opt-out is moderator-specific: another citizens-only role still holds bob.
+    pass(&f, ProposalKind::CreateRole { name: "veterans".into(), criteria: citizens_only() }).await;
+    assert!(f.services.roles().role_holders("town-square", "veterans").await.contains(&"bob".to_string()));
+
+    // Bob can rejoin the duty later.
+    f.services.roles().set_moderator_optout("bob", "town-square", false).await.unwrap();
+    assert!(f.services.roles().role_holders("town-square", "moderator").await.contains(&"bob".to_string()));
+}
+
+#[tokio::test]
 async fn a_roles_colour_is_the_plurality_of_citizen_votes_and_shows_in_the_popover() {
     let f = fixture(1_000 * DAY);
     setup(&f).await;
-    pass(&f, ProposalKind::CreateRole { name: "crew".into() }).await;
+    pass(&f, ProposalKind::CreateRole { name: "crew".into(), criteria: citizens_only() }).await;
     let role = f.services.roles().list_roles("town-square").await[0].clone();
-    let bob = f.store.find_by_handle("bob").await.unwrap().unwrap();
-    pass(&f, ProposalKind::AssignRole { user: bob.id, role: role.id }).await;
 
     // No votes yet → no colour.
     let (_, color) = f.services.roles().roles_with_color("town-square").await[0].clone();
@@ -167,7 +228,8 @@ async fn a_roles_colour_is_the_plurality_of_citizen_votes_and_shows_in_the_popov
     let (_, color) = f.services.roles().roles_with_color("town-square").await[0].clone();
     assert_eq!(color.as_ref().map(|c| c.as_str()), Some("#ff0000"));
 
-    // The popover for bob (a holder) shows the winning colour and bob's own vote.
+    // The popover for bob (a holder, since he's a citizen) shows the winning colour
+    // and bob's own vote.
     let ur = f.services.roles().user_roles("town-square", "bob", "bob").await.unwrap();
     assert_eq!(ur.tier, Tier::Citizen);
     assert!(ur.standing.contains(&"citizens".to_string()));
@@ -185,7 +247,7 @@ async fn a_roles_colour_is_the_plurality_of_citizen_votes_and_shows_in_the_popov
 async fn only_franchised_citizens_may_vote_a_roles_colour() {
     let f = fixture(1_000 * DAY);
     setup(&f).await;
-    pass(&f, ProposalKind::CreateRole { name: "crew".into() }).await;
+    pass(&f, ProposalKind::CreateRole { name: "crew".into(), criteria: RoleCriteria::default() }).await;
     let role = f.services.roles().list_roles("town-square").await[0].clone();
 
     // A plain member (not enfranchised) can't vote a colour.
@@ -204,12 +266,13 @@ async fn only_franchised_citizens_may_vote_a_roles_colour() {
 async fn mentioned_handles_dedupes_across_user_and_role() {
     let f = fixture(1_000 * DAY);
     setup(&f).await;
-    pass(&f, ProposalKind::CreateRole { name: "crew".into() }).await;
-    let role = f.services.roles().list_roles("town-square").await[0].clone();
-    let bob = f.store.find_by_handle("bob").await.unwrap().unwrap();
-    pass(&f, ProposalKind::AssignRole { user: bob.id, role: role.id }).await;
+    set_contribution(&f, "bob", "town-square", 10).await;
+    pass(&f, ProposalKind::CreateRole {
+        name: "crew".into(),
+        criteria: RoleCriteria { min_contribution: 10, ..Default::default() },
+    }).await;
 
-    // @bob appears directly and via @crew — should be listed once.
+    // @bob appears directly and via @crew (which only bob clears) — listed once.
     let handles = f.services.roles().mentioned_handles("town-square", "@bob and @crew").await;
     assert_eq!(handles, vec!["bob".to_string()]);
 }

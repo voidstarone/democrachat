@@ -7,3 +7,7 @@ democrachat.json
 # Runtime upload blobs (the local media tier). Real deployments store these on
 # DEMOCRACHAT_MEDIA_DIR (an external drive); never commit them.
 /media/
+
+# e2e browser-test dependencies (puppeteer-core et al.) — restored with `npm install`.
+/e2e/node_modules/
+.testbed/

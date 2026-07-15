@@ -32,7 +32,10 @@ base-uri 'self'; \
 frame-ancestors 'none'; \
 form-action 'self'";
 
-const PERMISSIONS_POLICY: &str = "camera=(), microphone=(), geolocation=(), payment=()";
+// Voice channels need the microphone from our own origin (getUserMedia in the
+// full-mesh WebRTC client). Camera stays denied until video/screenshare (V6);
+// geolocation and payment are denied outright.
+const PERMISSIONS_POLICY: &str = "camera=(), microphone=(self), geolocation=(), payment=()";
 
 pub async fn security_headers(req: Request, next: Next) -> Response {
     let mut res = next.run(req).await;
@@ -95,11 +98,14 @@ mod tests {
         assert!(!script_src.contains("'unsafe-eval'"), "no eval/new Function may run");
     }
 
-    /// The Permissions-Policy denies the powerful device features outright.
+    /// The Permissions-Policy denies the powerful device features not in use, and
+    /// grants the microphone to our own origin only (voice channels need it).
     #[test]
-    fn the_permissions_policy_denies_device_features() {
-        for feature in ["camera=()", "microphone=()", "geolocation=()", "payment=()"] {
+    fn the_permissions_policy_scopes_device_features() {
+        for feature in ["camera=()", "geolocation=()", "payment=()"] {
             assert!(PERMISSIONS_POLICY.contains(feature), "must deny `{feature}`");
         }
+        assert!(PERMISSIONS_POLICY.contains("microphone=(self)"), "mic allowed same-origin for voice");
+        assert!(!PERMISSIONS_POLICY.contains("microphone=()"), "mic must not be denied outright");
     }
 }

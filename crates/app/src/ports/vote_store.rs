@@ -12,4 +12,7 @@ pub trait VoteStore: Send + Sync {
     async fn upsert_vote(&self, vote: Vote) -> Result<(), StoreError>;
     async fn get_vote(&self, proposal: ProposalId, voter: UserId) -> Result<Option<Vote>, StoreError>;
     async fn list_for_proposal(&self, proposal: ProposalId) -> Result<Vec<Vote>, StoreError>;
+    /// Discard every vote on a proposal — used when an amendment changes the ballot,
+    /// so prior votes (cast on the old bundle) no longer count.
+    async fn clear_for_proposal(&self, proposal: ProposalId) -> Result<(), StoreError>;
 }
