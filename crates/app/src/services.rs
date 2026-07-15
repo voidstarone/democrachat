@@ -10,49 +10,28 @@ use domain::{
     Phase, Tier, Timestamp, User,
 };
 
+use crate::channel_key_service::ChannelKeyService;
+use crate::chat_service::ChatService;
+use crate::emoji_service::EmojiService;
+use crate::governance_service::GovernanceService;
+use crate::key_directory_service::KeyDirectoryService;
+use crate::mute_service::MuteService;
 use crate::outcome::EnfranchiseOutcome;
+use crate::role_service::RoleService;
+use crate::social_service::SocialService;
+use crate::stores::Stores;
 use crate::{
-    BlockStore, ChannelKeyStore, ChannelStore, Clock, DmStore, EnfranchiseError, EmojiStore,
-    EmojiVoteStore, FoundError, FriendStore, ImageTranscoder, InviteError, InviteStore, JoinError,
-    KeyDirectoryStore, MembershipStore,
-    MediaStore, MessageStore, ProposalStore, ReactionStore, RegisterError, RoleColorVoteStore,
-    RoleStore, RuleStore, ServerStore, UserStore, VoteStore,
+    ChannelStore, Clock, EnfranchiseError, FoundError, InviteError, InviteStore, JoinError,
+    MembershipStore, RegisterError, ServerStore, UserStore,
 };
 
 /// The trailing window the enfranchisement rate cap measures admissions over.
 const RATE_CAP_WINDOW_DAYS: i64 = 30;
 
-/// The driven ports the use-cases persist through. Bundled into one struct so
-/// [`Services::new`] takes a single argument instead of a dozen — the composition
-/// root fills it from whichever store(s) it chose.
-#[derive(Clone)]
-pub struct Stores {
-    pub users: Arc<dyn UserStore>,
-    pub servers: Arc<dyn ServerStore>,
-    pub memberships: Arc<dyn MembershipStore>,
-    pub channels: Arc<dyn ChannelStore>,
-    pub messages: Arc<dyn MessageStore>,
-    pub reactions: Arc<dyn ReactionStore>,
-    pub proposals: Arc<dyn ProposalStore>,
-    pub votes: Arc<dyn VoteStore>,
-    pub emojis: Arc<dyn EmojiStore>,
-    pub emoji_votes: Arc<dyn EmojiVoteStore>,
-    pub rules: Arc<dyn RuleStore>,
-    pub dms: Arc<dyn DmStore>,
-    pub blocks: Arc<dyn BlockStore>,
-    pub friends: Arc<dyn FriendStore>,
-    pub roles: Arc<dyn RoleStore>,
-    pub role_color_votes: Arc<dyn RoleColorVoteStore>,
-    pub keys: Arc<dyn KeyDirectoryStore>,
-    pub channel_keys: Arc<dyn ChannelKeyStore>,
-    pub invites: Arc<dyn InviteStore>,
-    pub media: Arc<dyn MediaStore>,
-    /// Normalizes uploaded images (re-encode, HEIC→JPEG). Not a persistence port —
-    /// a stateless transform — but wired the same way so the codec stays out of
-    /// the app core.
-    pub image: Arc<dyn ImageTranscoder>,
-}
-
+/// The single entry point a driving adapter calls. Holds the "core" identity,
+/// server, membership, invite, and enfranchise use-cases directly, and exposes
+/// the per-domain use-cases (chat, governance, social, …) through accessor
+/// handles that return the relevant sub-service.
 #[derive(Clone)]
 pub struct Services {
     pub(crate) clock: Arc<dyn Clock>,
@@ -60,51 +39,137 @@ pub struct Services {
     pub(crate) servers: Arc<dyn ServerStore>,
     pub(crate) memberships: Arc<dyn MembershipStore>,
     pub(crate) channels: Arc<dyn ChannelStore>,
-    pub(crate) messages: Arc<dyn MessageStore>,
-    pub(crate) reactions: Arc<dyn ReactionStore>,
-    pub(crate) proposals: Arc<dyn ProposalStore>,
-    pub(crate) votes: Arc<dyn VoteStore>,
-    pub(crate) emojis: Arc<dyn EmojiStore>,
-    pub(crate) emoji_votes: Arc<dyn EmojiVoteStore>,
-    pub(crate) rules: Arc<dyn RuleStore>,
-    pub(crate) dms: Arc<dyn DmStore>,
-    pub(crate) blocks: Arc<dyn BlockStore>,
-    pub(crate) friends: Arc<dyn FriendStore>,
-    pub(crate) roles: Arc<dyn RoleStore>,
-    pub(crate) role_color_votes: Arc<dyn RoleColorVoteStore>,
-    pub(crate) keys: Arc<dyn KeyDirectoryStore>,
-    pub(crate) channel_keys: Arc<dyn ChannelKeyStore>,
     pub(crate) invites: Arc<dyn InviteStore>,
-    pub(crate) media: Arc<dyn MediaStore>,
-    pub(crate) image: Arc<dyn ImageTranscoder>,
+    chat: ChatService,
+    governance: GovernanceService,
+    social: SocialService,
+    roles: RoleService,
+    emoji: EmojiService,
+    mute: MuteService,
+    channel_keys: ChannelKeyService,
+    keys: KeyDirectoryService,
 }
 
 impl Services {
     pub fn new(clock: Arc<dyn Clock>, stores: Stores) -> Self {
+        let chat = ChatService {
+            channels: stores.channels.clone(),
+            clock: clock.clone(),
+            image: stores.image.clone(),
+            media: stores.media.clone(),
+            memberships: stores.memberships.clone(),
+            messages: stores.messages.clone(),
+            reactions: stores.reactions.clone(),
+            servers: stores.servers.clone(),
+            users: stores.users.clone(),
+        };
+        let governance = GovernanceService {
+            channels: stores.channels.clone(),
+            clock: clock.clone(),
+            emojis: stores.emojis.clone(),
+            memberships: stores.memberships.clone(),
+            proposals: stores.proposals.clone(),
+            roles: stores.roles.clone(),
+            rules: stores.rules.clone(),
+            servers: stores.servers.clone(),
+            users: stores.users.clone(),
+            votes: stores.votes.clone(),
+        };
+        let social = SocialService {
+            blocks: stores.blocks.clone(),
+            clock: clock.clone(),
+            dms: stores.dms.clone(),
+            friends: stores.friends.clone(),
+            users: stores.users.clone(),
+        };
+        let roles = RoleService {
+            memberships: stores.memberships.clone(),
+            role_color_votes: stores.role_color_votes.clone(),
+            roles: stores.roles.clone(),
+            servers: stores.servers.clone(),
+            users: stores.users.clone(),
+        };
+        let emoji = EmojiService {
+            clock: clock.clone(),
+            emoji_votes: stores.emoji_votes.clone(),
+            emojis: stores.emojis.clone(),
+            memberships: stores.memberships.clone(),
+            servers: stores.servers.clone(),
+            users: stores.users.clone(),
+        };
+        let mute = MuteService {
+            clock: clock.clone(),
+            memberships: stores.memberships.clone(),
+            servers: stores.servers.clone(),
+            users: stores.users.clone(),
+        };
+        let channel_keys = ChannelKeyService {
+            channel_keys: stores.channel_keys.clone(),
+            channels: stores.channels.clone(),
+            memberships: stores.memberships.clone(),
+            servers: stores.servers.clone(),
+            users: stores.users.clone(),
+        };
+        let keys = KeyDirectoryService {
+            keys: stores.keys.clone(),
+            users: stores.users.clone(),
+        };
         Self {
             clock,
             users: stores.users,
             servers: stores.servers,
             memberships: stores.memberships,
             channels: stores.channels,
-            messages: stores.messages,
-            reactions: stores.reactions,
-            proposals: stores.proposals,
-            votes: stores.votes,
-            emojis: stores.emojis,
-            emoji_votes: stores.emoji_votes,
-            rules: stores.rules,
-            dms: stores.dms,
-            blocks: stores.blocks,
-            friends: stores.friends,
-            roles: stores.roles,
-            role_color_votes: stores.role_color_votes,
-            keys: stores.keys,
-            channel_keys: stores.channel_keys,
             invites: stores.invites,
-            media: stores.media,
-            image: stores.image,
+            chat,
+            governance,
+            social,
+            roles,
+            emoji,
+            mute,
+            channel_keys,
+            keys,
         }
+    }
+
+    /// Chat use-cases: channels, messages, threaded replies, reactions, and media.
+    pub fn chat(&self) -> &ChatService {
+        &self.chat
+    }
+
+    /// Governance use-cases: proposals, voting, deliberation, and effect application.
+    pub fn governance(&self) -> &GovernanceService {
+        &self.governance
+    }
+
+    /// Social use-cases: direct messages, blocks, and friendships.
+    pub fn social(&self) -> &SocialService {
+        &self.social
+    }
+
+    /// Role use-cases: custom roles, their holders/colours, and `@mention` resolution.
+    pub fn roles(&self) -> &RoleService {
+        &self.roles
+    }
+
+    /// Custom-emoji use-cases: add, vote, and the ranked list.
+    pub fn emoji(&self) -> &EmojiService {
+        &self.emoji
+    }
+
+    /// Policing use-cases: instant mute/unmute and the moderation read-side.
+    pub fn mute(&self) -> &MuteService {
+        &self.mute
+    }
+
+    /// Encrypted-channel use-cases: enable encryption and channel-key grants.
+    pub fn channel_keys(&self) -> &ChannelKeyService {
+        &self.channel_keys
+    }
+
+    /// Key-directory use-cases: publish and fetch device keys.
+    pub fn keys(&self) -> &KeyDirectoryService {
+        &self.keys
     }
 
     /// Register a new platform account **without** a password. For seeding, the
@@ -117,11 +182,11 @@ impl Services {
         if handle.is_empty() {
             return Err(RegisterError::EmptyHandle);
         }
-        if self.users.find_by_handle(handle).is_some() {
+        if self.users.find_by_handle(handle)?.is_some() {
             return Err(RegisterError::HandleTaken(handle.to_string()));
         }
-        let user = User::new(self.users.next_user_id(), handle, self.clock.now());
-        self.users.insert_user(user.clone());
+        let user = User::new(self.users.next_user_id()?, handle, self.clock.now());
+        self.users.insert_user(user.clone())?;
         Ok(user)
     }
 
@@ -139,13 +204,13 @@ impl Services {
         }
         domain::validate_password(password)
             .map_err(|e| RegisterError::WeakPassword(e.to_string()))?;
-        if self.users.find_by_handle(handle).is_some() {
+        if self.users.find_by_handle(handle)?.is_some() {
             return Err(RegisterError::HandleTaken(handle.to_string()));
         }
         let hash = crate::hash_password(password).map_err(|_| RegisterError::HashFailed)?;
-        let mut user = User::new(self.users.next_user_id(), handle, self.clock.now());
+        let mut user = User::new(self.users.next_user_id()?, handle, self.clock.now());
         user.password_hash = hash;
-        self.users.insert_user(user.clone());
+        self.users.insert_user(user.clone())?;
         Ok(user)
     }
 
@@ -156,10 +221,10 @@ impl Services {
             .map_err(|e| RegisterError::WeakPassword(e.to_string()))?;
         let mut user = self
             .users
-            .find_by_handle(handle.trim())
+            .find_by_handle(handle.trim())?
             .ok_or(RegisterError::EmptyHandle)?;
         user.password_hash = crate::hash_password(password).map_err(|_| RegisterError::HashFailed)?;
-        self.users.update_user(user);
+        self.users.update_user(user)?;
         Ok(())
     }
 
@@ -169,7 +234,7 @@ impl Services {
     /// ([`spend_verify_time`](crate::spend_verify_time)) so an attacker cannot
     /// tell "no such account" from "wrong password" by timing.
     pub fn authenticate(&self, handle: &str, password: &str) -> Option<User> {
-        match self.users.find_by_handle(handle.trim()) {
+        match self.users.find_by_handle(handle.trim()).ok().flatten() {
             Some(user) if user.has_password() => {
                 if crate::verify_password(password, &user.password_hash) {
                     Some(user)
@@ -212,7 +277,7 @@ impl Services {
     ) -> Result<Server, FoundError> {
         let founder = self
             .users
-            .find_by_handle(founder_handle.trim())
+            .find_by_handle(founder_handle.trim())?
             .ok_or_else(|| FoundError::NoSuchUser(founder_handle.to_string()))?;
         if founder.is_franchise_barred {
             return Err(FoundError::FounderBarred);
@@ -221,21 +286,21 @@ impl Services {
         if slug.is_empty() {
             return Err(FoundError::EmptyName);
         }
-        if self.servers.find_by_slug(&slug).is_some() {
+        if self.servers.find_by_slug(&slug)?.is_some() {
             return Err(FoundError::SlugTaken(slug));
         }
 
         let now = self.clock.now();
         let mut server =
-            Server::new(self.servers.next_server_id(), slug, name.trim(), founder.id, now);
+            Server::new(self.servers.next_server_id()?, slug, name.trim(), founder.id, now);
         server.is_private = is_private;
-        self.servers.insert_server(server.clone());
+        self.servers.insert_server(server.clone())?;
 
         // Founder joins as citizen #1.
         let mut m = Membership::joined(founder.id, server.id, now);
         m.tier = Tier::Citizen;
         m.enfranchised_at = Some(now);
-        self.memberships.upsert(m);
+        self.memberships.upsert(m)?;
 
         // Every server starts with #general (somewhere to post from the first
         // moment) and the restricted #appeals room. Past Seed, further channels are
@@ -252,24 +317,24 @@ impl Services {
     /// [`backfill_default_channels`](Self::backfill_default_channels).
     fn ensure_default_channels(&self, sid: domain::ServerId, now: Timestamp) {
         let general = domain::normalize_channel_name("general");
-        if self.channels.find_by_name(sid, &general).is_none() {
+        if self.channels.find_by_name(sid, &general).ok().flatten().is_none() {
             self.channels.insert_channel(domain::Channel::new(
-                self.channels.next_channel_id(),
+                self.channels.next_channel_id().unwrap_or_default(),
                 sid,
                 general,
                 "",
                 now,
-            ));
+            )).unwrap_or_default();
         }
         let appeals = domain::normalize_channel_name("appeals");
-        if self.channels.find_by_name(sid, &appeals).is_none() {
+        if self.channels.find_by_name(sid, &appeals).ok().flatten().is_none() {
             self.channels.insert_channel(domain::Channel::appeals(
-                self.channels.next_channel_id(),
+                self.channels.next_channel_id().unwrap_or_default(),
                 sid,
                 appeals,
                 "Appeal a mute here — visible to voters and police.",
                 now,
-            ));
+            )).unwrap_or_default();
         }
     }
 
@@ -279,7 +344,7 @@ impl Services {
     /// #appeals. Idempotent — safe to run on every start.
     pub fn backfill_default_channels(&self) {
         let now = self.clock.now();
-        for server in self.servers.list_all() {
+        for server in self.servers.list_all().unwrap_or_default() {
             self.ensure_default_channels(server.id, now);
         }
     }
@@ -291,13 +356,13 @@ impl Services {
     pub fn create_invite(&self, handle: &str, server_slug: &str) -> Result<String, InviteError> {
         let user = self
             .users
-            .find_by_handle(handle.trim())
+            .find_by_handle(handle.trim())?
             .ok_or_else(|| InviteError::NoSuchUser(handle.to_string()))?;
         let server = self
             .servers
-            .find_by_slug(server_slug.trim())
+            .find_by_slug(server_slug.trim())?
             .ok_or_else(|| InviteError::NoSuchServer(server_slug.to_string()))?;
-        if self.memberships.get(user.id, server.id).is_none() {
+        if self.memberships.get(user.id, server.id)?.is_none() {
             return Err(InviteError::NotMember(server_slug.to_string()));
         }
         if !server.allows_member_invites() {
@@ -306,7 +371,7 @@ impl Services {
         let code = crate::invite::new_invite_code::new_invite_code();
         let hash = crate::invite::hash_code::hash_code(&code);
         self.invites
-            .add(Invite::new(hash, server.id, user.id, self.clock.now()));
+            .add(Invite::new(hash, server.id, user.id, self.clock.now()))?;
         Ok(code)
     }
 
@@ -316,26 +381,26 @@ impl Services {
     pub fn accept_invite(&self, handle: &str, code: &str) -> Result<Membership, InviteError> {
         let user = self
             .users
-            .find_by_handle(handle.trim())
+            .find_by_handle(handle.trim())?
             .ok_or_else(|| InviteError::NoSuchUser(handle.to_string()))?;
         let hash = crate::invite::hash_code::hash_code(code);
         let invite = self
             .invites
-            .by_hash(&hash)
+            .by_hash(&hash)?
             .filter(Invite::is_live)
             .ok_or(InviteError::InvalidCode)?;
         let server = self
             .servers
-            .get_server(invite.server_id)
+            .get_server(invite.server_id)?
             .ok_or(InviteError::InvalidCode)?;
         if !server.allows_member_invites() {
             return Err(InviteError::Closed(server.slug.clone()));
         }
-        if self.memberships.get(user.id, server.id).is_some() {
+        if self.memberships.get(user.id, server.id)?.is_some() {
             return Err(InviteError::AlreadyMember(server.slug));
         }
         let m = Membership::joined(user.id, server.id, self.clock.now());
-        self.memberships.upsert(m.clone());
+        self.memberships.upsert(m.clone())?;
         Ok(m)
     }
 
@@ -347,18 +412,18 @@ impl Services {
     ) -> Result<Vec<Invite>, InviteError> {
         let user = self
             .users
-            .find_by_handle(handle.trim())
+            .find_by_handle(handle.trim())?
             .ok_or_else(|| InviteError::NoSuchUser(handle.to_string()))?;
         let server = self
             .servers
-            .find_by_slug(server_slug.trim())
+            .find_by_slug(server_slug.trim())?
             .ok_or_else(|| InviteError::NoSuchServer(server_slug.to_string()))?;
-        if self.memberships.get(user.id, server.id).is_none() {
+        if self.memberships.get(user.id, server.id)?.is_none() {
             return Err(InviteError::NotMember(server_slug.to_string()));
         }
         Ok(self
             .invites
-            .list_for_server(server.id)
+            .list_for_server(server.id)?
             .into_iter()
             .filter(Invite::is_live)
             .collect())
@@ -373,22 +438,22 @@ impl Services {
     ) -> Result<(), InviteError> {
         let user = self
             .users
-            .find_by_handle(handle.trim())
+            .find_by_handle(handle.trim())?
             .ok_or_else(|| InviteError::NoSuchUser(handle.to_string()))?;
         let server = self
             .servers
-            .find_by_slug(server_slug.trim())
+            .find_by_slug(server_slug.trim())?
             .ok_or_else(|| InviteError::NoSuchServer(server_slug.to_string()))?;
-        if self.memberships.get(user.id, server.id).is_none() {
+        if self.memberships.get(user.id, server.id)?.is_none() {
             return Err(InviteError::NotMember(server_slug.to_string()));
         }
         // Only revoke a hash that actually belongs to this server.
         if self
             .invites
-            .by_hash(code_hash)
+            .by_hash(code_hash)?
             .is_some_and(|i| i.server_id == server.id)
         {
-            self.invites.revoke(code_hash);
+            self.invites.revoke(code_hash)?;
         }
         Ok(())
     }
@@ -398,17 +463,17 @@ impl Services {
     pub fn join_server(&self, handle: &str, server_slug: &str) -> Result<Membership, JoinError> {
         let user = self
             .users
-            .find_by_handle(handle.trim())
+            .find_by_handle(handle.trim())?
             .ok_or_else(|| JoinError::NoSuchUser(handle.to_string()))?;
         let server = self
             .servers
-            .find_by_slug(server_slug.trim())
+            .find_by_slug(server_slug.trim())?
             .ok_or_else(|| JoinError::NoSuchServer(server_slug.to_string()))?;
-        if self.memberships.get(user.id, server.id).is_some() {
+        if self.memberships.get(user.id, server.id)?.is_some() {
             return Err(JoinError::AlreadyMember(server_slug.to_string()));
         }
         let m = Membership::joined(user.id, server.id, self.clock.now());
-        self.memberships.upsert(m.clone());
+        self.memberships.upsert(m.clone())?;
         Ok(m)
     }
 
@@ -423,15 +488,15 @@ impl Services {
     ) -> Result<EnfranchiseOutcome, EnfranchiseError> {
         let user = self
             .users
-            .find_by_handle(handle.trim())
+            .find_by_handle(handle.trim())?
             .ok_or_else(|| EnfranchiseError::NoSuchUser(handle.to_string()))?;
         let server = self
             .servers
-            .find_by_slug(server_slug.trim())
+            .find_by_slug(server_slug.trim())?
             .ok_or_else(|| EnfranchiseError::NoSuchServer(server_slug.to_string()))?;
         let mut membership = self
             .memberships
-            .get(user.id, server.id)
+            .get(user.id, server.id)?
             .ok_or_else(|| EnfranchiseError::NotAMember(handle.to_string()))?;
 
         if membership.is_citizen() {
@@ -447,9 +512,9 @@ impl Services {
         }
 
         // Layer 2 — enfranchisement rate cap.
-        let citizens = self.memberships.citizen_count(server.id);
+        let citizens = self.memberships.citizen_count(server.id)?;
         let window_start = Timestamp(now.0 - RATE_CAP_WINDOW_DAYS * Timestamp::SECONDS_PER_DAY);
-        let admitted = self.memberships.admitted_since(server.id, window_start);
+        let admitted = self.memberships.admitted_since(server.id, window_start)?;
         if enfranchisement_slots(citizens, admitted) == 0 {
             return Ok(EnfranchiseOutcome::RateCapped {
                 admitted_this_window: admitted,
@@ -459,7 +524,7 @@ impl Services {
         // Admit.
         membership.tier = Tier::Citizen;
         membership.enfranchised_at = Some(now);
-        self.memberships.upsert(membership);
+        self.memberships.upsert(membership)?;
         Ok(EnfranchiseOutcome::Admitted)
     }
 
@@ -472,15 +537,15 @@ impl Services {
     ) -> Result<Eligibility, EnfranchiseError> {
         let user = self
             .users
-            .find_by_handle(handle.trim())
+            .find_by_handle(handle.trim())?
             .ok_or_else(|| EnfranchiseError::NoSuchUser(handle.to_string()))?;
         let server = self
             .servers
-            .find_by_slug(server_slug.trim())
+            .find_by_slug(server_slug.trim())?
             .ok_or_else(|| EnfranchiseError::NoSuchServer(server_slug.to_string()))?;
         let membership = self
             .memberships
-            .get(user.id, server.id)
+            .get(user.id, server.id)?
             .ok_or_else(|| EnfranchiseError::NotAMember(handle.to_string()))?;
         Ok(evaluate_eligibility(&user, &membership, &server.criteria, self.clock.now()))
     }
@@ -488,10 +553,10 @@ impl Services {
     /// Read-only: every server plus its phase and citizen count, for a directory.
     pub fn list_servers(&self) -> Vec<(Server, Phase, u64)> {
         self.servers
-            .list_all()
+            .list_all().unwrap_or_default()
             .into_iter()
             .map(|g| {
-                let citizens = self.memberships.citizen_count(g.id);
+                let citizens = self.memberships.citizen_count(g.id).unwrap_or_default();
                 let phase = Phase::from_citizen_count(citizens);
                 (g, phase, citizens)
             })
@@ -502,19 +567,19 @@ impl Services {
     /// sees servers they've joined (public or private); discovery of *new* servers
     /// is [`list_public_servers`](Self::list_public_servers).
     pub fn my_servers(&self, handle: &str) -> Vec<(Server, Phase, u64)> {
-        let Some(user) = self.users.find_by_handle(handle.trim()) else {
+        let Some(user) = self.users.find_by_handle(handle.trim()).ok().flatten() else {
             return Vec::new();
         };
         self.list_servers()
             .into_iter()
-            .filter(|(g, _, _)| self.memberships.get(user.id, g.id).is_some())
+            .filter(|(g, _, _)| self.memberships.get(user.id, g.id).ok().flatten().is_some())
             .collect()
     }
 
     /// The slug of a server by id, if it exists (for turning a redeemed invite's
     /// server id back into a URL the client can open).
     pub fn server_slug(&self, id: domain::ServerId) -> Option<String> {
-        self.servers.get_server(id).map(|g| g.slug)
+        self.servers.get_server(id).ok().flatten().map(|g| g.slug)
     }
 
     /// The public browse directory: every **public** server. Private servers are
@@ -528,7 +593,7 @@ impl Services {
 
     /// Read-only: look up an account by handle.
     pub fn find_user(&self, handle: &str) -> Option<User> {
-        self.users.find_by_handle(handle.trim())
+        self.users.find_by_handle(handle.trim()).ok().flatten()
     }
 
     /// The current instant according to the injected clock.
@@ -538,23 +603,23 @@ impl Services {
 
     /// Read-only: a member's tier within a server, if they belong.
     pub fn member_tier(&self, handle: &str, server_slug: &str) -> Option<Tier> {
-        let user = self.users.find_by_handle(handle.trim())?;
-        let server = self.servers.find_by_slug(server_slug.trim())?;
-        self.memberships.get(user.id, server.id).map(|m| m.tier)
+        let user = self.users.find_by_handle(handle.trim()).ok().flatten()?;
+        let server = self.servers.find_by_slug(server_slug.trim()).ok().flatten()?;
+        self.memberships.get(user.id, server.id).ok().flatten().map(|m| m.tier)
     }
 
     /// Read-only: a member's endorsement-weighted contribution in a server.
     pub fn member_contribution(&self, handle: &str, server_slug: &str) -> Option<i64> {
-        let user = self.users.find_by_handle(handle.trim())?;
-        let server = self.servers.find_by_slug(server_slug.trim())?;
-        self.memberships.get(user.id, server.id).map(|m| m.contribution)
+        let user = self.users.find_by_handle(handle.trim()).ok().flatten()?;
+        let server = self.servers.find_by_slug(server_slug.trim()).ok().flatten()?;
+        self.memberships.get(user.id, server.id).ok().flatten().map(|m| m.contribution)
     }
 
     /// Read-only snapshot of a server: the server, its current phase, and its
     /// citizen count.
     pub fn server_snapshot(&self, server_slug: &str) -> Option<(Server, Phase, u64)> {
-        let server = self.servers.find_by_slug(server_slug.trim())?;
-        let citizens = self.memberships.citizen_count(server.id);
+        let server = self.servers.find_by_slug(server_slug.trim()).ok().flatten()?;
+        let citizens = self.memberships.citizen_count(server.id).unwrap_or_default();
         Some((server.clone(), Phase::from_citizen_count(citizens), citizens))
     }
 
@@ -571,18 +636,18 @@ impl Services {
     ) -> Result<(), EnfranchiseError> {
         let user = self
             .users
-            .find_by_handle(handle.trim())
+            .find_by_handle(handle.trim())?
             .ok_or_else(|| EnfranchiseError::NoSuchUser(handle.to_string()))?;
         let server = self
             .servers
-            .find_by_slug(server_slug.trim())
+            .find_by_slug(server_slug.trim())?
             .ok_or_else(|| EnfranchiseError::NoSuchServer(server_slug.to_string()))?;
         let mut membership = self
             .memberships
-            .get(user.id, server.id)
+            .get(user.id, server.id)?
             .ok_or_else(|| EnfranchiseError::NotAMember(handle.to_string()))?;
         membership.contribution = contribution;
-        self.memberships.upsert(membership);
+        self.memberships.upsert(membership)?;
         Ok(())
     }
 }

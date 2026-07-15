@@ -7,17 +7,37 @@
 //! constitutional timelock, and `VoteWeighting` decides how ballots are counted.
 //! No effect is applied until a proposal has passed and matured.
 
+use std::sync::Arc;
+
 use domain::{
     Channel, DiscussionPost, Emoji, Phase, Proposal, ProposalId, ProposalKind, ProposalStatus, Role,
     RoleAssignment, Rule, Server, ServerId, Tally, Timestamp, Vote,
 };
 
-use crate::{ProposeError, Services, VoteError};
+use crate::{
+    ChannelStore, Clock, EmojiStore, MembershipStore, ProposalStore, ProposeError, RoleStore,
+    RuleStore, ServerStore, UserStore, VoteError, VoteStore,
+};
+
+/// Governance use-cases held on their own handle, reached via [`Services::governance`].
+#[derive(Clone)]
+pub struct GovernanceService {
+    pub(crate) channels: Arc<dyn ChannelStore>,
+    pub(crate) clock: Arc<dyn Clock>,
+    pub(crate) emojis: Arc<dyn EmojiStore>,
+    pub(crate) memberships: Arc<dyn MembershipStore>,
+    pub(crate) proposals: Arc<dyn ProposalStore>,
+    pub(crate) roles: Arc<dyn RoleStore>,
+    pub(crate) rules: Arc<dyn RuleStore>,
+    pub(crate) servers: Arc<dyn ServerStore>,
+    pub(crate) users: Arc<dyn UserStore>,
+    pub(crate) votes: Arc<dyn VoteStore>,
+}
 
 /// How long a ballot accepts votes before it can be closed.
 const VOTING_WINDOW_DAYS: i64 = 3;
 
-impl Services {
+impl GovernanceService {
     /// Open a proposal. Gated on: the proposer is an enfranchised citizen, the
     /// server governs this ballot kind (its surface), and the decision class is
     /// permitted in the server's current phase.
@@ -29,20 +49,18 @@ impl Services {
     ) -> Result<Proposal, ProposeError> {
         let user = self
             .users
-            .find_by_handle(proposer_handle.trim())
+            .find_by_handle(proposer_handle.trim())?
             .ok_or_else(|| ProposeError::NoSuchUser(proposer_handle.to_string()))?;
         let server = self
             .servers
-            .find_by_slug(server_slug.trim())
+            .find_by_slug(server_slug.trim())?
             .ok_or_else(|| ProposeError::NoSuchServer(server_slug.to_string()))?;
 
         // Only a franchised citizen may propose.
-        let membership = self
-            .memberships
-            .get(user.id, server.id)
+        self.memberships
+            .get(user.id, server.id)?
             .filter(|m| m.is_franchised())
             .ok_or(ProposeError::NotACitizen)?;
-        let _ = membership;
 
         // Surface + phase gates: the server must govern this kind, and its
         // decision class must be permitted in the current phase.
@@ -50,14 +68,14 @@ impl Services {
 
         let now = self.clock.now();
         let proposal = Proposal::new(
-            self.proposals.next_proposal_id(),
+            self.proposals.next_proposal_id()?,
             server.id,
             user.id,
             kind,
             now,
             now.plus_days(VOTING_WINDOW_DAYS),
         );
-        self.proposals.insert_proposal(proposal.clone());
+        self.proposals.insert_proposal(proposal.clone())?;
         Ok(proposal)
     }
 
@@ -65,7 +83,7 @@ impl Services {
     pub fn cast_vote(&self, voter_handle: &str, proposal_id: u64, is_aye: bool) -> Result<(), VoteError> {
         let user = self
             .users
-            .find_by_handle(voter_handle.trim())
+            .find_by_handle(voter_handle.trim())?
             .ok_or_else(|| VoteError::NoSuchUser(voter_handle.to_string()))?;
         self.cast_vote_as(user.id, proposal_id, is_aye)
     }
@@ -77,7 +95,7 @@ impl Services {
     pub fn cast_vote_by_id(&self, voter_id: u64, proposal_id: u64, is_aye: bool) -> Result<(), VoteError> {
         let user = self
             .users
-            .get_user(domain::UserId(voter_id))
+            .get_user(domain::UserId(voter_id))?
             .ok_or_else(|| VoteError::NoSuchUser(voter_id.to_string()))?;
         self.cast_vote_as(user.id, proposal_id, is_aye)
     }
@@ -88,18 +106,18 @@ impl Services {
     fn cast_vote_as(&self, voter_id: domain::UserId, proposal_id: u64, is_aye: bool) -> Result<(), VoteError> {
         let proposal = self
             .proposals
-            .get_proposal(ProposalId(proposal_id))
+            .get_proposal(ProposalId(proposal_id))?
             .ok_or(VoteError::NoSuchProposal(proposal_id))?;
         if proposal.status != ProposalStatus::Open {
             return Err(VoteError::Closed);
         }
         // Must be a franchised citizen of this server.
         self.memberships
-            .get(voter_id, proposal.server_id)
+            .get(voter_id, proposal.server_id)?
             .filter(|m| m.is_franchised())
             .ok_or(VoteError::NotACitizen)?;
 
-        self.votes.upsert_vote(Vote::new(proposal.id, voter_id, is_aye));
+        self.votes.upsert_vote(Vote::new(proposal.id, voter_id, is_aye))?;
         Ok(())
     }
 
@@ -110,7 +128,7 @@ impl Services {
         if !server.governs(kind.ballot_kind()) {
             return Err(ProposeError::NotGoverned);
         }
-        let citizens = self.memberships.citizen_count(server.id);
+        let citizens = self.memberships.citizen_count(server.id)?;
         let phase = Phase::from_citizen_count(citizens);
         if domain::threshold_for(kind.decision_class(), phase).is_none() {
             return Err(ProposeError::NotAllowedInPhase);
@@ -131,27 +149,27 @@ impl Services {
     ) -> Result<Proposal, ProposeError> {
         let user = self
             .users
-            .find_by_handle(proposer_handle.trim())
+            .find_by_handle(proposer_handle.trim())?
             .ok_or_else(|| ProposeError::NoSuchUser(proposer_handle.to_string()))?;
         let mut proposal = self
             .proposals
-            .get_proposal(ProposalId(proposal_id))
+            .get_proposal(ProposalId(proposal_id))?
             .ok_or(ProposeError::NoSuchProposal(proposal_id))?;
         if proposal.status != ProposalStatus::Open {
             return Err(ProposeError::Closed);
         }
         let server = self
             .servers
-            .get_server(proposal.server_id)
+            .get_server(proposal.server_id)?
             .ok_or_else(|| ProposeError::NoSuchServer(proposal.server_id.0.to_string()))?;
         self.memberships
-            .get(user.id, server.id)
+            .get(user.id, server.id)?
             .filter(|m| m.is_franchised())
             .ok_or(ProposeError::NotACitizen)?;
         self.ensure_ballot_admissible(&server, &kind)?;
 
         proposal.amend(kind);
-        self.proposals.update_proposal(proposal.clone());
+        self.proposals.update_proposal(proposal.clone())?;
         Ok(proposal)
     }
 
@@ -161,17 +179,17 @@ impl Services {
     pub fn post_discussion(&self, handle: &str, proposal_id: u64, body: &str) -> Result<(), VoteError> {
         let user = self
             .users
-            .find_by_handle(handle.trim())
+            .find_by_handle(handle.trim())?
             .ok_or_else(|| VoteError::NoSuchUser(handle.to_string()))?;
         let mut proposal = self
             .proposals
-            .get_proposal(ProposalId(proposal_id))
+            .get_proposal(ProposalId(proposal_id))?
             .ok_or(VoteError::NoSuchProposal(proposal_id))?;
         if proposal.status != ProposalStatus::Open {
             return Err(VoteError::Closed);
         }
         self.memberships
-            .get(user.id, proposal.server_id)
+            .get(user.id, proposal.server_id)?
             .filter(|m| m.is_franchised())
             .ok_or(VoteError::NotACitizen)?;
         let body = body.trim();
@@ -179,14 +197,14 @@ impl Services {
             return Ok(());
         }
         proposal.discussion.push(DiscussionPost::new(user.id, body, self.clock.now()));
-        self.proposals.update_proposal(proposal);
+        self.proposals.update_proposal(proposal)?;
         Ok(())
     }
 
     /// Read-only: a proposal's deliberation thread, in post order.
     pub fn list_discussion(&self, proposal_id: u64) -> Vec<DiscussionPost> {
         self.proposals
-            .get_proposal(ProposalId(proposal_id))
+            .get_proposal(ProposalId(proposal_id)).ok().flatten()
             .map(|p| p.discussion)
             .unwrap_or_default()
     }
@@ -194,34 +212,34 @@ impl Services {
     /// Read-only: the slug of the server a proposal belongs to (so a driving
     /// adapter can resolve handles/roles against the right server when amending).
     pub fn proposal_server_slug(&self, proposal_id: u64) -> Option<String> {
-        let p = self.proposals.get_proposal(ProposalId(proposal_id))?;
-        self.servers.get_server(p.server_id).map(|s| s.slug)
+        let p = self.proposals.get_proposal(ProposalId(proposal_id)).ok().flatten()?;
+        self.servers.get_server(p.server_id).ok().flatten().map(|s| s.slug)
     }
 
     /// Resolve every proposal in a server whose window has closed: tally the
     /// weighted votes, decide, and — for a passed, matured ballot — apply the
     /// effect exactly once. Idempotent; safe to call on every read.
     pub fn resolve_due(&self, server_slug: &str) {
-        let Some(server) = self.servers.find_by_slug(server_slug.trim()) else {
+        let Some(server) = self.servers.find_by_slug(server_slug.trim()).ok().flatten() else {
             return;
         };
         let now = self.clock.now();
-        let citizens = self.memberships.citizen_count(server.id);
+        let citizens = self.memberships.citizen_count(server.id).unwrap_or_default();
         let phase = Phase::from_citizen_count(citizens);
 
-        for mut p in self.proposals.list_for_server(server.id) {
+        for mut p in self.proposals.list_for_server(server.id).unwrap_or_default() {
             // Close a ballot whose voting window has elapsed.
             if p.status == ProposalStatus::Open && now >= p.closes_at {
                 let tally = self.weighted_tally(&server, &p, now);
                 p.close(tally, citizens, phase, now);
-                self.proposals.update_proposal(p.clone());
+                self.proposals.update_proposal(p.clone()).unwrap_or_default();
             }
             // Apply a passed, matured (past any timelock), not-yet-applied effect.
             if let ProposalStatus::Passed { effective_at } = p.status {
                 if !p.is_applied && now >= effective_at {
                     self.apply_effect(&p, now);
                     p.is_applied = true;
-                    self.proposals.update_proposal(p);
+                    self.proposals.update_proposal(p).unwrap_or_default();
                 }
             }
         }
@@ -232,8 +250,8 @@ impl Services {
     fn weighted_tally(&self, server: &Server, proposal: &Proposal, now: Timestamp) -> Tally {
         let weighted = server.weighting_scope.applies_to_ballots();
         let mut tally = Tally::default();
-        for v in self.votes.list_for_proposal(proposal.id) {
-            let weight = match self.memberships.get(v.voter, server.id) {
+        for v in self.votes.list_for_proposal(proposal.id).unwrap_or_default() {
+            let weight = match self.memberships.get(v.voter, server.id).ok().flatten() {
                 // A voter who has since been sanctioned is dropped from the count.
                 Some(m) if m.is_franchised() => {
                     if weighted {
@@ -270,131 +288,131 @@ impl Services {
         match kind {
             ProposalKind::CreateChannel { name, topic } => {
                 let name = domain::normalize_channel_name(name);
-                if !name.is_empty() && self.channels.find_by_name(sid, &name).is_none() {
+                if !name.is_empty() && self.channels.find_by_name(sid, &name).ok().flatten().is_none() {
                     self.channels.insert_channel(Channel::new(
-                        self.channels.next_channel_id(),
+                        self.channels.next_channel_id().unwrap_or_default(),
                         sid,
                         name,
                         topic.clone(),
                         now,
-                    ));
+                    )).unwrap_or_default();
                 }
             }
             ProposalKind::DeleteChannel { name } => {
                 let name = domain::normalize_channel_name(name);
-                if let Some(c) = self.channels.find_by_name(sid, &name) {
-                    self.channels.remove_channel(c.id);
+                if let Some(c) = self.channels.find_by_name(sid, &name).ok().flatten() {
+                    self.channels.remove_channel(c.id).unwrap_or_default();
                 }
             }
             ProposalKind::AddRule { text } => {
                 self.rules
-                    .insert_rule(Rule::new(self.rules.next_rule_id(), sid, text.clone(), now));
+                    .insert_rule(Rule::new(self.rules.next_rule_id().unwrap_or_default(), sid, text.clone(), now)).unwrap_or_default();
             }
             ProposalKind::RemoveRule { rule } => {
-                self.rules.remove_rule(*rule);
+                self.rules.remove_rule(*rule).unwrap_or_default();
             }
             ProposalKind::Ban { user } => {
                 // A ban sanctions the member: it strips the franchise and (via the
                 // posting gate) silences them, without deleting their history.
-                if let Some(mut m) = self.memberships.get(*user, sid) {
+                if let Some(mut m) = self.memberships.get(*user, sid).ok().flatten() {
                     m.is_sanctioned = true;
-                    self.memberships.upsert(m);
+                    self.memberships.upsert(m).unwrap_or_default();
                 }
             }
             ProposalKind::Timeout { user, .. } => {
                 // Modelled as a sanction for now (duration handling is future work).
-                if let Some(mut m) = self.memberships.get(*user, sid) {
+                if let Some(mut m) = self.memberships.get(*user, sid).ok().flatten() {
                     m.is_sanctioned = true;
-                    self.memberships.upsert(m);
+                    self.memberships.upsert(m).unwrap_or_default();
                 }
             }
             ProposalKind::Mute { user } => {
                 // A vote-imposed mute has no officer of record (`by: None`), so a
                 // later lift bars no one.
-                if let Some(mut m) = self.memberships.get(*user, sid) {
+                if let Some(mut m) = self.memberships.get(*user, sid).ok().flatten() {
                     m.mute(None);
-                    self.memberships.upsert(m);
+                    self.memberships.upsert(m).unwrap_or_default();
                 }
             }
             ProposalKind::LiftMute { user } => {
                 // The electorate overrules the mute. If a police officer imposed it,
                 // that officer is barred from re-muting this member for 24 hours.
-                if let Some(mut m) = self.memberships.get(*user, sid) {
+                if let Some(mut m) = self.memberships.get(*user, sid).ok().flatten() {
                     m.unmute(true, now.plus_days(1));
-                    self.memberships.upsert(m);
+                    self.memberships.upsert(m).unwrap_or_default();
                 }
             }
             ProposalKind::AppointPolice { user } => {
-                if let Some(mut m) = self.memberships.get(*user, sid) {
+                if let Some(mut m) = self.memberships.get(*user, sid).ok().flatten() {
                     m.is_police = true;
-                    self.memberships.upsert(m);
+                    self.memberships.upsert(m).unwrap_or_default();
                 }
             }
             ProposalKind::DismissPolice { user } => {
-                if let Some(mut m) = self.memberships.get(*user, sid) {
+                if let Some(mut m) = self.memberships.get(*user, sid).ok().flatten() {
                     m.is_police = false;
-                    self.memberships.upsert(m);
+                    self.memberships.upsert(m).unwrap_or_default();
                 }
             }
             ProposalKind::SetGovernanceSurface { enabled } => {
-                if let Some(mut s) = self.servers.get_server(sid) {
+                if let Some(mut s) = self.servers.get_server(sid).ok().flatten() {
                     s.set_governance_surface(enabled.clone());
-                    self.servers.update_server(s);
+                    self.servers.update_server(s).unwrap_or_default();
                 }
             }
             ProposalKind::AmendCriteria { proposed } => {
-                if let Some(mut s) = self.servers.get_server(sid) {
+                if let Some(mut s) = self.servers.get_server(sid).ok().flatten() {
                     s.criteria = proposed.clone();
-                    self.servers.update_server(s);
+                    self.servers.update_server(s).unwrap_or_default();
                 }
             }
             ProposalKind::SetJurySizing { sizing } => {
-                if let Some(mut s) = self.servers.get_server(sid) {
+                if let Some(mut s) = self.servers.get_server(sid).ok().flatten() {
                     s.jury_sizing = *sizing;
-                    self.servers.update_server(s);
+                    self.servers.update_server(s).unwrap_or_default();
                 }
             }
             ProposalKind::SetVoteWeighting { scheme } => {
-                if let Some(mut s) = self.servers.get_server(sid) {
+                if let Some(mut s) = self.servers.get_server(sid).ok().flatten() {
                     s.vote_weighting = *scheme;
-                    self.servers.update_server(s);
+                    self.servers.update_server(s).unwrap_or_default();
                 }
             }
             ProposalKind::SetWeightingScope { scope } => {
-                if let Some(mut s) = self.servers.get_server(sid) {
+                if let Some(mut s) = self.servers.get_server(sid).ok().flatten() {
                     s.weighting_scope = *scope;
-                    self.servers.update_server(s);
+                    self.servers.update_server(s).unwrap_or_default();
                 }
             }
             ProposalKind::GrantVoteWeight { user, weight } => {
                 // Adjusts an *already-enfranchised* citizen's ballot weight — never
                 // a path into the franchise.
-                if let Some(mut m) = self.memberships.get(*user, sid) {
+                if let Some(mut m) = self.memberships.get(*user, sid).ok().flatten() {
                     m.granted_weight = *weight;
-                    self.memberships.upsert(m);
+                    self.memberships.upsert(m).unwrap_or_default();
                 }
             }
             ProposalKind::CreateRole { name } => {
                 let name = domain::normalize_role_name(name);
-                if !name.is_empty() && self.roles.find_role(sid, &name).is_none() {
+                if !name.is_empty() && self.roles.find_role(sid, &name).ok().flatten().is_none() {
                     self.roles
-                        .insert_role(Role::new(self.roles.next_role_id(), sid, name, now));
+                        .insert_role(Role::new(self.roles.next_role_id().unwrap_or_default(), sid, name, now)).unwrap_or_default();
                 }
             }
             ProposalKind::DeleteRole { role } => {
                 // Only delete a role that belongs to this server.
-                if self.roles.get_role(*role).is_some_and(|r| r.server_id == sid) {
-                    self.roles.remove_role(*role);
+                if self.roles.get_role(*role).ok().flatten().is_some_and(|r| r.server_id == sid) {
+                    self.roles.remove_role(*role).unwrap_or_default();
                 }
             }
             ProposalKind::AssignRole { user, role } => {
-                if self.roles.get_role(*role).is_some_and(|r| r.server_id == sid) {
-                    self.roles.assign(RoleAssignment::new(sid, *role, *user));
+                if self.roles.get_role(*role).ok().flatten().is_some_and(|r| r.server_id == sid) {
+                    self.roles.assign(RoleAssignment::new(sid, *role, *user)).unwrap_or_default();
                 }
             }
             ProposalKind::UnassignRole { user, role } => {
-                if self.roles.get_role(*role).is_some_and(|r| r.server_id == sid) {
-                    self.roles.unassign(*role, *user);
+                if self.roles.get_role(*role).ok().flatten().is_some_and(|r| r.server_id == sid) {
+                    self.roles.unassign(*role, *user).unwrap_or_default();
                 }
             }
             ProposalKind::SetRehomingPolicy { is_disabled } => {
@@ -402,16 +420,16 @@ impl Services {
                 // federated node syncs this to the control plane (`set_rehoming`)
                 // once the registry is wired in (M4+); the domain flag is the
                 // authoritative source. See docs/federation.md §6.
-                if let Some(mut s) = self.servers.get_server(sid) {
+                if let Some(mut s) = self.servers.get_server(sid).ok().flatten() {
                     s.is_rehoming_disabled = *is_disabled;
-                    self.servers.update_server(s);
+                    self.servers.update_server(s).unwrap_or_default();
                 }
             }
             ProposalKind::SetInvitePolicy { policy } => {
                 // The community's decision on who may admit new members by link.
-                if let Some(mut s) = self.servers.get_server(sid) {
+                if let Some(mut s) = self.servers.get_server(sid).ok().flatten() {
                     s.invite_policy = *policy;
-                    self.servers.update_server(s);
+                    self.servers.update_server(s).unwrap_or_default();
                 }
             }
             // Recall and RemoveContent have no persistent server-state effect in
@@ -422,16 +440,16 @@ impl Services {
 
     /// Read-only: every rule in a server (for display).
     pub fn list_rules(&self, server_slug: &str) -> Vec<Rule> {
-        match self.servers.find_by_slug(server_slug.trim()) {
-            Some(s) => self.rules.list_for_server(s.id),
+        match self.servers.find_by_slug(server_slug.trim()).ok().flatten() {
+            Some(s) => self.rules.list_for_server(s.id).unwrap_or_default(),
             None => Vec::new(),
         }
     }
 
     /// Read-only: every custom emoji in a server.
     pub fn list_emojis(&self, server_slug: &str) -> Vec<Emoji> {
-        match self.servers.find_by_slug(server_slug.trim()) {
-            Some(s) => self.emojis.list_for_server(s.id),
+        match self.servers.find_by_slug(server_slug.trim()).ok().flatten() {
+            Some(s) => self.emojis.list_for_server(s.id).unwrap_or_default(),
             None => Vec::new(),
         }
     }
@@ -440,8 +458,8 @@ impl Services {
     /// first so the returned statuses are current.
     pub fn list_proposals(&self, server_slug: &str) -> Vec<Proposal> {
         self.resolve_due(server_slug);
-        match self.servers.find_by_slug(server_slug.trim()) {
-            Some(s) => self.proposals.list_for_server(s.id),
+        match self.servers.find_by_slug(server_slug.trim()).ok().flatten() {
+            Some(s) => self.proposals.list_for_server(s.id).unwrap_or_default(),
             None => Vec::new(),
         }
     }
@@ -451,7 +469,7 @@ impl Services {
     pub fn proposal_head_counts(&self, proposal_id: u64) -> (u64, u64) {
         let mut aye = 0;
         let mut nay = 0;
-        for v in self.votes.list_for_proposal(ProposalId(proposal_id)) {
+        for v in self.votes.list_for_proposal(ProposalId(proposal_id)).unwrap_or_default() {
             if v.is_aye {
                 aye += 1;
             } else {
@@ -463,7 +481,7 @@ impl Services {
 
     /// Read-only: how `handle` voted on a proposal, if at all.
     pub fn my_vote(&self, proposal_id: u64, handle: &str) -> Option<bool> {
-        let user = self.users.find_by_handle(handle.trim())?;
-        self.votes.get_vote(ProposalId(proposal_id), user.id).map(|v| v.is_aye)
+        let user = self.users.find_by_handle(handle.trim()).ok().flatten()?;
+        self.votes.get_vote(ProposalId(proposal_id), user.id).ok().flatten().map(|v| v.is_aye)
     }
 }

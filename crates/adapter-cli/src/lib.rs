@@ -155,13 +155,13 @@ fn dispatch(services: &Services, command: Command) -> Result<String, String> {
             Ok(format!("set {handle}'s contribution in g/{server} to {amount}"))
         }
         Command::CreateChannel { founder, server, name, topic } => {
-            let ch = services
+            let ch = services.chat()
                 .create_channel(&founder, &server, &name, &topic)
                 .map_err(|e| e.to_string())?;
             Ok(format!("created #{} in g/{server}", ch.name))
         }
         Command::Channels { server } => {
-            let channels = services
+            let channels = services.chat()
                 .list_channels(&server)
                 .ok_or_else(|| format!("no such server: '{server}'"))?;
             if channels.is_empty() {
@@ -175,33 +175,33 @@ fn dispatch(services: &Services, command: Command) -> Result<String, String> {
             Ok(s)
         }
         Command::Post { handle, server, channel, body } => {
-            let m = services
+            let m = services.chat()
                 .post_message(&handle, &server, &channel, &body)
                 .map_err(|e| e.to_string())?;
             Ok(format!("posted message {} to #{channel}", m.id))
         }
         Command::Reply { handle, message, body } => {
-            let m = services.reply_message(&handle, message, &body).map_err(|e| e.to_string())?;
+            let m = services.chat().reply_message(&handle, message, &body).map_err(|e| e.to_string())?;
             Ok(format!("posted reply {} under message {message}", m.id))
         }
         Command::Edit { handle, message, body } => {
-            services.edit_message(&handle, message, &body).map_err(|e| e.to_string())?;
+            services.chat().edit_message(&handle, message, &body).map_err(|e| e.to_string())?;
             Ok(format!("edited message {message}"))
         }
         Command::Delete { handle, message } => {
-            services.delete_message(&handle, message).map_err(|e| e.to_string())?;
+            services.chat().delete_message(&handle, message).map_err(|e| e.to_string())?;
             Ok(format!("deleted message {message}"))
         }
         Command::React { handle, message, emoji } => {
-            services.react(&handle, message, &emoji).map_err(|e| e.to_string())?;
+            services.chat().react(&handle, message, &emoji).map_err(|e| e.to_string())?;
             Ok(format!("{handle} reacted {emoji} to message {message}"))
         }
         Command::Unreact { handle, message, emoji } => {
-            services.unreact(&handle, message, &emoji).map_err(|e| e.to_string())?;
+            services.chat().unreact(&handle, message, &emoji).map_err(|e| e.to_string())?;
             Ok(format!("{handle} removed {emoji} from message {message}"))
         }
         Command::Thread { server, channel } => {
-            let messages = services
+            let messages = services.chat()
                 .channel_messages(&server, &channel)
                 .map_err(|e| e.to_string())?;
             if messages.is_empty() {
@@ -221,12 +221,12 @@ fn dispatch(services: &Services, command: Command) -> Result<String, String> {
 fn render_node(services: &Services, node: &MessageNode, depth: usize, out: &mut String) {
     let indent = "  ".repeat(depth + 1);
     let m = &node.message;
-    let author = services
+    let author = services.chat()
         .user_handle(m.author)
         .unwrap_or_else(|| format!("user{}", m.author));
     let body = if m.is_deleted { "[deleted]".to_string() } else { m.body.clone() };
     let edited = if m.edited_at.is_some() { " (edited)" } else { "" };
-    let reactions = services.message_reactions(m.id.0);
+    let reactions = services.chat().message_reactions(m.id.0);
     let react_str = if reactions.is_empty() {
         String::new()
     } else {

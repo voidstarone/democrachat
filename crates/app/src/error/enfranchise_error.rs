@@ -12,4 +12,8 @@ pub enum EnfranchiseError {
     NotAMember(String),
     #[error("'{0}' is already a citizen of this server")]
     AlreadyCitizen(String),
+    /// The persistence layer itself failed (store unavailable, timeout, or
+    /// write conflict) — distinct from any domain-rule rejection.
+    #[error(transparent)]
+    Store(#[from] crate::StoreError),
 }

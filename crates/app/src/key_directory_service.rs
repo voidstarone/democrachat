@@ -6,13 +6,22 @@
 //! secret is stored and returned verbatim, never opened — only the user, with their
 //! password, can unwrap it client-side.
 
+use std::sync::Arc;
+
 use domain::{UserKeys, WrappedKey};
 
 use crate::e2ee::public_identity::PublicIdentity;
 use crate::error::key_error::KeyError;
-use crate::Services;
+use crate::{KeyDirectoryStore, UserStore};
 
-impl Services {
+/// Key-directory use-cases held on their own handle, reached via [`Services::keys`].
+#[derive(Clone)]
+pub struct KeyDirectoryService {
+    pub(crate) keys: Arc<dyn KeyDirectoryStore>,
+    pub(crate) users: Arc<dyn UserStore>,
+}
+
+impl KeyDirectoryService {
     /// Publish (or replace) the calling user's device keys. `public_key` is the
     /// hex X25519 public key; `wrapped_secret` is the password-wrapped device
     /// secret, opaque to the server. The public key is validated so a malformed one
@@ -25,12 +34,12 @@ impl Services {
     ) -> Result<(), KeyError> {
         let user = self
             .users
-            .find_by_handle(handle.trim())
+            .find_by_handle(handle.trim())?
             .ok_or_else(|| KeyError::NoSuchUser(handle.to_string()))?;
         // Validate shape only — the key is public, so we just ensure it parses.
         PublicIdentity::from_hex(public_key).map_err(|e| KeyError::BadPublicKey(e.to_string()))?;
         self.keys
-            .put_keys(UserKeys::new(user.id, public_key.trim(), wrapped_secret));
+            .put_keys(UserKeys::new(user.id, public_key.trim(), wrapped_secret))?;
         Ok(())
     }
 
@@ -40,10 +49,10 @@ impl Services {
     pub fn my_keys(&self, handle: &str) -> Result<UserKeys, KeyError> {
         let user = self
             .users
-            .find_by_handle(handle.trim())
+            .find_by_handle(handle.trim())?
             .ok_or_else(|| KeyError::NoSuchUser(handle.to_string()))?;
         self.keys
-            .get_keys(user.id)
+            .get_keys(user.id)?
             .ok_or_else(|| KeyError::NotPublished(handle.to_string()))
     }
 
@@ -52,10 +61,10 @@ impl Services {
     pub fn public_key_of(&self, handle: &str) -> Result<String, KeyError> {
         let user = self
             .users
-            .find_by_handle(handle.trim())
+            .find_by_handle(handle.trim())?
             .ok_or_else(|| KeyError::NoSuchUser(handle.to_string()))?;
         self.keys
-            .get_keys(user.id)
+            .get_keys(user.id)?
             .map(|k| k.public_key)
             .ok_or_else(|| KeyError::NotPublished(handle.to_string()))
     }

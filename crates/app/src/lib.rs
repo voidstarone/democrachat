@@ -11,16 +11,20 @@ pub mod error;
 pub mod governance_service;
 pub mod invite;
 pub mod key_directory_service;
-pub mod mention;
+pub mod member_view;
+pub mod mention_kind;
 pub mod mute_service;
 pub mod outcome;
 pub mod passthrough_transcoder;
 pub mod ports;
+pub mod resolved_mention;
+pub mod role_color_view;
 pub mod role_service;
-pub mod role_view;
 pub mod services;
 pub mod session;
 pub mod social_service;
+pub mod stores;
+pub mod user_roles;
 pub mod vault;
 
 pub use error::channel_error::ChannelError;
@@ -40,6 +44,7 @@ pub use error::reaction_error::ReactionError;
 pub use error::register_error::RegisterError;
 pub use error::role_error::RoleError;
 pub use error::social_error::SocialError;
+pub use error::store_error::StoreError;
 pub use error::vote_error::VoteError;
 
 pub use auth::hash_password::hash_password;
@@ -67,8 +72,9 @@ pub use e2ee::unwrap::unwrap_secret;
 pub use e2ee::wrap::wrap_secret;
 pub use e2ee::wrapped_secret::WrappedSecret;
 
-pub use mention::{MentionKind, ResolvedMention};
-pub use mute_service::MemberView;
+pub use mention_kind::MentionKind;
+pub use resolved_mention::ResolvedMention;
+pub use member_view::MemberView;
 
 pub use outcome::EnfranchiseOutcome;
 
@@ -81,7 +87,8 @@ pub use ports::dm_router::DmRouter;
 pub use ports::friend_router::FriendRouter;
 pub use ports::dm_store::DmStore;
 pub use emoji_view::RankedEmoji;
-pub use role_view::{RoleColorView, UserRoles};
+pub use role_color_view::RoleColorView;
+pub use user_roles::UserRoles;
 pub use ports::emoji_store::EmojiStore;
 pub use ports::emoji_vote_store::EmojiVoteStore;
 pub use ports::friend_store::FriendStore;
@@ -102,4 +109,13 @@ pub use ports::user_store::UserStore;
 pub use ports::vote_router::VoteRouter;
 pub use ports::vote_store::VoteStore;
 
-pub use services::{Services, Stores};
+pub use channel_key_service::ChannelKeyService;
+pub use chat_service::ChatService;
+pub use emoji_service::EmojiService;
+pub use governance_service::GovernanceService;
+pub use key_directory_service::KeyDirectoryService;
+pub use mute_service::MuteService;
+pub use role_service::RoleService;
+pub use services::Services;
+pub use social_service::SocialService;
+pub use stores::Stores;

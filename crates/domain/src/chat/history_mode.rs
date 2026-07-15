@@ -23,3 +23,22 @@ pub enum HistoryMode {
     /// Key ratchets on membership change; joiners see join-onward only.
     Ephemeral,
 }
+
+impl HistoryMode {
+    /// The mode's canonical wire tag (matches the serde representation).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            HistoryMode::Open => "open",
+            HistoryMode::Ephemeral => "ephemeral",
+        }
+    }
+
+    /// Parse a wire tag back into a mode. `None` for an unknown tag — the single
+    /// place the string→mode table lives, so a new mode is handled here rather than
+    /// by a `_ =>` fallthrough at the call site that would silently misclassify it.
+    pub fn from_wire(tag: &str) -> Option<Self> {
+        [HistoryMode::Open, HistoryMode::Ephemeral]
+            .into_iter()
+            .find(|m| m.as_str() == tag)
+    }
+}

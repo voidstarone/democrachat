@@ -17,3 +17,15 @@ pub enum Tier {
     /// Enfranchised citizen: may vote on this server's ballots.
     Citizen,
 }
+
+impl Tier {
+    /// The tier's canonical lowercase wire tag — the single place the string form
+    /// lives, so a new tier is named here rather than at each call site.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Tier::Guest => "guest",
+            Tier::Member => "member",
+            Tier::Citizen => "citizen",
+        }
+    }
+}

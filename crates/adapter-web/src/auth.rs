@@ -47,7 +47,7 @@ pub fn current_actor(st: &AppState, headers: &HeaderMap) -> Option<String> {
     if expires_at < st.services.now().0 {
         return None; // expired — reject even if the browser resent it
     }
-    st.services.user_handle(UserId(uid))
+    st.services.chat().user_handle(UserId(uid))
 }
 
 /// Require an authenticated actor, or fail with `401`.

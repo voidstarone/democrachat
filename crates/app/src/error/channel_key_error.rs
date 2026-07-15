@@ -22,4 +22,8 @@ pub enum ChannelKeyError {
     /// The sealed key blob was empty.
     #[error("the sealed key is empty")]
     EmptySeal,
+    /// The persistence layer itself failed (store unavailable, timeout, or
+    /// write conflict) — distinct from any domain-rule rejection.
+    #[error(transparent)]
+    Store(#[from] crate::StoreError),
 }

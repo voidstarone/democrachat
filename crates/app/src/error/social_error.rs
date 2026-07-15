@@ -12,4 +12,8 @@ pub enum SocialError {
     /// No pending friend request exists to accept.
     #[error("no pending friend request from that user")]
     NoPendingRequest,
+    /// The persistence layer itself failed (store unavailable, timeout, or
+    /// write conflict) — distinct from any domain-rule rejection.
+    #[error(transparent)]
+    Store(#[from] crate::StoreError),
 }

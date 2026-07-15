@@ -248,20 +248,15 @@ fn run_serve(
         // on this runtime so its background tasks run alongside the web server.
         let routers =
             federation::start(store, services.clone(), save_hook.clone(), node).await;
-        adapter_web::serve(
-            services,
+        let config = adapter_web::WebConfig {
             addr,
             is_dev,
-            signer,
             secure_cookies,
-            advance,
-            save_hook,
-            routers.vote,
-            routers.dm,
-            routers.block,
-            routers.friend,
-        )
-        .await
+            signer,
+            advance_days: advance,
+            save: save_hook,
+        };
+        adapter_web::serve(services, config, routers).await
     });
     if let Err(e) = served {
         eprintln!("server error: {e}");
@@ -329,9 +324,9 @@ fn seed_if_empty(services: &Services) {
     let _ = services.register_account("ada");
     if services.found_server("ada", "Founders Lounge").is_ok() {
         // #general is provisioned automatically when the server is founded.
-        let _ = services.create_channel("ada", "founders-lounge", "governance", "how we govern ourselves");
-        let _ = services.post_message("ada", "founders-lounge", "general", "Welcome to democrachat — a chat that governs itself. No owner, no mods: citizens vote.");
-        let _ = services.post_message("ada", "founders-lounge", "general", "You start as a guest. Join, chat, and once citizens endorse your messages you can earn the vote.");
+        let _ = services.chat().create_channel("ada", "founders-lounge", "governance", "how we govern ourselves");
+        let _ = services.chat().post_message("ada", "founders-lounge", "general", "Welcome to democrachat — a chat that governs itself. No owner, no mods: citizens vote.");
+        let _ = services.chat().post_message("ada", "founders-lounge", "general", "You start as a guest. Join, chat, and once citizens endorse your messages you can earn the vote.");
 
         // Seed a couple of custom emoji so the vote list in server settings has
         // something to rank. Emoji are curated by citizen voting, not ballots.
@@ -342,10 +337,10 @@ fn seed_if_empty(services: &Services) {
                  width='64' height='64'><text x='6' y='52' font-size='52'>{g}</text></svg>"
             )
         };
-        let _ = services.add_emoji("ada", "founders-lounge", "party", &glyph("🎉"));
-        let _ = services.add_emoji("ada", "founders-lounge", "vote", &glyph("🗳️"));
+        let _ = services.emoji().add_emoji("ada", "founders-lounge", "party", &glyph("🎉"));
+        let _ = services.emoji().add_emoji("ada", "founders-lounge", "vote", &glyph("🗳️"));
     }
     let _ = services.register_account("grace");
     let _ = services.join_server("grace", "founders-lounge");
-    let _ = services.post_message("grace", "founders-lounge", "general", "Hi! I just joined as a member.");
+    let _ = services.chat().post_message("grace", "founders-lounge", "general", "Hi! I just joined as a member.");
 }

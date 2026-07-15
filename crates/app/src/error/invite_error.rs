@@ -20,4 +20,8 @@ pub enum InviteError {
     /// The redeemer already belongs to the server.
     #[error("already a member of '{0}'")]
     AlreadyMember(String),
+    /// The persistence layer itself failed (store unavailable, timeout, or
+    /// write conflict) — distinct from any domain-rule rejection.
+    #[error(transparent)]
+    Store(#[from] crate::StoreError),
 }

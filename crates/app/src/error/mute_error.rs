@@ -21,4 +21,8 @@ pub enum MuteError {
     /// re-muting them until the 24-hour cooldown elapses.
     #[error("a vote overturned your mute of this member; you cannot re-mute them yet")]
     RemuteBlocked,
+    /// The persistence layer itself failed (store unavailable, timeout, or
+    /// write conflict) — distinct from any domain-rule rejection.
+    #[error(transparent)]
+    Store(#[from] crate::StoreError),
 }

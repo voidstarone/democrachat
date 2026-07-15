@@ -12,4 +12,8 @@ pub enum FoundError {
     EmptyName,
     #[error("a franchise-barred account may not found a server")]
     FounderBarred,
+    /// The persistence layer itself failed (store unavailable, timeout, or
+    /// write conflict) — distinct from any domain-rule rejection.
+    #[error(transparent)]
+    Store(#[from] crate::StoreError),
 }

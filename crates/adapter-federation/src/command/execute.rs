@@ -11,52 +11,59 @@ use crate::command::signed_command::SignedCommand;
 use crate::command::target_scope::target_scopes;
 use crate::command::verify_signed::verify_signed;
 
-/// Run a forwarded command on the owner. In order:
-///
-/// 1. **Authenticate** — [`verify_signed`] against the forwarding node's published
-///    key (a mere bearer-token holder cannot inject a write).
-/// 2. **Owner-owns-scope** — this node (`node`) must be the current owner of the
-///    command's target scope; otherwise the write does not belong here (a
-///    misrouted command, or one aimed at a scope that has rehomed away). This is
-///    the command-path mirror of the feed's payload-derived authorization.
-/// 3. **Anti-replay** — [`ReplayGuard::admit`] enforces freshness and rejects a
-///    repeated `(node, nonce)`, checked *after* authenticity + ownership so a
-///    misrouted command never burns a nonce.
-/// 4. **Apply** — the [`CommandExecutor`] runs the domain use-case, which does its
-///    own eligibility checks and mints the canonical change event.
-#[allow(clippy::too_many_arguments)]
-pub async fn execute(
-    node: NodeId,
-    registry: &dyn OwnershipRegistry,
-    resolver: &dyn ScopeResolver,
-    replay: &ReplayGuard,
-    executor: &dyn CommandExecutor,
-    signed: &SignedCommand,
-    now: i64,
-) -> Result<(), ForwardError> {
-    let cmd = verify_signed(registry, signed).await?;
+/// The owner-side command pipeline's fixed collaborators: this node's identity and
+/// the four services the pipeline drives. Bundling them (rather than passing five
+/// loose arguments) keeps [`OwnerPipeline::run`] down to its genuine per-call
+/// inputs — the command and the clock — and lets the HTTP layer build it once from
+/// its shared state.
+pub struct OwnerPipeline<'a> {
+    /// The node running the command — it must own a target scope to apply it.
+    pub node: NodeId,
+    pub registry: &'a dyn OwnershipRegistry,
+    pub resolver: &'a dyn ScopeResolver,
+    pub replay: &'a ReplayGuard,
+    pub executor: &'a dyn CommandExecutor,
+}
 
-    // A command may name more than one scope (a block names both users' homes). This
-    // node runs it if it owns *any* of them — the caller forwards the same command to
-    // every distinct owner, so each owner commits its own share. If it owns none, the
-    // command was misrouted (or its scope rehomed away) and must not be applied here.
-    let scopes = target_scopes(&cmd, resolver).await;
-    if scopes.is_empty() {
-        return Err(ForwardError::Unowned);
-    }
-    let mut owns_a_scope = false;
-    for scope in scopes {
-        match registry.owner_of(scope).await.map_err(|e| ForwardError::OwnerUnreachable(e.0))? {
-            Some(o) if o.owner == node => owns_a_scope = true,
-            _ => {}
+impl OwnerPipeline<'_> {
+    /// Run a forwarded command on the owner. In order:
+    ///
+    /// 1. **Authenticate** — [`verify_signed`] against the forwarding node's published
+    ///    key (a mere bearer-token holder cannot inject a write).
+    /// 2. **Owner-owns-scope** — this node (`self.node`) must be the current owner of
+    ///    the command's target scope; otherwise the write does not belong here (a
+    ///    misrouted command, or one aimed at a scope that has rehomed away). This is
+    ///    the command-path mirror of the feed's payload-derived authorization.
+    /// 3. **Anti-replay** — [`ReplayGuard::admit`] enforces freshness and rejects a
+    ///    repeated `(node, nonce)`, checked *after* authenticity + ownership so a
+    ///    misrouted command never burns a nonce.
+    /// 4. **Apply** — the [`CommandExecutor`] runs the domain use-case, which does its
+    ///    own eligibility checks and mints the canonical change event.
+    pub async fn run(&self, signed: &SignedCommand, now: i64) -> Result<(), ForwardError> {
+        let cmd = verify_signed(self.registry, signed).await?;
+
+        // A command may name more than one scope (a block names both users' homes). This
+        // node runs it if it owns *any* of them — the caller forwards the same command to
+        // every distinct owner, so each owner commits its own share. If it owns none, the
+        // command was misrouted (or its scope rehomed away) and must not be applied here.
+        let scopes = target_scopes(&cmd, self.resolver).await;
+        if scopes.is_empty() {
+            return Err(ForwardError::Unowned);
         }
-    }
-    if !owns_a_scope {
-        return Err(ForwardError::Rejected("this node owns none of the command's scopes".into()));
-    }
+        let mut owns_a_scope = false;
+        for scope in scopes {
+            match self.registry.owner_of(scope).await.map_err(|e| ForwardError::OwnerUnreachable(e.0))? {
+                Some(o) if o.owner == self.node => owns_a_scope = true,
+                _ => {}
+            }
+        }
+        if !owns_a_scope {
+            return Err(ForwardError::Rejected("this node owns none of the command's scopes".into()));
+        }
 
-    replay.admit(signed.node, &signed.nonce, signed.issued_at, now).await?;
-    executor.execute(&cmd).await
+        self.replay.admit(signed.node, &signed.nonce, signed.issued_at, now).await?;
+        self.executor.execute(&cmd).await
+    }
 }
 
 #[cfg(test)]
@@ -67,6 +74,20 @@ mod tests {
 
     use crate::command::command::Command;
     use federation::{InMemoryRegistry, NodeKeypair, OwnedScope, OwnershipRegistry};
+
+    /// Assemble the pipeline and run one command — the tests drive the same path the
+    /// HTTP handler does, just with the collaborators passed loose.
+    async fn execute(
+        node: NodeId,
+        registry: &dyn OwnershipRegistry,
+        resolver: &dyn ScopeResolver,
+        replay: &ReplayGuard,
+        executor: &dyn CommandExecutor,
+        signed: &SignedCommand,
+        now: i64,
+    ) -> Result<(), ForwardError> {
+        OwnerPipeline { node, registry, resolver, replay, executor }.run(signed, now).await
+    }
 
     /// Maps every proposal to server 7.
     struct FixedServer;

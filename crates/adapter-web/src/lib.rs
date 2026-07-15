@@ -38,21 +38,36 @@ const LOCALE_ES: &str = include_str!("locales/es.json");
 const E2EE_JS: &str = include_str!("wasm/e2ee.js");
 const E2EE_WASM: &[u8] = include_bytes!("wasm/e2ee_bg.wasm");
 
+/// The optional federation write-routers the web layer installs. `None` on a
+/// single-box deployment, where every write applies locally; `Some` when a control
+/// plane forwards cross-scope writes to their owner.
+#[derive(Default, Clone)]
+pub struct Routers {
+    pub vote: Option<Arc<dyn app::VoteRouter>>,
+    pub dm: Option<Arc<dyn app::DmRouter>>,
+    pub block: Option<Arc<dyn app::BlockRouter>>,
+    pub friend: Option<Arc<dyn app::FriendRouter>>,
+}
+
+/// Everything the composition root wires into the server besides the use-cases and
+/// the router bundle: the bind address, deployment flags, the session signer, and
+/// the dev-only clock-advance and save hooks.
+pub struct WebConfig {
+    pub addr: SocketAddr,
+    pub is_dev: bool,
+    pub secure_cookies: bool,
+    pub signer: Arc<SessionSigner>,
+    pub advance_days: Arc<dyn Fn(i64) + Send + Sync>,
+    pub save: Arc<dyn Fn() + Send + Sync>,
+}
+
 /// Serve the web app until the process is stopped.
-#[allow(clippy::too_many_arguments)]
 pub async fn serve(
     services: Arc<Services>,
-    addr: SocketAddr,
-    is_dev: bool,
-    signer: Arc<SessionSigner>,
-    secure_cookies: bool,
-    advance_days: Arc<dyn Fn(i64) + Send + Sync>,
-    save: Arc<dyn Fn() + Send + Sync>,
-    vote_router: Option<Arc<dyn app::VoteRouter>>,
-    dm_router: Option<Arc<dyn app::DmRouter>>,
-    block_router: Option<Arc<dyn app::BlockRouter>>,
-    friend_router: Option<Arc<dyn app::FriendRouter>>,
+    config: WebConfig,
+    routers: Routers,
 ) -> anyhow::Result<()> {
+    let WebConfig { addr, is_dev, secure_cookies, signer, advance_days, save } = config;
     let (events, _) = broadcast::channel(256);
     let state = AppState {
         services,
@@ -62,10 +77,10 @@ pub async fn serve(
         is_dev,
         advance_days,
         save,
-        vote_router,
-        dm_router,
-        block_router,
-        friend_router,
+        vote_router: routers.vote,
+        dm_router: routers.dm,
+        block_router: routers.block,
+        friend_router: routers.friend,
     };
 
     let limiter = Arc::new(middleware::rate_limit::RateLimiter::new());

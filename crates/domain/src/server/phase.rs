@@ -36,6 +36,16 @@ impl Phase {
     pub fn founder_may_provision(self) -> bool {
         matches!(self, Phase::Seed)
     }
+
+    /// The phase's canonical wire name for the client. Explicit, not the `Debug`
+    /// rendering, so the JSON the SPA reads is a deliberate contract.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Phase::Seed => "Seed",
+            Phase::Chartering => "Chartering",
+            Phase::Sovereign => "Sovereign",
+        }
+    }
 }
 
 #[cfg(test)]

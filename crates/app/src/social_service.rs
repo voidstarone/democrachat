@@ -8,11 +8,23 @@
 //! backs the friends-only policy. No governance touches this layer — it is
 //! account-to-account, not server business.
 
+use std::sync::Arc;
+
 use domain::{Block, DmMessage, DmPolicy, Friendship, User, UserId};
 
-use crate::{DmError, Services, SocialError};
+use crate::{BlockStore, Clock, DmError, DmStore, FriendStore, SocialError, UserStore};
 
-impl Services {
+/// Social use-cases held on their own handle, reached via [`Services::social`].
+#[derive(Clone)]
+pub struct SocialService {
+    pub(crate) blocks: Arc<dyn BlockStore>,
+    pub(crate) clock: Arc<dyn Clock>,
+    pub(crate) dms: Arc<dyn DmStore>,
+    pub(crate) friends: Arc<dyn FriendStore>,
+    pub(crate) users: Arc<dyn UserStore>,
+}
+
+impl SocialService {
     /// Send an **end-to-end-encrypted** direct message from `from_handle` to
     /// `to_handle`. The client has already sealed the body against both device keys
     /// (recipient's and sender's, fetched from the key directory) — the server only
@@ -29,11 +41,11 @@ impl Services {
     ) -> Result<DmMessage, DmError> {
         let sender = self
             .users
-            .find_by_handle(from_handle.trim())
+            .find_by_handle(from_handle.trim())?
             .ok_or_else(|| DmError::NoSuchUser(from_handle.to_string()))?;
         let recipient = self
             .users
-            .find_by_handle(to_handle.trim())
+            .find_by_handle(to_handle.trim())?
             .ok_or_else(|| DmError::NoSuchUser(to_handle.to_string()))?;
         self.send_sealed_dm_core(sender, recipient, sealed_for_recipient, sealed_for_sender)
     }
@@ -51,11 +63,11 @@ impl Services {
     ) -> Result<DmMessage, DmError> {
         let sender = self
             .users
-            .get_user(UserId(from_id))
+            .get_user(UserId(from_id))?
             .ok_or_else(|| DmError::NoSuchUser(from_id.to_string()))?;
         let recipient = self
             .users
-            .get_user(UserId(to_id))
+            .get_user(UserId(to_id))?
             .ok_or_else(|| DmError::NoSuchUser(to_id.to_string()))?;
         self.send_sealed_dm_core(sender, recipient, sealed_for_recipient, sealed_for_sender)
     }
@@ -82,22 +94,22 @@ impl Services {
         }
 
         let message = DmMessage::new(
-            self.dms.next_dm_id(),
+            self.dms.next_dm_id()?,
             sender.id,
             recipient.id,
             sealed_for_recipient.trim(),
             sealed_for_sender.trim(),
             self.clock.now(),
         );
-        self.dms.insert_dm(message.clone());
+        self.dms.insert_dm(message.clone())?;
         Ok(message)
     }
 
     /// Whether `sender` may currently DM `recipient`, per the domain rule. Reads
     /// only the blocks and friendships that involve the pair.
     fn may_dm(&self, sender: &User, recipient: &User) -> bool {
-        let blocks = self.blocks.involving(recipient.id);
-        let friendships = self.friends.involving(recipient.id);
+        let blocks = self.blocks.involving(recipient.id).unwrap_or_default();
+        let friendships = self.friends.involving(recipient.id).unwrap_or_default();
         domain::can_dm(sender.id, recipient.id, recipient.dm_policy, &blocks, &friendships)
     }
 
@@ -105,8 +117,8 @@ impl Services {
     /// disabled compose box without attempting a send.
     pub fn can_dm(&self, from_handle: &str, to_handle: &str) -> bool {
         let (Some(sender), Some(recipient)) = (
-            self.users.find_by_handle(from_handle.trim()),
-            self.users.find_by_handle(to_handle.trim()),
+            self.users.find_by_handle(from_handle.trim()).ok().flatten(),
+            self.users.find_by_handle(to_handle.trim()).ok().flatten(),
         ) else {
             return false;
         };
@@ -116,23 +128,23 @@ impl Services {
     /// Read-only: the conversation between two users, oldest first.
     pub fn conversation(&self, a_handle: &str, b_handle: &str) -> Vec<DmMessage> {
         let (Some(a), Some(b)) = (
-            self.users.find_by_handle(a_handle.trim()),
-            self.users.find_by_handle(b_handle.trim()),
+            self.users.find_by_handle(a_handle.trim()).ok().flatten(),
+            self.users.find_by_handle(b_handle.trim()).ok().flatten(),
         ) else {
             return Vec::new();
         };
-        self.dms.conversation(a.id, b.id)
+        self.dms.conversation(a.id, b.id).unwrap_or_default()
     }
 
     /// Read-only: the handles a user has DM conversations with, most-recent first.
     pub fn dm_partners(&self, handle: &str) -> Vec<String> {
-        let Some(user) = self.users.find_by_handle(handle.trim()) else {
+        let Some(user) = self.users.find_by_handle(handle.trim()).ok().flatten() else {
             return Vec::new();
         };
         self.dms
-            .partners(user.id)
+            .partners(user.id).unwrap_or_default()
             .into_iter()
-            .filter_map(|id| self.users.get_user(id))
+            .filter_map(|id| self.users.get_user(id).ok().flatten())
             .map(|u| u.handle)
             .collect()
     }
@@ -142,16 +154,16 @@ impl Services {
     pub fn set_dm_policy(&self, handle: &str, policy: DmPolicy) -> Result<(), SocialError> {
         let mut user = self
             .users
-            .find_by_handle(handle.trim())
+            .find_by_handle(handle.trim())?
             .ok_or_else(|| SocialError::NoSuchUser(handle.to_string()))?;
         user.dm_policy = policy;
-        self.users.update_user(user);
+        self.users.update_user(user)?;
         Ok(())
     }
 
     /// Read-only: a user's current DM policy.
     pub fn dm_policy(&self, handle: &str) -> Option<DmPolicy> {
-        self.users.find_by_handle(handle.trim()).map(|u| u.dm_policy)
+        self.users.find_by_handle(handle.trim()).ok().flatten().map(|u| u.dm_policy)
     }
 
     /// Permanently block another user. Idempotent — blocking again is a no-op. A
@@ -159,11 +171,11 @@ impl Services {
     pub fn block_user(&self, blocker_handle: &str, blocked_handle: &str) -> Result<(), SocialError> {
         let blocker = self
             .users
-            .find_by_handle(blocker_handle.trim())
+            .find_by_handle(blocker_handle.trim())?
             .ok_or_else(|| SocialError::NoSuchUser(blocker_handle.to_string()))?;
         let blocked = self
             .users
-            .find_by_handle(blocked_handle.trim())
+            .find_by_handle(blocked_handle.trim())?
             .ok_or_else(|| SocialError::NoSuchUser(blocked_handle.to_string()))?;
         self.block_between(blocker, blocked)
     }
@@ -176,11 +188,11 @@ impl Services {
     pub fn block_user_by_id(&self, blocker_id: u64, blocked_id: u64) -> Result<(), SocialError> {
         let blocker = self
             .users
-            .get_user(UserId(blocker_id))
+            .get_user(UserId(blocker_id))?
             .ok_or_else(|| SocialError::NoSuchUser(blocker_id.to_string()))?;
         let blocked = self
             .users
-            .get_user(UserId(blocked_id))
+            .get_user(UserId(blocked_id))?
             .ok_or_else(|| SocialError::NoSuchUser(blocked_id.to_string()))?;
         self.block_between(blocker, blocked)
     }
@@ -192,7 +204,7 @@ impl Services {
             return Err(SocialError::Self_);
         }
         self.blocks
-            .add(Block::new(blocker.id, blocked.id, self.clock.now()));
+            .add(Block::new(blocker.id, blocked.id, self.clock.now()))?;
         Ok(())
     }
 
@@ -200,14 +212,14 @@ impl Services {
     /// handle. Powers the client's "Blocked" list. A block is permanent, so this is
     /// display-only — there is deliberately no unblock.
     pub fn blocked_users(&self, handle: &str) -> Vec<String> {
-        let Some(user) = self.users.find_by_handle(handle.trim()) else {
+        let Some(user) = self.users.find_by_handle(handle.trim()).ok().flatten() else {
             return Vec::new();
         };
         self.blocks
-            .involving(user.id)
+            .involving(user.id).unwrap_or_default()
             .into_iter()
             .filter(|b| b.blocker == user.id)
-            .filter_map(|b| self.users.get_user(b.blocked))
+            .filter_map(|b| self.users.get_user(b.blocked).ok().flatten())
             .map(|u| u.handle)
             .collect()
     }
@@ -215,12 +227,12 @@ impl Services {
     /// Read-only: whether `a_handle` and `b_handle` have a block between them.
     pub fn is_blocked_between(&self, a_handle: &str, b_handle: &str) -> bool {
         let (Some(a), Some(b)) = (
-            self.users.find_by_handle(a_handle.trim()),
-            self.users.find_by_handle(b_handle.trim()),
+            self.users.find_by_handle(a_handle.trim()).ok().flatten(),
+            self.users.find_by_handle(b_handle.trim()).ok().flatten(),
         ) else {
             return false;
         };
-        self.blocks.is_blocked_between(a.id, b.id)
+        self.blocks.is_blocked_between(a.id, b.id).unwrap_or_default()
     }
 
     /// Send (or re-affirm) a friend request. Idempotent: if a record already exists
@@ -233,11 +245,11 @@ impl Services {
     ) -> Result<(), SocialError> {
         let requester = self
             .users
-            .find_by_handle(requester_handle.trim())
+            .find_by_handle(requester_handle.trim())?
             .ok_or_else(|| SocialError::NoSuchUser(requester_handle.to_string()))?;
         let addressee = self
             .users
-            .find_by_handle(addressee_handle.trim())
+            .find_by_handle(addressee_handle.trim())?
             .ok_or_else(|| SocialError::NoSuchUser(addressee_handle.to_string()))?;
         self.request_friend_between(requester, addressee)
     }
@@ -254,11 +266,11 @@ impl Services {
     ) -> Result<(), SocialError> {
         let requester = self
             .users
-            .get_user(UserId(requester_id))
+            .get_user(UserId(requester_id))?
             .ok_or_else(|| SocialError::NoSuchUser(requester_id.to_string()))?;
         let addressee = self
             .users
-            .get_user(UserId(addressee_id))
+            .get_user(UserId(addressee_id))?
             .ok_or_else(|| SocialError::NoSuchUser(addressee_id.to_string()))?;
         self.request_friend_between(requester, addressee)
     }
@@ -273,7 +285,7 @@ impl Services {
             return Err(SocialError::Self_);
         }
         self.friends
-            .add(Friendship::request(requester.id, addressee.id, self.clock.now()));
+            .add(Friendship::request(requester.id, addressee.id, self.clock.now()))?;
         Ok(())
     }
 
@@ -281,11 +293,11 @@ impl Services {
     pub fn accept_friend(&self, me_handle: &str, other_handle: &str) -> Result<(), SocialError> {
         let me = self
             .users
-            .find_by_handle(me_handle.trim())
+            .find_by_handle(me_handle.trim())?
             .ok_or_else(|| SocialError::NoSuchUser(me_handle.to_string()))?;
         let other = self
             .users
-            .find_by_handle(other_handle.trim())
+            .find_by_handle(other_handle.trim())?
             .ok_or_else(|| SocialError::NoSuchUser(other_handle.to_string()))?;
         self.accept_friend_between(me, other)
     }
@@ -300,11 +312,11 @@ impl Services {
     ) -> Result<(), SocialError> {
         let me = self
             .users
-            .get_user(UserId(accepter_id))
+            .get_user(UserId(accepter_id))?
             .ok_or_else(|| SocialError::NoSuchUser(accepter_id.to_string()))?;
         let other = self
             .users
-            .get_user(UserId(requester_id))
+            .get_user(UserId(requester_id))?
             .ok_or_else(|| SocialError::NoSuchUser(requester_id.to_string()))?;
         self.accept_friend_between(me, other)
     }
@@ -314,38 +326,38 @@ impl Services {
     fn accept_friend_between(&self, me: User, other: User) -> Result<(), SocialError> {
         let mut friendship = self
             .friends
-            .between(me.id, other.id)
+            .between(me.id, other.id)?
             .filter(|f| !f.are_friends() && f.requester == other.id && f.addressee == me.id)
             .ok_or(SocialError::NoPendingRequest)?;
         friendship.accept();
-        self.friends.update(friendship);
+        self.friends.update(friendship)?;
         Ok(())
     }
 
     /// Read-only: whether two users are accepted, mutual friends.
     pub fn are_friends(&self, a_handle: &str, b_handle: &str) -> bool {
         let (Some(a), Some(b)) = (
-            self.users.find_by_handle(a_handle.trim()),
-            self.users.find_by_handle(b_handle.trim()),
+            self.users.find_by_handle(a_handle.trim()).ok().flatten(),
+            self.users.find_by_handle(b_handle.trim()).ok().flatten(),
         ) else {
             return false;
         };
         self.friends
-            .between(a.id, b.id)
+            .between(a.id, b.id).ok().flatten()
             .is_some_and(|f| f.are_friends())
     }
 
     /// Read-only: the accepted friends of a user, by handle.
     pub fn friends_of(&self, handle: &str) -> Vec<String> {
-        let Some(user) = self.users.find_by_handle(handle.trim()) else {
+        let Some(user) = self.users.find_by_handle(handle.trim()).ok().flatten() else {
             return Vec::new();
         };
         self.friends
-            .involving(user.id)
+            .involving(user.id).unwrap_or_default()
             .into_iter()
             .filter(|f| f.are_friends())
             .filter_map(|f| self.other_party(&f, user.id))
-            .filter_map(|id| self.users.get_user(id))
+            .filter_map(|id| self.users.get_user(id).ok().flatten())
             .map(|u| u.handle)
             .collect()
     }
@@ -353,14 +365,14 @@ impl Services {
     /// Read-only: pending friend requests *awaiting this user's* answer, by the
     /// requester's handle.
     pub fn incoming_friend_requests(&self, handle: &str) -> Vec<String> {
-        let Some(user) = self.users.find_by_handle(handle.trim()) else {
+        let Some(user) = self.users.find_by_handle(handle.trim()).ok().flatten() else {
             return Vec::new();
         };
         self.friends
-            .involving(user.id)
+            .involving(user.id).unwrap_or_default()
             .into_iter()
             .filter(|f| !f.are_friends() && f.addressee == user.id)
-            .filter_map(|f| self.users.get_user(f.requester))
+            .filter_map(|f| self.users.get_user(f.requester).ok().flatten())
             .map(|u| u.handle)
             .collect()
     }

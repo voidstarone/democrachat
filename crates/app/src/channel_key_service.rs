@@ -6,12 +6,25 @@
 //! entirely client-side. These use-cases move opaque blobs and enforce membership —
 //! they never see a key or a plaintext body.
 
+use std::sync::Arc;
+
 use domain::{ChannelKeyGrant, HistoryMode};
 
 use crate::error::channel_key_error::ChannelKeyError;
-use crate::Services;
+use crate::{ChannelKeyStore, ChannelStore, MembershipStore, ServerStore, UserStore};
 
-impl Services {
+/// Encrypted-channel use-cases held on their own handle, reached via
+/// [`Services::channel_keys`].
+#[derive(Clone)]
+pub struct ChannelKeyService {
+    pub(crate) channel_keys: Arc<dyn ChannelKeyStore>,
+    pub(crate) channels: Arc<dyn ChannelStore>,
+    pub(crate) memberships: Arc<dyn MembershipStore>,
+    pub(crate) servers: Arc<dyn ServerStore>,
+    pub(crate) users: Arc<dyn UserStore>,
+}
+
+impl ChannelKeyService {
     /// Turn on end-to-end encryption for a channel, with the given history mode
     /// (citizen-only). This only flips the channel's stored policy — the channel key
     /// is minted and granted to members client-side afterwards.
@@ -24,24 +37,24 @@ impl Services {
     ) -> Result<(), ChannelKeyError> {
         let user = self
             .users
-            .find_by_handle(handle.trim())
+            .find_by_handle(handle.trim())?
             .ok_or_else(|| ChannelKeyError::NoSuchUser(handle.to_string()))?;
         let server = self
             .servers
-            .find_by_slug(server_slug.trim())
+            .find_by_slug(server_slug.trim())?
             .ok_or_else(|| ChannelKeyError::NoSuchServer(server_slug.to_string()))?;
         self.memberships
-            .get(user.id, server.id)
+            .get(user.id, server.id)?
             .filter(|m| m.is_franchised())
             .ok_or(ChannelKeyError::NotACitizen)?;
 
         let name = domain::normalize_channel_name(channel_name);
         let mut channel = self
             .channels
-            .find_by_name(server.id, &name)
+            .find_by_name(server.id, &name)?
             .ok_or_else(|| ChannelKeyError::NoSuchChannel(channel_name.to_string()))?;
         channel.enable_encryption(history_mode);
-        self.channels.insert_channel(channel);
+        self.channels.insert_channel(channel)?;
         Ok(())
     }
 
@@ -59,20 +72,20 @@ impl Services {
     ) -> Result<(), ChannelKeyError> {
         let granter = self
             .users
-            .find_by_handle(granter_handle.trim())
+            .find_by_handle(granter_handle.trim())?
             .ok_or_else(|| ChannelKeyError::NoSuchUser(granter_handle.to_string()))?;
         let server = self
             .servers
-            .find_by_slug(server_slug.trim())
+            .find_by_slug(server_slug.trim())?
             .ok_or_else(|| ChannelKeyError::NoSuchServer(server_slug.to_string()))?;
         self.memberships
-            .get(granter.id, server.id)
+            .get(granter.id, server.id)?
             .ok_or_else(|| ChannelKeyError::NotAMember(granter_handle.to_string()))?;
 
         let name = domain::normalize_channel_name(channel_name);
         let channel = self
             .channels
-            .find_by_name(server.id, &name)
+            .find_by_name(server.id, &name)?
             .ok_or_else(|| ChannelKeyError::NoSuchChannel(channel_name.to_string()))?;
         if !channel.is_encrypted {
             return Err(ChannelKeyError::NotEncrypted);
@@ -80,10 +93,10 @@ impl Services {
 
         let member = self
             .users
-            .find_by_handle(member_handle.trim())
+            .find_by_handle(member_handle.trim())?
             .ok_or_else(|| ChannelKeyError::NoSuchUser(member_handle.to_string()))?;
         self.memberships
-            .get(member.id, server.id)
+            .get(member.id, server.id)?
             .ok_or_else(|| ChannelKeyError::NotAMember(member_handle.to_string()))?;
 
         let sealed_key = sealed_key.trim();
@@ -96,7 +109,7 @@ impl Services {
             epoch,
             member.id,
             sealed_key,
-        ));
+        ))?;
         Ok(())
     }
 
@@ -110,17 +123,17 @@ impl Services {
     ) -> Result<Vec<ChannelKeyGrant>, ChannelKeyError> {
         let user = self
             .users
-            .find_by_handle(handle.trim())
+            .find_by_handle(handle.trim())?
             .ok_or_else(|| ChannelKeyError::NoSuchUser(handle.to_string()))?;
         let server = self
             .servers
-            .find_by_slug(server_slug.trim())
+            .find_by_slug(server_slug.trim())?
             .ok_or_else(|| ChannelKeyError::NoSuchServer(server_slug.to_string()))?;
         let name = domain::normalize_channel_name(channel_name);
         let channel = self
             .channels
-            .find_by_name(server.id, &name)
+            .find_by_name(server.id, &name)?
             .ok_or_else(|| ChannelKeyError::NoSuchChannel(channel_name.to_string()))?;
-        Ok(self.channel_keys.grants_for_member(channel.id, user.id))
+        Ok(self.channel_keys.grants_for_member(channel.id, user.id)?)
     }
 }

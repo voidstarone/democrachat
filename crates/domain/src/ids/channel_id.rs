@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Identifies a channel within a server.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 pub struct ChannelId(pub u64);
 
 impl std::fmt::Display for ChannelId {

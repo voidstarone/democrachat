@@ -6,3 +6,5 @@ license.workspace = true
 
 [dependencies]
 app.workspace = true
+getrandom = { workspace = true }
+hex = { workspace = true }

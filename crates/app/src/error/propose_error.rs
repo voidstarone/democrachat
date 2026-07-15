@@ -26,4 +26,8 @@ pub enum ProposeError {
     NotAllowedInPhase,
     #[error("proposal is malformed: {0}")]
     Invalid(String),
+    /// The persistence layer itself failed (store unavailable, timeout, or
+    /// write conflict) — distinct from any domain-rule rejection.
+    #[error(transparent)]
+    Store(#[from] crate::StoreError),
 }

@@ -28,4 +28,14 @@ impl EmojiStanding {
     pub fn is_listed(self) -> bool {
         matches!(self, EmojiStanding::Active | EmojiStanding::Considered)
     }
+
+    /// The standing's canonical wire tag (matches the serde representation) — the
+    /// single home for the string form.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            EmojiStanding::Active => "active",
+            EmojiStanding::Considered => "considered",
+            EmojiStanding::Archived => "archived",
+        }
+    }
 }

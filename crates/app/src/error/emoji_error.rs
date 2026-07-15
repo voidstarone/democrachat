@@ -19,4 +19,8 @@ pub enum EmojiError {
     BadImage(String),
     #[error("no such emoji: {0}")]
     NoSuchEmoji(u64),
+    /// The persistence layer itself failed (store unavailable, timeout, or
+    /// write conflict) — distinct from any domain-rule rejection.
+    #[error(transparent)]
+    Store(#[from] crate::StoreError),
 }

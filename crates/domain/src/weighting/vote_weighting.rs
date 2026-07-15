@@ -23,16 +23,24 @@ pub enum VoteWeighting {
 }
 
 impl VoteWeighting {
-    /// Parse the variant name (as rendered by `{:?}`) back into a scheme. Used to
-    /// translate a client's governance-settings choice into the domain type.
-    pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "Equal" => Some(Self::Equal),
-            "ByContribution" => Some(Self::ByContribution),
-            "ByTenure" => Some(Self::ByTenure),
-            "ByRole" => Some(Self::ByRole),
-            _ => None,
+    /// The scheme's canonical wire name — the explicit string form crossing the
+    /// web↔domain boundary, not the `Debug` rendering (which is no stability
+    /// contract). Matches the derived serde representation (pinned by a test).
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Equal => "Equal",
+            Self::ByContribution => "ByContribution",
+            Self::ByTenure => "ByTenure",
+            Self::ByRole => "ByRole",
         }
+    }
+
+    /// Parse a canonical [`name`](Self::name) back into a scheme. Used to translate
+    /// a client's governance-settings choice into the domain type.
+    pub fn from_name(name: &str) -> Option<Self> {
+        [Self::Equal, Self::ByContribution, Self::ByTenure, Self::ByRole]
+            .into_iter()
+            .find(|w| w.name() == name)
     }
 
     /// This member's voting weight under the scheme — always within
@@ -96,5 +104,21 @@ mod tests {
         let now = Timestamp(10_000 * DAY);
         assert_eq!(VoteWeighting::ByRole.weight_of(&citizen(0, None, 1_000), now), MAX_VOTE_WEIGHT);
         assert_eq!(VoteWeighting::ByRole.weight_of(&citizen(0, None, 0), now), 1);
+    }
+
+    /// `name`/`from_name` round-trip, and the name matches the serde form so the
+    /// stored and client representations can't diverge.
+    #[test]
+    fn name_round_trips_and_matches_serde() {
+        for w in [
+            VoteWeighting::Equal,
+            VoteWeighting::ByContribution,
+            VoteWeighting::ByTenure,
+            VoteWeighting::ByRole,
+        ] {
+            assert_eq!(VoteWeighting::from_name(w.name()), Some(w));
+            assert_eq!(serde_json::to_string(&w).unwrap(), format!("\"{}\"", w.name()));
+        }
+        assert_eq!(VoteWeighting::from_name("Nope"), None);
     }
 }

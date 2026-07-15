@@ -7,19 +7,14 @@
 //! `<key>` (the bytes) and `<key>.ct` (its MIME type) — under an opaque, unguessable
 //! hex key. Deleting a message deletes its blobs (see [`MediaStore::delete`]).
 
-use std::collections::hash_map::DefaultHasher;
 use std::fs;
-use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use app::{MediaError, MediaStore};
 
 /// Stores media blobs as files in `dir`.
 pub struct FsMediaStore {
     dir: PathBuf,
-    seq: AtomicU64,
 }
 
 impl FsMediaStore {
@@ -27,21 +22,18 @@ impl FsMediaStore {
     pub fn new(dir: impl Into<PathBuf>) -> std::io::Result<Self> {
         let dir = dir.into();
         fs::create_dir_all(&dir)?;
-        Ok(Self { dir, seq: AtomicU64::new(0) })
+        Ok(Self { dir })
     }
 
-    /// Mint a fresh 128-bit opaque hex key. Not content-addressed — every upload
-    /// gets a distinct key, so deleting one message's media never affects another's.
-    fn mint_key(&self, bytes: &[u8]) -> String {
-        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-        let mut h1 = DefaultHasher::new();
-        (seq, nanos, bytes.len()).hash(&mut h1);
-        bytes.get(..bytes.len().min(64)).hash(&mut h1);
-        let a = h1.finish();
-        let mut h2 = DefaultHasher::new();
-        (a, nanos, seq, bytes.len()).hash(&mut h2);
-        format!("{a:016x}{:016x}", h2.finish())
+    /// Mint a fresh 128-bit opaque hex key from OS randomness. The key is the sole
+    /// capability that reaches a blob, so it must be unguessable — drawn from a
+    /// CSPRNG, never derived from the (predictable) upload metadata or content. Not
+    /// content-addressed: every upload gets a distinct key, so deleting one
+    /// message's media never affects another's.
+    fn mint_key() -> String {
+        let mut bytes = [0u8; 16];
+        getrandom::getrandom(&mut bytes).expect("OS randomness for media key");
+        hex::encode(bytes)
     }
 
     /// Resolve a key to its blob path, rejecting anything that is not pure hex
@@ -56,7 +48,7 @@ impl FsMediaStore {
 
 impl MediaStore for FsMediaStore {
     fn put(&self, content_type: &str, bytes: &[u8]) -> Result<String, MediaError> {
-        let key = self.mint_key(bytes);
+        let key = Self::mint_key();
         let path = self.dir.join(&key);
         fs::write(&path, bytes).map_err(|_| MediaError::Io)?;
         fs::write(path.with_extension("ct"), content_type.as_bytes()).map_err(|_| MediaError::Io)?;
@@ -77,5 +69,82 @@ impl MediaStore for FsMediaStore {
             let _ = fs::remove_file(&path);
             let _ = fs::remove_file(path.with_extension("ct"));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A throwaway media directory under the OS temp dir, unique per test and
+    /// removed on drop. The suffix is drawn from OS randomness so parallel test
+    /// runs never collide.
+    struct TmpDir(PathBuf);
+    impl TmpDir {
+        fn new() -> Self {
+            let mut suffix = [0u8; 8];
+            getrandom::getrandom(&mut suffix).unwrap();
+            let dir = std::env::temp_dir().join(format!("democrachat-media-test-{}", hex::encode(suffix)));
+            Self(dir)
+        }
+    }
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn store() -> (FsMediaStore, TmpDir) {
+        let tmp = TmpDir::new();
+        (FsMediaStore::new(&tmp.0).unwrap(), tmp)
+    }
+
+    /// A minted key is a 128-bit hex string (32 chars) and every mint is distinct,
+    /// so the capability token can't be guessed from a previous one.
+    #[test]
+    fn a_minted_key_is_128_bits_of_hex_and_unique() {
+        let a = FsMediaStore::mint_key();
+        let b = FsMediaStore::mint_key();
+        assert_eq!(a.len(), 32, "128 bits = 32 hex chars");
+        assert!(a.bytes().all(|c| c.is_ascii_hexdigit()), "pure hex, so path_for accepts it");
+        assert_ne!(a, b, "keys are random, never a deterministic function of upload order");
+    }
+
+    /// The key is not derived from the content: two identical uploads get different
+    /// keys, so no one can recompute another blob's key from its bytes.
+    #[test]
+    fn identical_content_gets_distinct_keys() {
+        let (s, _tmp) = store();
+        let k1 = s.put("image/png", b"same-bytes").unwrap();
+        let k2 = s.put("image/png", b"same-bytes").unwrap();
+        assert_ne!(k1, k2);
+    }
+
+    #[test]
+    fn put_then_get_round_trips_bytes_and_content_type() {
+        let (s, _tmp) = store();
+        let key = s.put("image/png", b"\x89PNG\r\n").unwrap();
+        let (ct, bytes) = s.get(&key).expect("the blob reads back");
+        assert_eq!(ct, "image/png");
+        assert_eq!(bytes, b"\x89PNG\r\n");
+    }
+
+    #[test]
+    fn delete_removes_the_blob_and_its_content_type() {
+        let (s, _tmp) = store();
+        let key = s.put("text/plain", b"hi").unwrap();
+        s.delete(&key);
+        assert!(s.get(&key).is_none(), "a deleted blob is gone");
+    }
+
+    /// `path_for` is the path-traversal guard: only pure hex within the length
+    /// bound is ever joined onto the media dir.
+    #[test]
+    fn path_for_rejects_non_hex_and_traversal() {
+        let (s, _tmp) = store();
+        for bad in ["", "../secret", "a/b", "..", "zzzz", "abcXYZ", &"a".repeat(65)] {
+            assert!(s.path_for(bad).is_none(), "must reject `{bad}`");
+        }
+        assert!(s.path_for("deadbeef").is_some(), "pure hex within bound is accepted");
     }
 }

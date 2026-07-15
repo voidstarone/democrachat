@@ -13,4 +13,8 @@ pub enum VoteError {
     NotACitizen,
     #[error("this proposal is closed")]
     Closed,
+    /// The persistence layer itself failed (store unavailable, timeout, or
+    /// write conflict) — distinct from any domain-rule rejection.
+    #[error(transparent)]
+    Store(#[from] crate::StoreError),
 }

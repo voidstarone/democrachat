@@ -38,7 +38,7 @@ fn with_users(handles: &[&str]) -> Services {
         // secret is irrelevant to these tests (the server never opens it), so a
         // placeholder blob is fine — the directory validates only the public key.
         let secret = secret_for(h);
-        s.publish_keys(
+        s.keys().publish_keys(
             h,
             &secret.public().to_hex(),
             WrappedKey { salt: "00".into(), nonce: "00".into(), ciphertext: "00".into() },
@@ -52,11 +52,11 @@ fn with_users(handles: &[&str]) -> Services {
 /// to each, and hand the server only ciphertext. Hex-encodes the sealed bytes for
 /// transport (the server stores the string opaquely).
 fn send(s: &Services, from: &str, to: &str, text: &str) -> Result<DmMessage, DmError> {
-    let to_pub = PublicIdentity::from_hex(&s.public_key_of(to).unwrap()).unwrap();
-    let from_pub = PublicIdentity::from_hex(&s.public_key_of(from).unwrap()).unwrap();
+    let to_pub = PublicIdentity::from_hex(&s.keys().public_key_of(to).unwrap()).unwrap();
+    let from_pub = PublicIdentity::from_hex(&s.keys().public_key_of(from).unwrap()).unwrap();
     let for_recipient = hex::encode(seal_to(&to_pub, text.as_bytes()));
     let for_sender = hex::encode(seal_to(&from_pub, text.as_bytes()));
-    s.send_sealed_dm(from, to, &for_recipient, &for_sender)
+    s.social().send_sealed_dm(from, to, &for_recipient, &for_sender)
 }
 
 /// The client side of reading: for each message, open the ciphertext sealed to the
@@ -64,7 +64,7 @@ fn send(s: &Services, from: &str, to: &str, text: &str) -> Result<DmMessage, DmE
 fn read(s: &Services, viewer: &str, other: &str) -> Vec<String> {
     let viewer_id = s.find_user(viewer).unwrap().id;
     let secret = secret_for(viewer);
-    s.conversation(viewer, other)
+    s.social().conversation(viewer, other)
         .into_iter()
         .map(|m| {
             let ct = if m.sender == viewer_id { m.sealed_for_sender } else { m.sealed_for_recipient };
@@ -97,7 +97,7 @@ fn a_third_party_cannot_open_a_dm() {
     let s = with_users(&["alice", "bob", "eve"]);
     send(&s, "alice", "bob", "secret").unwrap();
     // Eve pulls the stored conversation but holds neither party's device key.
-    let stored = s.conversation("alice", "bob");
+    let stored = s.social().conversation("alice", "bob");
     let eve = secret_for("eve");
     for m in &stored {
         assert!(open_sealed(&eve, &hex::decode(&m.sealed_for_recipient).unwrap()).is_err());
@@ -110,7 +110,7 @@ fn the_stored_dm_carries_no_plaintext() {
     let s = with_users(&["alice", "bob"]);
     send(&s, "alice", "bob", "rendezvous-at-dawn").unwrap();
     // The server-held record is ciphertext only — the plaintext never appears.
-    let m = &s.conversation("alice", "bob")[0];
+    let m = &s.social().conversation("alice", "bob")[0];
     assert!(!m.sealed_for_recipient.contains("rendezvous"));
     assert!(!m.sealed_for_sender.contains("rendezvous"));
 }
@@ -125,7 +125,7 @@ fn cannot_dm_yourself() {
 fn a_dm_with_no_ciphertext_is_rejected() {
     let s = with_users(&["alice", "bob"]);
     // The server is blind to the body; it only insists a ciphertext is present.
-    assert_eq!(s.send_sealed_dm("alice", "bob", "", ""), Err(DmError::EmptyBody));
+    assert_eq!(s.social().send_sealed_dm("alice", "bob", "", ""), Err(DmError::EmptyBody));
 }
 
 #[test]
@@ -136,12 +136,12 @@ fn a_by_id_dm_lands_exactly_like_a_by_handle_dm() {
     let alice = s.find_user("alice").unwrap().id;
     let bob = s.find_user("bob").unwrap().id;
 
-    let to_pub = PublicIdentity::from_hex(&s.public_key_of("bob").unwrap()).unwrap();
-    let from_pub = PublicIdentity::from_hex(&s.public_key_of("alice").unwrap()).unwrap();
+    let to_pub = PublicIdentity::from_hex(&s.keys().public_key_of("bob").unwrap()).unwrap();
+    let from_pub = PublicIdentity::from_hex(&s.keys().public_key_of("alice").unwrap()).unwrap();
     let for_recipient = hex::encode(seal_to(&to_pub, b"by-id"));
     let for_sender = hex::encode(seal_to(&from_pub, b"by-id"));
 
-    s.send_sealed_dm_by_id(alice.0, bob.0, &for_recipient, &for_sender).unwrap();
+    s.social().send_sealed_dm_by_id(alice.0, bob.0, &for_recipient, &for_sender).unwrap();
 
     // The recipient reads it back through the ordinary conversation view.
     assert_eq!(read(&s, "bob", "alice"), vec!["by-id".to_string()]);
@@ -152,11 +152,11 @@ fn a_by_id_dm_still_honours_the_dm_gate() {
     // The owner re-checks `can_dm` itself — a forwarder cannot bypass friends-only
     // by routing the write to the recipient's home.
     let s = with_users(&["alice", "bob"]);
-    s.set_dm_policy("bob", DmPolicy::FriendsOnly).unwrap();
+    s.social().set_dm_policy("bob", DmPolicy::FriendsOnly).unwrap();
     let alice = s.find_user("alice").unwrap().id;
     let bob = s.find_user("bob").unwrap().id;
     assert_eq!(
-        s.send_sealed_dm_by_id(alice.0, bob.0, "aa", "bb"),
+        s.social().send_sealed_dm_by_id(alice.0, bob.0, "aa", "bb"),
         Err(DmError::NotAllowed),
     );
 }
@@ -164,19 +164,19 @@ fn a_by_id_dm_still_honours_the_dm_gate() {
 #[test]
 fn friends_only_blocks_strangers_but_allows_friends() {
     let s = with_users(&["alice", "bob"]);
-    s.set_dm_policy("bob", DmPolicy::FriendsOnly).unwrap();
+    s.social().set_dm_policy("bob", DmPolicy::FriendsOnly).unwrap();
 
     // A stranger cannot reach a friends-only user.
     assert_eq!(send(&s, "alice", "bob", "hi"), Err(DmError::NotAllowed));
-    assert!(!s.can_dm("alice", "bob"));
+    assert!(!s.social().can_dm("alice", "bob"));
 
     // Become friends: request + accept.
-    s.request_friend("alice", "bob").unwrap();
-    s.accept_friend("bob", "alice").unwrap();
-    assert!(s.are_friends("alice", "bob"));
+    s.social().request_friend("alice", "bob").unwrap();
+    s.social().accept_friend("bob", "alice").unwrap();
+    assert!(s.social().are_friends("alice", "bob"));
 
     // Now the DM goes through.
-    assert!(s.can_dm("alice", "bob"));
+    assert!(s.social().can_dm("alice", "bob"));
     assert!(send(&s, "alice", "bob", "hi").is_ok());
 }
 
@@ -184,21 +184,21 @@ fn friends_only_blocks_strangers_but_allows_friends() {
 fn a_block_silences_dms_both_ways_permanently() {
     let s = with_users(&["alice", "bob"]);
     // They were even friends first.
-    s.request_friend("alice", "bob").unwrap();
-    s.accept_friend("bob", "alice").unwrap();
+    s.social().request_friend("alice", "bob").unwrap();
+    s.social().accept_friend("bob", "alice").unwrap();
 
-    s.block_user("alice", "bob").unwrap();
+    s.social().block_user("alice", "bob").unwrap();
 
     // Neither direction works, whatever the policy.
     assert_eq!(send(&s, "alice", "bob", "hi"), Err(DmError::NotAllowed));
     assert_eq!(send(&s, "bob", "alice", "hi"), Err(DmError::NotAllowed));
-    assert!(s.is_blocked_between("bob", "alice"));
+    assert!(s.social().is_blocked_between("bob", "alice"));
 }
 
 #[test]
 fn cannot_block_yourself() {
     let s = with_users(&["alice"]);
-    assert_eq!(s.block_user("alice", "alice"), Err(SocialError::Self_));
+    assert_eq!(s.social().block_user("alice", "alice"), Err(SocialError::Self_));
 }
 
 #[test]
@@ -209,9 +209,9 @@ fn a_by_id_block_silences_dms_exactly_like_a_by_handle_block() {
     let alice = s.find_user("alice").unwrap().id;
     let bob = s.find_user("bob").unwrap().id;
 
-    s.block_user_by_id(alice.0, bob.0).unwrap();
+    s.social().block_user_by_id(alice.0, bob.0).unwrap();
 
-    assert!(s.is_blocked_between("alice", "bob"));
+    assert!(s.social().is_blocked_between("alice", "bob"));
     assert_eq!(send(&s, "alice", "bob", "hi"), Err(DmError::NotAllowed));
     assert_eq!(send(&s, "bob", "alice", "hi"), Err(DmError::NotAllowed));
 }
@@ -224,23 +224,23 @@ fn a_by_id_block_is_idempotent() {
     let alice = s.find_user("alice").unwrap().id;
     let bob = s.find_user("bob").unwrap().id;
 
-    s.block_user_by_id(alice.0, bob.0).unwrap();
-    s.block_user_by_id(alice.0, bob.0).expect("re-applying the same block is a no-op");
-    assert!(s.is_blocked_between("alice", "bob"));
+    s.social().block_user_by_id(alice.0, bob.0).unwrap();
+    s.social().block_user_by_id(alice.0, bob.0).expect("re-applying the same block is a no-op");
+    assert!(s.social().is_blocked_between("alice", "bob"));
 }
 
 #[test]
 fn a_by_id_self_block_is_refused() {
     let s = with_users(&["alice"]);
     let alice = s.find_user("alice").unwrap().id;
-    assert_eq!(s.block_user_by_id(alice.0, alice.0), Err(SocialError::Self_));
+    assert_eq!(s.social().block_user_by_id(alice.0, alice.0), Err(SocialError::Self_));
 }
 
 #[test]
 fn accepting_without_a_pending_request_errors() {
     let s = with_users(&["alice", "bob"]);
     assert_eq!(
-        s.accept_friend("bob", "alice"),
+        s.social().accept_friend("bob", "alice"),
         Err(SocialError::NoPendingRequest)
     );
 }
@@ -248,28 +248,28 @@ fn accepting_without_a_pending_request_errors() {
 #[test]
 fn only_the_addressee_may_accept_a_request() {
     let s = with_users(&["alice", "bob"]);
-    s.request_friend("alice", "bob").unwrap();
+    s.social().request_friend("alice", "bob").unwrap();
     // The requester cannot accept their own request.
     assert_eq!(
-        s.accept_friend("alice", "bob"),
+        s.social().accept_friend("alice", "bob"),
         Err(SocialError::NoPendingRequest)
     );
-    assert!(!s.are_friends("alice", "bob"));
+    assert!(!s.social().are_friends("alice", "bob"));
 }
 
 #[test]
 fn incoming_requests_and_friends_lists_reflect_state() {
     let s = with_users(&["alice", "bob", "carol"]);
-    s.request_friend("bob", "alice").unwrap();
-    s.request_friend("carol", "alice").unwrap();
+    s.social().request_friend("bob", "alice").unwrap();
+    s.social().request_friend("carol", "alice").unwrap();
 
-    let mut incoming = s.incoming_friend_requests("alice");
+    let mut incoming = s.social().incoming_friend_requests("alice");
     incoming.sort();
     assert_eq!(incoming, vec!["bob".to_string(), "carol".to_string()]);
 
-    s.accept_friend("alice", "bob").unwrap();
-    assert_eq!(s.friends_of("alice"), vec!["bob".to_string()]);
-    assert_eq!(s.incoming_friend_requests("alice"), vec!["carol".to_string()]);
+    s.social().accept_friend("alice", "bob").unwrap();
+    assert_eq!(s.social().friends_of("alice"), vec!["bob".to_string()]);
+    assert_eq!(s.social().incoming_friend_requests("alice"), vec!["carol".to_string()]);
 }
 
 #[test]
@@ -280,16 +280,16 @@ fn by_id_friend_request_then_accept_enables_a_friends_only_dm() {
     let s = with_users(&["alice", "bob"]);
     let alice = s.find_user("alice").unwrap().id;
     let bob = s.find_user("bob").unwrap().id;
-    s.set_dm_policy("bob", DmPolicy::FriendsOnly).unwrap();
+    s.social().set_dm_policy("bob", DmPolicy::FriendsOnly).unwrap();
 
     // Strangers can't reach a friends-only user.
     assert_eq!(send(&s, "alice", "bob", "hi"), Err(DmError::NotAllowed));
 
-    s.request_friend_by_id(alice.0, bob.0).unwrap();
-    assert_eq!(s.incoming_friend_requests("bob"), vec!["alice".to_string()]);
-    s.accept_friend_by_id(bob.0, alice.0).unwrap();
+    s.social().request_friend_by_id(alice.0, bob.0).unwrap();
+    assert_eq!(s.social().incoming_friend_requests("bob"), vec!["alice".to_string()]);
+    s.social().accept_friend_by_id(bob.0, alice.0).unwrap();
 
-    assert!(s.are_friends("alice", "bob"));
+    assert!(s.social().are_friends("alice", "bob"));
     assert!(send(&s, "alice", "bob", "hi").is_ok());
 }
 
@@ -299,9 +299,9 @@ fn a_by_id_friend_request_is_idempotent() {
     let s = with_users(&["alice", "bob"]);
     let alice = s.find_user("alice").unwrap().id;
     let bob = s.find_user("bob").unwrap().id;
-    s.request_friend_by_id(alice.0, bob.0).unwrap();
-    s.request_friend_by_id(alice.0, bob.0).expect("re-affirming is a no-op");
-    assert_eq!(s.incoming_friend_requests("bob"), vec!["alice".to_string()]);
+    s.social().request_friend_by_id(alice.0, bob.0).unwrap();
+    s.social().request_friend_by_id(alice.0, bob.0).expect("re-affirming is a no-op");
+    assert_eq!(s.social().incoming_friend_requests("bob"), vec!["alice".to_string()]);
 }
 
 #[test]
@@ -309,10 +309,10 @@ fn only_the_addressee_may_accept_a_request_by_id() {
     let s = with_users(&["alice", "bob"]);
     let alice = s.find_user("alice").unwrap().id;
     let bob = s.find_user("bob").unwrap().id;
-    s.request_friend_by_id(alice.0, bob.0).unwrap();
+    s.social().request_friend_by_id(alice.0, bob.0).unwrap();
     // The requester (alice) cannot accept their own request.
-    assert_eq!(s.accept_friend_by_id(alice.0, bob.0), Err(SocialError::NoPendingRequest));
-    assert!(!s.are_friends("alice", "bob"));
+    assert_eq!(s.social().accept_friend_by_id(alice.0, bob.0), Err(SocialError::NoPendingRequest));
+    assert!(!s.social().are_friends("alice", "bob"));
 }
 
 #[test]
@@ -322,7 +322,7 @@ fn dm_partners_are_listed_most_recent_first() {
     send(&s, "alice", "carol", "hi carol").unwrap();
     // carol is the most recent partner.
     assert_eq!(
-        s.dm_partners("alice"),
+        s.social().dm_partners("alice"),
         vec!["carol".to_string(), "bob".to_string()]
     );
 }
@@ -330,7 +330,7 @@ fn dm_partners_are_listed_most_recent_first() {
 #[test]
 fn dm_policy_change_persists() {
     let s = with_users(&["alice"]);
-    assert_eq!(s.dm_policy("alice"), Some(DmPolicy::Everyone));
-    s.set_dm_policy("alice", DmPolicy::FriendsOnly).unwrap();
-    assert_eq!(s.dm_policy("alice"), Some(DmPolicy::FriendsOnly));
+    assert_eq!(s.social().dm_policy("alice"), Some(DmPolicy::Everyone));
+    s.social().set_dm_policy("alice", DmPolicy::FriendsOnly).unwrap();
+    assert_eq!(s.social().dm_policy("alice"), Some(DmPolicy::FriendsOnly));
 }

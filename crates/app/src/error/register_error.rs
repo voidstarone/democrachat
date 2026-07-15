@@ -14,4 +14,8 @@ pub enum RegisterError {
     /// Argon2 hashing failed (should be effectively impossible).
     #[error("could not secure the password")]
     HashFailed,
+    /// The persistence layer itself failed (store unavailable, timeout, or
+    /// write conflict) — distinct from any domain-rule rejection.
+    #[error(transparent)]
+    Store(#[from] crate::StoreError),
 }

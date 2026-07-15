@@ -58,16 +58,16 @@ fn register_and_join(f: &Fixture, handle: &str, slug: &str) {
 }
 
 fn citizen_count(f: &Fixture, slug: &str) -> u64 {
-    let s = f.store.find_by_slug(slug).unwrap();
-    f.store.citizen_count(s.id)
+    let s = f.store.find_by_slug(slug).unwrap().unwrap();
+    f.store.citizen_count(s.id).unwrap()
 }
 
 /// Open the constitution wide (every criterion zero) so every fresh member is
 /// Layer-1 eligible — isolating Layer 2 (the rate cap) and the store under load.
 fn open_criteria(f: &Fixture, slug: &str) {
-    let mut s = f.store.find_by_slug(slug).unwrap();
+    let mut s = f.store.find_by_slug(slug).unwrap().unwrap();
     s.criteria = FranchiseCriteria { min_account_age_days: 0, min_membership_days: 0, min_contribution: 0 };
-    f.store.update_server(s);
+    f.store.update_server(s).unwrap();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

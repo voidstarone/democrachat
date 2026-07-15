@@ -34,4 +34,8 @@ pub enum MessageError {
     /// A sealed post was attempted in a channel that is not encrypted.
     #[error("this channel is not encrypted")]
     NotEncrypted,
+    /// The persistence layer itself failed (store unavailable, timeout, or
+    /// write conflict) — distinct from any domain-rule rejection.
+    #[error(transparent)]
+    Store(#[from] crate::StoreError),
 }

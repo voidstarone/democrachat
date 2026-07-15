@@ -7,7 +7,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
 use axum::{Json, Router};
 
-use crate::command::execute::execute;
+use crate::command::execute::OwnerPipeline;
 use crate::command::forward_error::ForwardError;
 use crate::command::signed_command::SignedCommand;
 use crate::http::bearer_ok::bearer_ok;
@@ -36,17 +36,14 @@ async fn command_handler(
     if !bearer_ok(state.token.as_deref(), &headers) {
         return StatusCode::UNAUTHORIZED;
     }
-    match execute(
-        state.node,
-        state.registry.as_ref(),
-        state.resolver.as_ref(),
-        &state.replay,
-        state.executor.as_ref(),
-        &signed,
-        unix_now(),
-    )
-    .await
-    {
+    let pipeline = OwnerPipeline {
+        node: state.node,
+        registry: state.registry.as_ref(),
+        resolver: state.resolver.as_ref(),
+        replay: &state.replay,
+        executor: state.executor.as_ref(),
+    };
+    match pipeline.run(&signed, unix_now()).await {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(e) => {
             tracing::warn!("forwarded command refused: {e}");

@@ -35,7 +35,7 @@ fn setup(founder: &str, members: &[&str], channel: &str) -> Services {
     for h in std::iter::once(&founder).chain(members.iter()) {
         s.register_account(h).unwrap();
         let secret = secret_for(h);
-        s.publish_keys(
+        s.keys().publish_keys(
             h,
             &secret.public().to_hex(),
             WrappedKey { salt: "00".into(), nonce: "00".into(), ciphertext: "00".into() },
@@ -49,22 +49,22 @@ fn setup(founder: &str, members: &[&str], channel: &str) -> Services {
     // #general is auto-provisioned when the server is founded; only create the
     // requested channel when it's a different one.
     if channel != "general" {
-        s.create_channel(founder, "town-square", channel, "").unwrap();
+        s.chat().create_channel(founder, "town-square", channel, "").unwrap();
     }
     s
 }
 
 /// Client-side: seal the channel `key` for `member`'s device key and file the grant.
 fn grant(s: &Services, granter: &str, channel: &str, epoch: u32, member: &str, key: &ChannelKey) {
-    let member_pub = PublicIdentity::from_hex(&s.public_key_of(member).unwrap()).unwrap();
+    let member_pub = PublicIdentity::from_hex(&s.keys().public_key_of(member).unwrap()).unwrap();
     let sealed = hex::encode(seal_to(&member_pub, &key.to_bytes()));
-    s.grant_channel_key(granter, "town-square", channel, epoch, member, &sealed).unwrap();
+    s.channel_keys().grant_channel_key(granter, "town-square", channel, epoch, member, &sealed).unwrap();
 }
 
 /// Client-side: seal `text` under the epoch `key` and post it.
 fn post(s: &Services, sender: &str, channel: &str, text: &str, epoch: u32, key: &ChannelKey) {
     let ct = hex::encode(seal_channel_message(key, text.as_bytes()));
-    s.post_sealed_message(sender, "town-square", channel, &ct, epoch, None).unwrap();
+    s.chat().post_sealed_message(sender, "town-square", channel, &ct, epoch, None).unwrap();
 }
 
 /// Client-side read: recover every channel key `viewer` was granted, then decrypt
@@ -72,14 +72,14 @@ fn post(s: &Services, sender: &str, channel: &str, text: &str, epoch: u32, key: 
 fn read(s: &Services, viewer: &str, channel: &str) -> Vec<Option<String>> {
     let secret = secret_for(viewer);
     let mut keys: HashMap<u32, ChannelKey> = HashMap::new();
-    for g in s.my_channel_grants(viewer, "town-square", channel).unwrap() {
+    for g in s.channel_keys().my_channel_grants(viewer, "town-square", channel).unwrap() {
         if let Ok(raw) = open_sealed(&secret, &hex::decode(&g.sealed_key).unwrap()) {
             if let Ok(bytes) = <[u8; 32]>::try_from(raw) {
                 keys.insert(g.epoch, ChannelKey::from_bytes(bytes));
             }
         }
     }
-    s.channel_messages("town-square", channel)
+    s.chat().channel_messages("town-square", channel)
         .unwrap()
         .into_iter()
         .map(|m| {
@@ -93,7 +93,7 @@ fn read(s: &Services, viewer: &str, channel: &str) -> Vec<Option<String>> {
 #[test]
 fn open_history_lets_a_new_member_read_the_backlog() {
     let s = setup("ada", &["bob"], "general");
-    s.enable_channel_encryption("ada", "town-square", "general", HistoryMode::Open).unwrap();
+    s.channel_keys().enable_channel_encryption("ada", "town-square", "general", HistoryMode::Open).unwrap();
 
     // One long-lived key (epoch 0), granted to the current members.
     let key0 = ChannelKey::generate();
@@ -107,7 +107,7 @@ fn open_history_lets_a_new_member_read_the_backlog() {
     // read the whole backlog.
     s.register_account("carol").unwrap();
     let carol_secret = secret_for("carol");
-    s.publish_keys(
+    s.keys().publish_keys(
         "carol",
         &carol_secret.public().to_hex(),
         WrappedKey { salt: "00".into(), nonce: "00".into(), ciphertext: "00".into() },
@@ -122,7 +122,7 @@ fn open_history_lets_a_new_member_read_the_backlog() {
 #[test]
 fn ephemeral_history_hides_messages_sent_before_a_member_joined() {
     let s = setup("ada", &["bob"], "secret");
-    s.enable_channel_encryption("ada", "town-square", "secret", HistoryMode::Ephemeral).unwrap();
+    s.channel_keys().enable_channel_encryption("ada", "town-square", "secret", HistoryMode::Ephemeral).unwrap();
 
     // Epoch 0: the founding members.
     let key0 = ChannelKey::generate();
@@ -133,7 +133,7 @@ fn ephemeral_history_hides_messages_sent_before_a_member_joined() {
     // Carol joins → the key ratchets to epoch 1, granted only to current members.
     s.register_account("carol").unwrap();
     let carol_secret = secret_for("carol");
-    s.publish_keys(
+    s.keys().publish_keys(
         "carol",
         &carol_secret.public().to_hex(),
         WrappedKey { salt: "00".into(), nonce: "00".into(), ciphertext: "00".into() },
@@ -162,12 +162,12 @@ fn ephemeral_history_hides_messages_sent_before_a_member_joined() {
 #[test]
 fn the_stored_channel_message_is_ciphertext_only() {
     let s = setup("ada", &["bob"], "general");
-    s.enable_channel_encryption("ada", "town-square", "general", HistoryMode::Open).unwrap();
+    s.channel_keys().enable_channel_encryption("ada", "town-square", "general", HistoryMode::Open).unwrap();
     let key0 = ChannelKey::generate();
     grant(&s, "ada", "general", 0, "ada", &key0);
     post(&s, "ada", "general", "top-secret-phrase", 0, &key0);
 
-    let stored = &s.channel_messages("town-square", "general").unwrap()[0];
+    let stored = &s.chat().channel_messages("town-square", "general").unwrap()[0];
     assert_eq!(stored.key_epoch, Some(0));
     assert!(!stored.body.contains("top-secret-phrase"), "the server holds ciphertext only");
 }
@@ -175,9 +175,9 @@ fn the_stored_channel_message_is_ciphertext_only() {
 #[test]
 fn a_plaintext_post_to_an_encrypted_channel_is_rejected() {
     let s = setup("ada", &["bob"], "general");
-    s.enable_channel_encryption("ada", "town-square", "general", HistoryMode::Open).unwrap();
+    s.channel_keys().enable_channel_encryption("ada", "town-square", "general", HistoryMode::Open).unwrap();
     assert_eq!(
-        s.post_message("ada", "town-square", "general", "hi"),
+        s.chat().post_message("ada", "town-square", "general", "hi"),
         Err(MessageError::ChannelEncrypted),
     );
 }
@@ -186,7 +186,7 @@ fn a_plaintext_post_to_an_encrypted_channel_is_rejected() {
 fn a_sealed_post_to_a_plaintext_channel_is_rejected() {
     let s = setup("ada", &["bob"], "general");
     assert_eq!(
-        s.post_sealed_message("ada", "town-square", "general", "deadbeef", 0, None),
+        s.chat().post_sealed_message("ada", "town-square", "general", "deadbeef", 0, None),
         Err(MessageError::NotEncrypted),
     );
 }
@@ -196,7 +196,7 @@ fn only_a_citizen_may_enable_channel_encryption() {
     let s = setup("ada", &["bob"], "general");
     // bob is a member, not a citizen.
     assert_eq!(
-        s.enable_channel_encryption("bob", "town-square", "general", HistoryMode::Open),
+        s.channel_keys().enable_channel_encryption("bob", "town-square", "general", HistoryMode::Open),
         Err(ChannelKeyError::NotACitizen),
     );
 }

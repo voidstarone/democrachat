@@ -134,6 +134,17 @@ pub struct EtcdRegistry {
     /// background task keeps it alive.
     lease_id: i64,
     lease_ttl: i64,
+    /// Cancels the background lease-renew task when the registry is dropped.
+    /// Otherwise the detached task would keep renewing this node's lease forever —
+    /// etcd would still see the node as live and hold its scopes after the registry
+    /// (and its owner) are gone.
+    keep_alive: tokio::task::AbortHandle,
+}
+
+impl Drop for EtcdRegistry {
+    fn drop(&mut self) {
+        self.keep_alive.abort();
+    }
 }
 
 impl EtcdRegistry {
@@ -163,7 +174,7 @@ impl EtcdRegistry {
         // Only a real process death stops renewal — the intended failover trigger.
         let period = Duration::from_secs((ttl_secs / 3).max(1) as u64);
         let backoff = Duration::from_millis(500);
-        {
+        let keep_alive = {
             let mut ka_client = client.clone();
             tokio::spawn(async move {
                 let mut chan = None;
@@ -196,14 +207,16 @@ impl EtcdRegistry {
                     }
                     tokio::time::sleep(period).await; // healthy — renew each third of the TTL
                 }
-            });
-        }
+            })
+            .abort_handle()
+        };
 
         Ok(Self {
             client,
             node,
             lease_id,
             lease_ttl: ttl_secs,
+            keep_alive,
         })
     }
 
@@ -250,11 +263,13 @@ impl OwnershipRegistry for EtcdRegistry {
         for _ in 0..8 {
             if let Some((holder, _)) = self.get_str(&holder_key).await? {
                 let by: u16 = holder.parse().map_err(err)?;
-                let epoch = self
-                    .get_str(&epoch_key)
-                    .await?
-                    .map(|(e, _)| e.parse().unwrap_or(0))
-                    .unwrap_or(0);
+                // Read the epoch the same way as `owner_of` — a corrupt fencing token
+                // must surface as an error, never be silently coerced to 0 (which would
+                // read as "never handed off" and defeat the fence).
+                let epoch = match self.get_str(&epoch_key).await? {
+                    Some((e, _)) => e.parse().map_err(err)?,
+                    None => 0,
+                };
                 return Ok(ClaimOutcome::Held { by: NodeId(by), epoch });
             }
 

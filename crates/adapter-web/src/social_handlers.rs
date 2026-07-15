@@ -51,24 +51,24 @@ pub async fn social_me(
         return Err((StatusCode::NOT_FOUND, "err.no_such_user".into()));
     }
 
-    let friends = s.friends_of(&me);
-    let partners = s
+    let friends = s.social().friends_of(&me);
+    let partners = s.social()
         .dm_partners(&me)
         .into_iter()
         .map(|handle| DmPartnerDto {
             is_friend: friends.iter().any(|f| f == &handle),
-            is_blocked: s.is_blocked_between(&me, &handle),
-            can_dm: s.can_dm(&me, &handle),
+            is_blocked: s.social().is_blocked_between(&me, &handle),
+            can_dm: s.social().can_dm(&me, &handle),
             handle,
         })
         .collect();
 
     Ok(Json(SocialMeDto {
-        is_friends_only: matches!(s.dm_policy(&me), Some(DmPolicy::FriendsOnly)),
+        is_friends_only: matches!(s.social().dm_policy(&me), Some(DmPolicy::FriendsOnly)),
         partners,
         friends,
-        incoming_requests: s.incoming_friend_requests(&me),
-        blocked: s.blocked_users(&me),
+        incoming_requests: s.social().incoming_friend_requests(&me),
+        blocked: s.social().blocked_users(&me),
         handle: me,
     }))
 }
@@ -82,7 +82,7 @@ pub async fn conversation(
     require_self(&st, &headers, &me)?;
     let s = &st.services;
     let me_user = s.find_user(&me).ok_or((StatusCode::NOT_FOUND, "err.no_such_user".to_string()))?;
-    let out = s
+    let out = s.social()
         .conversation(&me, &other)
         .into_iter()
         .map(|m| {
@@ -93,8 +93,8 @@ pub async fn conversation(
             DmMessageDto {
                 id: m.id.0,
                 is_mine,
-                sender: s.user_handle(m.sender).unwrap_or_default(),
-                recipient: s.user_handle(m.recipient).unwrap_or_default(),
+                sender: s.chat().user_handle(m.sender).unwrap_or_default(),
+                recipient: s.chat().user_handle(m.recipient).unwrap_or_default(),
                 sealed_for_me,
             }
         })
@@ -139,7 +139,7 @@ pub async fn send_dm(
             Ok(Json(json!({ "ok": true })))
         }
         None => {
-            let dm = s
+            let dm = s.social()
                 .send_sealed_dm(&me, &other, &req.sealed_for_recipient, &req.sealed_for_sender)
                 .map_err(bad)?;
             st.persist();
@@ -174,7 +174,7 @@ pub async fn block(
             Ok(Json(json!({ "ok": true })))
         }
         None => {
-            s.block_user(&me, &other).map_err(bad)?;
+            s.social().block_user(&me, &other).map_err(bad)?;
             st.persist();
             st.publish(social_event(&me, &other));
             Ok(Json(json!({ "ok": true })))
@@ -206,7 +206,7 @@ pub async fn request_friend(
             Ok(Json(json!({ "ok": true })))
         }
         None => {
-            s.request_friend(&me, &other).map_err(bad)?;
+            s.social().request_friend(&me, &other).map_err(bad)?;
             st.persist();
             st.publish(social_event(&me, &other));
             Ok(Json(json!({ "ok": true })))
@@ -237,7 +237,7 @@ pub async fn accept_friend(
             Ok(Json(json!({ "ok": true })))
         }
         None => {
-            s.accept_friend(&me, &other).map_err(bad)?;
+            s.social().accept_friend(&me, &other).map_err(bad)?;
             st.persist();
             st.publish(social_event(&me, &other));
             Ok(Json(json!({ "ok": true })))
@@ -258,7 +258,7 @@ pub async fn set_policy(
     } else {
         DmPolicy::Everyone
     };
-    st.services.set_dm_policy(&me, policy).map_err(bad)?;
+    st.services.social().set_dm_policy(&me, policy).map_err(bad)?;
     st.persist();
     st.publish(social_event(&me, &me));
     Ok(Json(json!({ "ok": true })))

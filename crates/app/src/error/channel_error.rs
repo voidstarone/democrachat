@@ -16,4 +16,8 @@ pub enum ChannelError {
     /// by founder fiat.
     #[error("only the founder may create channels while the server is in Seed; a larger server must vote (not yet implemented)")]
     NotProvisionable,
+    /// The persistence layer itself failed (store unavailable, timeout, or
+    /// write conflict) — distinct from any domain-rule rejection.
+    #[error(transparent)]
+    Store(#[from] crate::StoreError),
 }

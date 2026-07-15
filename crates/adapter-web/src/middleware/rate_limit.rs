@@ -91,6 +91,27 @@ fn bucket_for(path: &str) -> Bucket {
     }
 }
 
+/// Middleware: throttle POSTs by peer IP. Non-POST requests pass through.
+pub async fn rate_limit(
+    State(limiter): State<Arc<RateLimiter>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    if req.method() == Method::POST {
+        let bucket = bucket_for(req.uri().path());
+        if let Err(retry) = limiter.check(peer.ip(), bucket, Instant::now()) {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(header::RETRY_AFTER, retry.to_string())],
+                "rate limit exceeded — slow down",
+            )
+                .into_response();
+        }
+    }
+    next.run(req).await
+}
+
 #[cfg(test)]
 mod tests {
     //! The limiter's core: per-IP, per-bucket fixed windows. Driven by an injected
@@ -167,25 +188,4 @@ mod tests {
         }
         assert!(rl.check(ip(5), Bucket::Write, t0).is_err(), "write caps at its own, higher limit");
     }
-}
-
-/// Middleware: throttle POSTs by peer IP. Non-POST requests pass through.
-pub async fn rate_limit(
-    State(limiter): State<Arc<RateLimiter>>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    req: Request<axum::body::Body>,
-    next: Next,
-) -> Response {
-    if req.method() == Method::POST {
-        let bucket = bucket_for(req.uri().path());
-        if let Err(retry) = limiter.check(peer.ip(), bucket, Instant::now()) {
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                [(header::RETRY_AFTER, retry.to_string())],
-                "rate limit exceeded — slow down",
-            )
-                .into_response();
-        }
-    }
-    next.run(req).await
 }

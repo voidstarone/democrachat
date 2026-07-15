@@ -18,16 +18,24 @@ pub enum WeightingScope {
 }
 
 impl WeightingScope {
-    /// Parse the variant name (as rendered by `{:?}`) back into a scope. Used to
-    /// translate a client's governance-settings choice into the domain type.
-    pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "Both" => Some(Self::Both),
-            "JuriesOnly" => Some(Self::JuriesOnly),
-            "BallotsOnly" => Some(Self::BallotsOnly),
-            "None" => Some(Self::None),
-            _ => None,
+    /// The scope's canonical wire name — the explicit string form crossing the
+    /// web↔domain boundary, not the `Debug` rendering (no stability contract).
+    /// Matches the derived serde representation (pinned by a test).
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Both => "Both",
+            Self::JuriesOnly => "JuriesOnly",
+            Self::BallotsOnly => "BallotsOnly",
+            Self::None => "None",
         }
+    }
+
+    /// Parse a canonical [`name`](Self::name) back into a scope. Used to translate a
+    /// client's governance-settings choice into the domain type.
+    pub fn from_name(name: &str) -> Option<Self> {
+        [Self::Both, Self::JuriesOnly, Self::BallotsOnly, Self::None]
+            .into_iter()
+            .find(|s| s.name() == name)
     }
 
     pub fn applies_to_juries(&self) -> bool {
@@ -51,5 +59,19 @@ mod tests {
         assert!(!WeightingScope::JuriesOnly.applies_to_ballots());
         assert!(!WeightingScope::None.applies_to_juries());
         assert!(!WeightingScope::None.applies_to_ballots());
+    }
+
+    #[test]
+    fn name_round_trips_and_matches_serde() {
+        for s in [
+            WeightingScope::Both,
+            WeightingScope::JuriesOnly,
+            WeightingScope::BallotsOnly,
+            WeightingScope::None,
+        ] {
+            assert_eq!(WeightingScope::from_name(s.name()), Some(s));
+            assert_eq!(serde_json::to_string(&s).unwrap(), format!("\"{}\"", s.name()));
+        }
+        assert_eq!(WeightingScope::from_name("Nope"), None);
     }
 }

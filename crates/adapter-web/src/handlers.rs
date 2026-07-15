@@ -5,7 +5,7 @@ use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
-use domain::{Tier, Unmet};
+use domain::Unmet;
 use serde_json::json;
 
 use crate::auth::{clear_session_cookie, require_actor, session_cookie};
@@ -99,7 +99,7 @@ pub async fn found_server(
     st.persist();
     st.publish(json!({ "type": "server" }).to_string());
     Ok(Json(ServerSummary {
-        phase: "Seed".into(),
+        phase: domain::Phase::Seed.name().into(),
         citizens: 1,
         is_private: g.is_private,
         are_invites_open: g.allows_member_invites(),
@@ -111,7 +111,7 @@ pub async fn found_server(
 /// Build the summary DTO for one server row.
 fn server_summary((g, phase, citizens): (domain::Server, domain::Phase, u64)) -> ServerSummary {
     ServerSummary {
-        phase: format!("{phase:?}"),
+        phase: phase.name().into(),
         citizens,
         is_private: g.is_private,
         are_invites_open: g.allows_member_invites(),
@@ -183,36 +183,31 @@ pub async fn server_detail(
     headers: HeaderMap,
 ) -> Res<ServerDetail> {
     let (g, phase, citizens) = st.services.server_snapshot(&slug).ok_or_else(|| not_found("err.no_such_server"))?;
-    let founder = st.services.user_handle(g.founder_id).unwrap_or_default();
-    let mut surface: Vec<String> = g.enabled_ballots.iter().map(|b| format!("{b:?}")).collect();
+    let founder = st.services.chat().user_handle(g.founder_id).unwrap_or_default();
+    let mut surface: Vec<String> = g.enabled_ballots.iter().map(|b| b.name().to_string()).collect();
     surface.sort();
-    let (jury_mode, jury_post, jury_comment) = match g.jury_sizing {
-        domain::JurySizing::Sqrt { post_factor_bp, comment_factor_bp } => {
-            ("Sqrt", post_factor_bp, comment_factor_bp)
-        }
-        domain::JurySizing::Proportion { post_bp, comment_bp } => ("Proportion", post_bp, comment_bp),
-        domain::JurySizing::Fixed { post, comment } => ("Fixed", post, comment),
-    };
+    let jury_mode = g.jury_sizing.mode_name();
+    let (jury_post, jury_comment) = g.jury_sizing.factors();
     // Filter channels for the requester: the restricted #appeals channel is hidden
     // from anyone who is not a voter, police officer, or the muted appellant.
     let viewer = crate::auth::current_actor(&st, &headers).unwrap_or_default();
     let channels = st
-        .services
+        .services.chat()
         .visible_channels(&viewer, &slug)
         .unwrap_or_default()
         .into_iter()
         .map(channel_dto)
         .collect();
     Ok(Json(ServerDetail {
-        phase: format!("{phase:?}"),
+        phase: phase.name().into(),
         citizens,
         founder,
         min_account_age_days: g.criteria.min_account_age_days,
         min_membership_days: g.criteria.min_membership_days,
         min_contribution: g.criteria.min_contribution,
         surface,
-        vote_weighting: format!("{:?}", g.vote_weighting),
-        weighting_scope: format!("{:?}", g.weighting_scope),
+        vote_weighting: g.vote_weighting.name().into(),
+        weighting_scope: g.weighting_scope.name().into(),
         jury_sizing: JurySizingDto {
             mode: jury_mode.to_string(),
             post: jury_post,
@@ -246,7 +241,7 @@ pub async fn create_channel(
 ) -> Res<ChannelDto> {
     let me = require_actor(&st, &headers)?;
     let c = st
-        .services
+        .services.chat()
         .create_channel(&me, &slug, &req.name, &req.topic)
         .map_err(bad)?;
     st.persist();
@@ -260,16 +255,8 @@ fn channel_dto(c: domain::Channel) -> ChannelDto {
         name: c.name,
         topic: c.topic,
         is_encrypted: c.is_encrypted,
-        history_mode: match c.history_mode {
-            domain::HistoryMode::Open => "open",
-            domain::HistoryMode::Ephemeral => "ephemeral",
-        }
-        .into(),
-        visibility: match c.visibility {
-            domain::ChannelVisibility::Open => "open",
-            domain::ChannelVisibility::Appeals => "appeals",
-        }
-        .into(),
+        history_mode: c.history_mode.as_str().into(),
+        visibility: c.visibility.as_str().into(),
     }
 }
 
@@ -325,18 +312,13 @@ pub async fn my_status(
         Some(tier) => {
             let elig = st.services.eligibility(&me, &slug).map_err(bad)?;
             let (is_police, is_muted) =
-                st.services.police_and_mute_status(&me, &slug).unwrap_or((false, false));
+                st.services.mute().police_and_mute_status(&me, &slug).unwrap_or((false, false));
             Ok(Json(MeDto {
-                tier: match tier {
-                    Tier::Guest => "guest",
-                    Tier::Member => "member",
-                    Tier::Citizen => "citizen",
-                }
-                .into(),
+                tier: tier.as_str().into(),
                 is_eligible: elig.is_eligible(),
                 unmet: elig.unmet.iter().map(describe_unmet).collect(),
                 contribution: st.services.member_contribution(&me, &slug).unwrap_or(0),
-                shares_history: st.services.history_sharing(&me, &slug),
+                shares_history: st.services.chat().history_sharing(&me, &slug),
                 is_police,
                 is_muted,
             }))
@@ -352,7 +334,7 @@ pub async fn set_history_sharing(
     Json(req): Json<HistorySharingReq>,
 ) -> Res<serde_json::Value> {
     let me = require_actor(&st, &headers)?;
-    st.services.set_history_sharing(&me, &slug, req.shares).map_err(bad)?;
+    st.services.chat().set_history_sharing(&me, &slug, req.shares).map_err(bad)?;
     st.persist();
     Ok(Json(json!({ "ok": true })))
 }
@@ -363,7 +345,7 @@ pub async fn list_messages(
     headers: HeaderMap,
 ) -> Res<Vec<MessageDto>> {
     let viewer = crate::auth::current_actor(&st, &headers).unwrap_or_default();
-    let messages = st.services.channel_messages_for(&viewer, &slug, &channel).map_err(bad)?;
+    let messages = st.services.chat().channel_messages_for(&viewer, &slug, &channel).map_err(bad)?;
     // Chronological, flat (id order) — replies sit at the bottom like everything
     // else and carry a quote of their parent rather than being indented.
     let by_id: std::collections::HashMap<u64, &domain::Message> =
@@ -396,7 +378,7 @@ fn build_message_dto(
     let is_sealed = m.key_epoch.is_some();
     let reply_to = m.parent.and_then(|pid| by_id.get(&pid.0)).map(|p| ReplyRefDto {
         id: p.id.0,
-        author: st.services.user_handle(p.author).unwrap_or_else(|| format!("user{}", p.author)),
+        author: st.services.chat().user_handle(p.author).unwrap_or_else(|| format!("user{}", p.author)),
         // A sealed parent's body is ciphertext — quote it as a lock, not gibberish.
         excerpt: if p.is_deleted {
             "[deleted]".into()
@@ -415,7 +397,7 @@ fn build_message_dto(
     let (mentions, mentions_me) = if m.is_deleted || is_sealed {
         (Vec::new(), replies_to_viewer)
     } else {
-        let resolved = st.services.resolve_mentions(slug, &m.body);
+        let resolved = st.services.roles().resolve_mentions(slug, &m.body);
         let mentions_me = replies_to_viewer
             || (!viewer.is_empty() && resolved.iter().any(|r| r.handles.iter().any(|h| h == viewer)));
         let dtos = resolved
@@ -428,14 +410,14 @@ fn build_message_dto(
 
     MessageDto {
         id: m.id.0,
-        author: st.services.user_handle(m.author).unwrap_or_else(|| format!("user{}", m.author)),
+        author: st.services.chat().user_handle(m.author).unwrap_or_else(|| format!("user{}", m.author)),
         body: if m.is_deleted { "[deleted]".into() } else { m.body.clone() },
         key_epoch: m.key_epoch,
         ts: m.created_at.0,
         parent: m.parent.map(|p| p.0),
         is_deleted: m.is_deleted,
         edited: m.edited_at.is_some(),
-        reactions: st.services.message_reactions(m.id.0),
+        reactions: st.services.chat().message_reactions(m.id.0),
         mentions,
         mentions_me,
         reply_to,
@@ -473,12 +455,12 @@ pub async fn post_message(
         })
         .collect();
     let msg = match req.parent {
-        Some(parent) => st.services.reply_message(&me, parent, &req.body).map_err(bad)?,
+        Some(parent) => st.services.chat().reply_message(&me, parent, &req.body).map_err(bad)?,
         None if attachments.is_empty() => {
-            st.services.post_message(&me, &slug, &channel, &req.body).map_err(bad)?
+            st.services.chat().post_message(&me, &slug, &channel, &req.body).map_err(bad)?
         }
         None => st
-            .services
+            .services.chat()
             .post_message_with_attachments(&me, &slug, &channel, &req.body, attachments)
             .map_err(bad)?,
     };
@@ -503,7 +485,7 @@ pub async fn upload_media(
     // The stored type is authoritative — an image is re-encoded (HEIC/HEIF → JPEG),
     // so it may differ from the declared `Content-Type`. Report what was stored so
     // the client records the true type on the message.
-    let (key, stored_type, kind) = st.services.store_media(content_type, &body).map_err(bad)?;
+    let (key, stored_type, kind) = st.services.chat().store_media(content_type, &body).map_err(bad)?;
     Ok(Json(json!({ "key": key, "content_type": stored_type, "kind": kind.as_str() })))
 }
 
@@ -513,7 +495,7 @@ pub async fn serve_media(
     State(st): State<AppState>,
     Path(key): Path<String>,
 ) -> axum::response::Response {
-    match st.services.media_blob(&key) {
+    match st.services.chat().media_blob(&key) {
         Some((content_type, bytes)) => {
             let ct = axum::http::HeaderValue::from_str(&content_type)
                 .unwrap_or_else(|_| axum::http::HeaderValue::from_static("application/octet-stream"));
@@ -559,7 +541,7 @@ pub async fn post_sealed_message(
 ) -> Res<serde_json::Value> {
     let me = require_actor(&st, &headers)?;
     let msg = st
-        .services
+        .services.chat()
         .post_sealed_message(&me, &slug, &channel, &req.ciphertext, req.key_epoch, req.parent)
         .map_err(bad)?;
     st.persist();
@@ -576,11 +558,10 @@ pub async fn enable_channel_encryption(
     Json(req): Json<EnableEncryptionReq>,
 ) -> Res<serde_json::Value> {
     let me = require_actor(&st, &headers)?;
-    let mode = match req.history_mode.trim() {
-        "ephemeral" => domain::HistoryMode::Ephemeral,
-        _ => domain::HistoryMode::Open,
-    };
-    st.services.enable_channel_encryption(&me, &slug, &channel, mode).map_err(bad)?;
+    // Unknown/empty falls to the default (Open); the string→mode table lives on the
+    // enum, so a new mode is added there, not in a `_ =>` arm here.
+    let mode = domain::HistoryMode::from_wire(req.history_mode.trim()).unwrap_or_default();
+    st.services.channel_keys().enable_channel_encryption(&me, &slug, &channel, mode).map_err(bad)?;
     st.persist();
     st.publish(json!({ "type": "channel", "server": slug }).to_string());
     Ok(Json(json!({ "ok": true })))
@@ -595,7 +576,7 @@ pub async fn grant_channel_key(
     Json(req): Json<GrantKeyReq>,
 ) -> Res<serde_json::Value> {
     let me = require_actor(&st, &headers)?;
-    st.services
+    st.services.channel_keys()
         .grant_channel_key(&me, &slug, &channel, req.epoch, &req.member, &req.sealed_key)
         .map_err(bad)?;
     st.persist();
@@ -611,7 +592,7 @@ pub async fn my_channel_grants(
 ) -> Res<Vec<ChannelGrantDto>> {
     let me = require_actor(&st, &headers)?;
     let grants = st
-        .services
+        .services.channel_keys()
         .my_channel_grants(&me, &slug, &channel)
         .map_err(bad)?
         .into_iter()
@@ -627,9 +608,9 @@ pub async fn react(
     Json(req): Json<ReactReq>,
 ) -> Res<serde_json::Value> {
     let me = require_actor(&st, &headers)?;
-    st.services.react(&me, id, &req.emoji).map_err(bad)?;
+    st.services.chat().react(&me, id, &req.emoji).map_err(bad)?;
     st.persist();
-    if let Some((server, channel)) = st.services.message_context(id) {
+    if let Some((server, channel)) = st.services.chat().message_context(id) {
         st.publish(json!({ "type": "reaction", "server": server, "channel": channel }).to_string());
     }
     Ok(Json(json!({ "ok": true })))
@@ -644,11 +625,11 @@ pub async fn list_proposals(
     let me = crate::auth::current_actor(&st, &headers).unwrap_or_default();
     let now = st.services.now().0;
     let dtos = st
-        .services
+        .services.governance()
         .list_proposals(&slug)
         .into_iter()
         .map(|p| {
-            let (aye, nay) = st.services.proposal_head_counts(p.id.0);
+            let (aye, nay) = st.services.governance().proposal_head_counts(p.id.0);
             let (status, closes_in, is_applied) = match p.status {
                 domain::ProposalStatus::Open => ("open", Some(p.closes_at.0 - now), false),
                 domain::ProposalStatus::Passed { .. } => ("passed", None, p.is_applied),
@@ -658,12 +639,12 @@ pub async fn list_proposals(
                 id: p.id.0,
                 summary: summarize_kind(&st, &p.kind),
                 amendments: p.amendments.iter().map(|k| summarize_kind(&st, k)).collect(),
-                proposer: st.services.user_handle(p.proposer).unwrap_or_default(),
+                proposer: st.services.chat().user_handle(p.proposer).unwrap_or_default(),
                 status: status.into(),
                 aye,
                 nay,
                 closes_in,
-                my_vote: st.services.my_vote(p.id.0, &me),
+                my_vote: st.services.governance().my_vote(p.id.0, &me),
                 is_applied,
             }
         })
@@ -680,7 +661,7 @@ pub async fn propose(
 ) -> Res<serde_json::Value> {
     let me = require_actor(&st, &headers)?;
     let kind = to_proposal_kind(&st, &slug, &req.kind).map_err(bad)?;
-    let p = st.services.open_proposal(&me, &slug, kind).map_err(bad)?;
+    let p = st.services.governance().open_proposal(&me, &slug, kind).map_err(bad)?;
     st.persist();
     st.publish(json!({ "type": "proposal", "server": slug }).to_string());
     Ok(Json(json!({ "id": p.id.0 })))
@@ -698,11 +679,11 @@ pub async fn vote(
         // Federated: route to the node that owns the proposal's server (which may be
         // this one). The owner re-checks citizenship and mints the canonical event.
         Some(router) => {
-            let voter_id = st.services.user_id(&me).ok_or_else(|| bad("err.no_such_account"))?;
+            let voter_id = st.services.chat().user_id(&me).ok_or_else(|| bad("err.no_such_account"))?;
             router.cast_vote(voter_id, id, req.is_aye).await.map_err(bad)?;
         }
         // Single-box: apply directly.
-        None => st.services.cast_vote(&me, id, req.is_aye).map_err(bad)?,
+        None => st.services.governance().cast_vote(&me, id, req.is_aye).map_err(bad)?,
     }
     st.persist();
     // A proposal doesn't carry its server slug here; broadcast a generic nudge.
@@ -721,11 +702,11 @@ pub async fn amend(
     let me = require_actor(&st, &headers)?;
     // Resolve handles/roles in the amendment against the proposal's own server.
     let slug = st
-        .services
+        .services.governance()
         .proposal_server_slug(id)
         .ok_or_else(|| bad("err.no_such_proposal"))?;
     let kind = to_proposal_kind(&st, &slug, &req.kind).map_err(bad)?;
-    st.services.amend_proposal(&me, id, kind).map_err(bad)?;
+    st.services.governance().amend_proposal(&me, id, kind).map_err(bad)?;
     st.persist();
     st.publish(json!({ "type": "proposal", "server": slug }).to_string());
     Ok(Json(json!({ "ok": true })))
@@ -734,11 +715,11 @@ pub async fn amend(
 /// A proposal's deliberation thread, in post order.
 pub async fn list_discussion(State(st): State<AppState>, Path(id): Path<u64>) -> Res<Vec<DiscussionDto>> {
     let dtos = st
-        .services
+        .services.governance()
         .list_discussion(id)
         .into_iter()
         .map(|d| DiscussionDto {
-            author: st.services.user_handle(d.author).unwrap_or_default(),
+            author: st.services.chat().user_handle(d.author).unwrap_or_default(),
             body: d.body,
         })
         .collect();
@@ -753,7 +734,7 @@ pub async fn post_discussion(
     Json(req): Json<DiscussReq>,
 ) -> Res<serde_json::Value> {
     let me = require_actor(&st, &headers)?;
-    st.services.post_discussion(&me, id, &req.body).map_err(bad)?;
+    st.services.governance().post_discussion(&me, id, &req.body).map_err(bad)?;
     st.persist();
     st.publish(json!({ "type": "proposal" }).to_string());
     Ok(Json(json!({ "ok": true })))
@@ -768,7 +749,7 @@ pub async fn list_emojis(
 ) -> Res<Vec<EmojiDto>> {
     let me = crate::auth::current_actor(&st, &headers).unwrap_or_default();
     let dtos = st
-        .services
+        .services.emoji()
         .ranked_emojis(&slug, &me)
         .into_iter()
         .map(|e| EmojiDto {
@@ -776,12 +757,7 @@ pub async fn list_emojis(
             name: e.name,
             url: e.url,
             score: e.score,
-            standing: match e.standing {
-                domain::EmojiStanding::Active => "active",
-                domain::EmojiStanding::Considered => "considered",
-                domain::EmojiStanding::Archived => "archived",
-            }
-            .into(),
+            standing: e.standing.as_str().into(),
             is_active: e.standing.is_active(),
             my_vote: e.my_vote,
         })
@@ -793,7 +769,7 @@ pub async fn list_emojis(
 /// `:name:` shortcodes in any message — including archived emoji from old posts.
 pub async fn emoji_map(State(st): State<AppState>, Path(slug): Path<String>) -> Res<serde_json::Value> {
     let map: serde_json::Map<String, serde_json::Value> = st
-        .services
+        .services.emoji()
         .emoji_name_map(&slug)
         .into_iter()
         .map(|(name, url)| (name, serde_json::Value::String(url)))
@@ -811,7 +787,7 @@ pub async fn add_emoji(
 ) -> Res<serde_json::Value> {
     let me = require_actor(&st, &headers)?;
     let url = emoji_url(&req.url, &req.image).map_err(bad)?;
-    let emoji = st.services.add_emoji(&me, &slug, &req.name, &url).map_err(bad)?;
+    let emoji = st.services.emoji().add_emoji(&me, &slug, &req.name, &url).map_err(bad)?;
     st.persist();
     st.publish(json!({ "type": "emoji", "server": slug }).to_string());
     Ok(Json(json!({ "id": emoji.id.0, "name": emoji.name })))
@@ -825,7 +801,7 @@ pub async fn vote_emoji(
     Json(req): Json<VoteEmojiReq>,
 ) -> Res<serde_json::Value> {
     let me = require_actor(&st, &headers)?;
-    st.services.vote_emoji(&me, &slug, id, req.is_up).map_err(bad)?;
+    st.services.emoji().vote_emoji(&me, &slug, id, req.is_up).map_err(bad)?;
     st.persist();
     st.publish(json!({ "type": "emoji", "server": slug }).to_string());
     Ok(Json(json!({ "ok": true })))
@@ -865,7 +841,7 @@ pub async fn publish_keys(
     Json(req): Json<PublishKeysReq>,
 ) -> Res<serde_json::Value> {
     let me = require_actor(&st, &headers)?;
-    st.services
+    st.services.keys()
         .publish_keys(&me, &req.public_key, req.wrapped_secret.into())
         .map_err(bad)?;
     st.persist();
@@ -877,7 +853,7 @@ pub async fn publish_keys(
 /// authenticated owner — the actor comes from the session, never the request.
 pub async fn my_keys(State(st): State<AppState>, headers: HeaderMap) -> Res<MyKeysDto> {
     let me = require_actor(&st, &headers)?;
-    let keys = st.services.my_keys(&me).map_err(bad)?;
+    let keys = st.services.keys().my_keys(&me).map_err(bad)?;
     Ok(Json(MyKeysDto {
         public_key: keys.public_key,
         wrapped_secret: keys.wrapped_secret.into(),
@@ -892,7 +868,7 @@ pub async fn public_key(
     headers: HeaderMap,
 ) -> Res<PublicKeyDto> {
     require_actor(&st, &headers)?;
-    let public_key = st.services.public_key_of(&handle).map_err(bad)?;
+    let public_key = st.services.keys().public_key_of(&handle).map_err(bad)?;
     Ok(Json(PublicKeyDto { handle, public_key }))
 }
 
@@ -963,15 +939,8 @@ fn to_proposal_kind(
                 .ok_or_else(|| format!("unknown weighting scope: {scope}"))?,
         },
         ProposeKindReq::SetJurySizing { mode, post, comment } => K::SetJurySizing {
-            sizing: match mode.as_str() {
-                "Sqrt" => domain::JurySizing::Sqrt {
-                    post_factor_bp: *post,
-                    comment_factor_bp: *comment,
-                },
-                "Proportion" => domain::JurySizing::Proportion { post_bp: *post, comment_bp: *comment },
-                "Fixed" => domain::JurySizing::Fixed { post: *post, comment: *comment },
-                other => return Err(format!("unknown jury sizing mode: {other}")),
-            },
+            sizing: domain::JurySizing::from_mode(mode, *post, *comment)
+                .ok_or_else(|| format!("unknown jury sizing mode: {mode}"))?,
         },
         ProposeKindReq::SetGovernanceSurface { kinds } => K::SetGovernanceSurface {
             enabled: kinds.iter().filter_map(|k| domain::BallotKind::from_name(k)).collect(),
@@ -987,7 +956,7 @@ fn resolve_member(st: &AppState, _slug: &str, handle: &str) -> Result<domain::Us
 /// Resolve a role name to its [`RoleId`] within a server, erroring if unknown.
 fn resolve_role(st: &AppState, slug: &str, name: &str) -> Result<domain::RoleId, String> {
     let norm = domain::normalize_role_name(name);
-    st.services
+    st.services.roles()
         .list_roles(slug)
         .into_iter()
         .find(|r| r.name == norm)
@@ -1003,23 +972,23 @@ fn summarize_kind(st: &AppState, kind: &domain::ProposalKind) -> String {
         K::RemoveRule { rule } => format!("Repeal rule #{}", rule.0),
         K::CreateChannel { name, .. } => format!("Create channel #{name}"),
         K::DeleteChannel { name } => format!("Delete channel #{name}"),
-        K::Ban { user } => format!("Ban @{}", st.services.user_handle(*user).unwrap_or_default()),
-        K::Timeout { user, .. } => format!("Time out @{}", st.services.user_handle(*user).unwrap_or_default()),
-        K::Mute { user } => format!("Mute @{}", st.services.user_handle(*user).unwrap_or_default()),
-        K::LiftMute { user } => format!("Lift mute on @{}", st.services.user_handle(*user).unwrap_or_default()),
+        K::Ban { user } => format!("Ban @{}", st.services.chat().user_handle(*user).unwrap_or_default()),
+        K::Timeout { user, .. } => format!("Time out @{}", st.services.chat().user_handle(*user).unwrap_or_default()),
+        K::Mute { user } => format!("Mute @{}", st.services.chat().user_handle(*user).unwrap_or_default()),
+        K::LiftMute { user } => format!("Lift mute on @{}", st.services.chat().user_handle(*user).unwrap_or_default()),
         K::AppointPolice { user } => {
-            format!("Appoint @{} as police", st.services.user_handle(*user).unwrap_or_default())
+            format!("Appoint @{} as police", st.services.chat().user_handle(*user).unwrap_or_default())
         }
         K::DismissPolice { user } => {
-            format!("Dismiss police @{}", st.services.user_handle(*user).unwrap_or_default())
+            format!("Dismiss police @{}", st.services.chat().user_handle(*user).unwrap_or_default())
         }
-        K::Recall { leader } => format!("Recall @{}", st.services.user_handle(*leader).unwrap_or_default()),
+        K::Recall { leader } => format!("Recall @{}", st.services.chat().user_handle(*leader).unwrap_or_default()),
         K::AmendCriteria { .. } => "Amend franchise criteria".into(),
         K::SetJurySizing { .. } => "Change jury sizing".into(),
         K::SetVoteWeighting { .. } => "Change vote weighting".into(),
         K::SetWeightingScope { .. } => "Change weighting scope".into(),
         K::GrantVoteWeight { user, weight } => {
-            format!("Grant @{} vote weight {weight}", st.services.user_handle(*user).unwrap_or_default())
+            format!("Grant @{} vote weight {weight}", st.services.chat().user_handle(*user).unwrap_or_default())
         }
         K::SetGovernanceSurface { .. } => "Change what this server votes on".into(),
         K::RemoveContent { target } => format!("Remove content {target}"),
@@ -1027,12 +996,12 @@ fn summarize_kind(st: &AppState, kind: &domain::ProposalKind) -> String {
         K::DeleteRole { role } => format!("Delete role #{}", role.0),
         K::AssignRole { user, role } => format!(
             "Add @{} to role #{}",
-            st.services.user_handle(*user).unwrap_or_default(),
+            st.services.chat().user_handle(*user).unwrap_or_default(),
             role.0
         ),
         K::UnassignRole { user, role } => format!(
             "Remove @{} from role #{}",
-            st.services.user_handle(*user).unwrap_or_default(),
+            st.services.chat().user_handle(*user).unwrap_or_default(),
             role.0
         ),
         K::SetRehomingPolicy { is_disabled } => if *is_disabled {
@@ -1051,12 +1020,12 @@ fn summarize_kind(st: &AppState, kind: &domain::ProposalKind) -> String {
 /// List a server's custom roles and their holders (for the governance panel).
 pub async fn list_roles(State(st): State<AppState>, Path(slug): Path<String>) -> Res<Vec<RoleDto>> {
     let dtos = st
-        .services
+        .services.roles()
         .roles_with_color(&slug)
         .into_iter()
         .map(|(r, color)| RoleDto {
             id: r.id.0,
-            holders: st.services.role_holders(&slug, &r.name),
+            holders: st.services.roles().role_holders(&slug, &r.name),
             color: color.map(|c| c.as_str().to_string()),
             name: r.name,
         })
@@ -1074,17 +1043,12 @@ pub async fn user_roles(
 ) -> Res<UserRolesDto> {
     let me = crate::auth::current_actor(&st, &headers).unwrap_or_default();
     let ur = st
-        .services
+        .services.roles()
         .user_roles(&slug, &handle, &me)
         .ok_or_else(|| not_found("err.no_such_user"))?;
     Ok(Json(UserRolesDto {
         handle: ur.handle,
-        tier: match ur.tier {
-            domain::Tier::Guest => "guest",
-            domain::Tier::Member => "member",
-            domain::Tier::Citizen => "citizen",
-        }
-        .into(),
+        tier: ur.tier.as_str().into(),
         standing: ur.standing,
         roles: ur
             .roles
@@ -1102,7 +1066,7 @@ pub async fn vote_role_color(
     Json(req): Json<VoteRoleColorReq>,
 ) -> Res<serde_json::Value> {
     let me = require_actor(&st, &headers)?;
-    st.services.vote_role_color(&me, &slug, id, &req.color).map_err(bad)?;
+    st.services.roles().vote_role_color(&me, &slug, id, &req.color).map_err(bad)?;
     st.persist();
     st.publish(json!({ "type": "role", "server": slug }).to_string());
     Ok(Json(json!({ "ok": true })))
@@ -1112,25 +1076,20 @@ pub async fn vote_role_color(
 /// composer's autocomplete.
 pub async fn mentionable(State(st): State<AppState>, Path(slug): Path<String>) -> Res<MentionableDto> {
     Ok(Json(MentionableDto {
-        users: st.services.member_handles(&slug),
-        roles: st.services.mentionable_role_names(&slug),
+        users: st.services.roles().member_handles(&slug),
+        roles: st.services.roles().mentionable_role_names(&slug),
     }))
 }
 
 /// A server's members with the flags a ban picker / police panel needs.
 pub async fn list_members(State(st): State<AppState>, Path(slug): Path<String>) -> Res<Vec<MemberDto>> {
     let dtos = st
-        .services
+        .services.mute()
         .list_members(&slug)
         .into_iter()
         .map(|m| MemberDto {
             handle: m.handle,
-            tier: match m.tier {
-                domain::Tier::Guest => "guest",
-                domain::Tier::Member => "member",
-                domain::Tier::Citizen => "citizen",
-            }
-            .into(),
+            tier: m.tier.as_str().into(),
             is_sanctioned: m.is_sanctioned,
             is_muted: m.is_muted,
             is_police: m.is_police,
@@ -1147,7 +1106,7 @@ pub async fn mute(
     Json(req): Json<MuteReq>,
 ) -> Res<serde_json::Value> {
     let me = require_actor(&st, &headers)?;
-    st.services.mute_member(&me, &slug, &req.handle).map_err(bad)?;
+    st.services.mute().mute_member(&me, &slug, &req.handle).map_err(bad)?;
     st.persist();
     st.publish(json!({ "type": "mute", "server": slug }).to_string());
     Ok(Json(json!({ "ok": true })))
@@ -1161,7 +1120,7 @@ pub async fn unmute(
     Json(req): Json<MuteReq>,
 ) -> Res<serde_json::Value> {
     let me = require_actor(&st, &headers)?;
-    st.services.unmute_member(&me, &slug, &req.handle).map_err(bad)?;
+    st.services.mute().unmute_member(&me, &slug, &req.handle).map_err(bad)?;
     st.persist();
     st.publish(json!({ "type": "mute", "server": slug }).to_string());
     Ok(Json(json!({ "ok": true })))

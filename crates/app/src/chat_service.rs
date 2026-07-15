@@ -8,9 +8,28 @@
 //! regardless of how many emojis they pile on, and is withdrawn if they clear
 //! their reactions.
 
+use std::sync::Arc;
+
 use domain::{Channel, Message, Phase, Reaction};
 
-use crate::{ChannelError, MessageError, ReactionError, Services};
+use crate::{
+    ChannelError, ChannelStore, Clock, ImageTranscoder, MediaStore, MembershipStore, MessageError,
+    MessageStore, ReactionError, ReactionStore, ServerStore, UserStore,
+};
+
+/// Chat use-cases held on their own handle, reached via [`Services::chat`].
+#[derive(Clone)]
+pub struct ChatService {
+    pub(crate) channels: Arc<dyn ChannelStore>,
+    pub(crate) clock: Arc<dyn Clock>,
+    pub(crate) image: Arc<dyn ImageTranscoder>,
+    pub(crate) media: Arc<dyn MediaStore>,
+    pub(crate) memberships: Arc<dyn MembershipStore>,
+    pub(crate) messages: Arc<dyn MessageStore>,
+    pub(crate) reactions: Arc<dyn ReactionStore>,
+    pub(crate) servers: Arc<dyn ServerStore>,
+    pub(crate) users: Arc<dyn UserStore>,
+}
 
 /// Per-file upload cap for a media attachment (25 MiB).
 const MAX_MEDIA_BYTES: usize = 25 * 1024 * 1024;
@@ -45,7 +64,7 @@ fn looks_like_markup(bytes: &[u8]) -> bool {
     OPENERS.iter().any(|o| head.starts_with(o))
 }
 
-impl Services {
+impl ChatService {
     /// Create a channel. Allowed only while the server is in **Seed** and only by
     /// its founder (provisioning) — a larger server governs its channels by ballot.
     pub fn create_channel(
@@ -57,14 +76,14 @@ impl Services {
     ) -> Result<Channel, ChannelError> {
         let user = self
             .users
-            .find_by_handle(founder_handle.trim())
+            .find_by_handle(founder_handle.trim())?
             .ok_or_else(|| ChannelError::NoSuchUser(founder_handle.to_string()))?;
         let server = self
             .servers
-            .find_by_slug(server_slug.trim())
+            .find_by_slug(server_slug.trim())?
             .ok_or_else(|| ChannelError::NoSuchServer(server_slug.to_string()))?;
 
-        let citizens = self.memberships.citizen_count(server.id);
+        let citizens = self.memberships.citizen_count(server.id)?;
         let phase = Phase::from_citizen_count(citizens);
         if !(phase.founder_may_provision() && user.id == server.founder_id) {
             return Err(ChannelError::NotProvisionable);
@@ -74,40 +93,40 @@ impl Services {
         if name.is_empty() {
             return Err(ChannelError::EmptyName);
         }
-        if self.channels.find_by_name(server.id, &name).is_some() {
+        if self.channels.find_by_name(server.id, &name)?.is_some() {
             return Err(ChannelError::NameTaken(name));
         }
 
         let channel = Channel::new(
-            self.channels.next_channel_id(),
+            self.channels.next_channel_id()?,
             server.id,
             name,
             topic.trim(),
             self.clock.now(),
         );
-        self.channels.insert_channel(channel.clone());
+        self.channels.insert_channel(channel.clone())?;
         Ok(channel)
     }
 
     /// List a server's channels (in id order). `None` if no such server.
     pub fn list_channels(&self, server_slug: &str) -> Option<Vec<Channel>> {
-        let server = self.servers.find_by_slug(server_slug.trim())?;
-        Some(self.channels.list_for_server(server.id))
+        let server = self.servers.find_by_slug(server_slug.trim()).ok().flatten()?;
+        Some(self.channels.list_for_server(server.id).unwrap_or_default())
     }
 
     /// A server's channels as `viewer_handle` may see them — the restricted
     /// `#appeals` channel is hidden from anyone who is not a voter, police officer,
     /// or the muted appellant. `None` if no such server.
     pub fn visible_channels(&self, viewer_handle: &str, server_slug: &str) -> Option<Vec<Channel>> {
-        let server = self.servers.find_by_slug(server_slug.trim())?;
+        let server = self.servers.find_by_slug(server_slug.trim()).ok().flatten()?;
         let sees_appeals = self
             .users
-            .find_by_handle(viewer_handle.trim())
-            .and_then(|u| self.memberships.get(u.id, server.id))
+            .find_by_handle(viewer_handle.trim()).ok().flatten()
+            .and_then(|u| self.memberships.get(u.id, server.id).ok().flatten())
             .is_some_and(|m| crate::mute_service::membership_sees_appeals(&m));
         Some(
             self.channels
-                .list_for_server(server.id)
+                .list_for_server(server.id).unwrap_or_default()
                 .into_iter()
                 .filter(|c| sees_appeals || !c.visibility.is_appeals())
                 .collect(),
@@ -116,27 +135,27 @@ impl Services {
 
     /// Read-only: a user's handle by id (for rendering authorship).
     pub fn user_handle(&self, id: domain::UserId) -> Option<String> {
-        self.users.get_user(id).map(|u| u.handle)
+        self.users.get_user(id).ok().flatten().map(|u| u.handle)
     }
 
     /// Read-only: a user's id by handle. The federation vote router needs the
     /// numeric id (handles are for humans; the wire carries ids).
     pub fn user_id(&self, handle: &str) -> Option<u64> {
-        self.users.find_by_handle(handle.trim()).map(|u| u.id.0)
+        self.users.find_by_handle(handle.trim()).ok().flatten().map(|u| u.id.0)
     }
 
     /// Read-only: a message's reactions, summarized per emoji in stable order.
     pub fn message_reactions(&self, message_id: u64) -> Vec<(String, u64)> {
-        let rs = self.reactions.list_for_message(domain::MessageId(message_id));
+        let rs = self.reactions.list_for_message(domain::MessageId(message_id)).unwrap_or_default();
         domain::summarize_reactions(&rs)
     }
 
     /// Read-only: which (server slug, channel name) a message lives in — so a
     /// realtime event can be routed to the right channel view.
     pub fn message_context(&self, message_id: u64) -> Option<(String, String)> {
-        let m = self.messages.get_message(domain::MessageId(message_id))?;
-        let server = self.servers.get_server(m.server_id)?;
-        let channel = self.channels.get_channel(m.channel_id)?;
+        let m = self.messages.get_message(domain::MessageId(message_id)).ok().flatten()?;
+        let server = self.servers.get_server(m.server_id).ok().flatten()?;
+        let channel = self.channels.get_channel(m.channel_id).ok().flatten()?;
         Some((server.slug, channel.name))
     }
 
@@ -246,7 +265,7 @@ impl Services {
             Some(pid) => {
                 let p = self
                     .messages
-                    .get_message(domain::MessageId(pid))
+                    .get_message(domain::MessageId(pid))?
                     .ok_or(MessageError::NoSuchMessage(pid))?;
                 if p.channel_id != channel.id {
                     return Err(MessageError::CrossChannelReply);
@@ -255,17 +274,17 @@ impl Services {
             }
             None => None,
         };
-        let message = Message::sealed(
-            self.messages.next_message_id(),
+        let message = Message::new(
+            self.messages.next_message_id()?,
             channel.id,
             channel.server_id,
             author_id,
             ciphertext,
-            key_epoch,
             parent,
             self.clock.now(),
-        );
-        self.messages.insert_message(message.clone());
+        )
+        .seal_under(key_epoch);
+        self.messages.insert_message(message.clone())?;
         Ok(message)
     }
 
@@ -278,22 +297,22 @@ impl Services {
     ) -> Result<Message, MessageError> {
         let parent = self
             .messages
-            .get_message(domain::MessageId(parent_id))
+            .get_message(domain::MessageId(parent_id))?
             .ok_or(MessageError::NoSuchMessage(parent_id))?;
         let channel = self
             .channels
-            .get_channel(parent.channel_id)
+            .get_channel(parent.channel_id)?
             .ok_or_else(|| MessageError::NoSuchChannel(parent.channel_id.to_string()))?;
         let server = self
             .servers
-            .get_server(parent.server_id)
+            .get_server(parent.server_id)?
             .ok_or_else(|| MessageError::NoSuchServer(parent.server_id.to_string()))?;
 
         let user = self
             .users
-            .find_by_handle(handle.trim())
+            .find_by_handle(handle.trim())?
             .ok_or_else(|| MessageError::NoSuchUser(handle.to_string()))?;
-        match self.memberships.get(user.id, server.id) {
+        match self.memberships.get(user.id, server.id)? {
             None => return Err(MessageError::NotAMember(handle.to_string())),
             Some(m) if m.is_sanctioned => return Err(MessageError::Sanctioned(handle.to_string())),
             Some(_) => {}
@@ -314,7 +333,7 @@ impl Services {
         }
         let mut message = self.authored_message(handle, message_id)?;
         message.edit(body, self.clock.now());
-        self.messages.update_message(message.clone());
+        self.messages.update_message(message.clone())?;
         Ok(message)
     }
 
@@ -327,7 +346,7 @@ impl Services {
             self.media.delete(&a.key);
         }
         message.tombstone();
-        self.messages.update_message(message);
+        self.messages.update_message(message)?;
         Ok(())
     }
 
@@ -340,14 +359,14 @@ impl Services {
     ) -> Result<Vec<Message>, MessageError> {
         let server = self
             .servers
-            .find_by_slug(server_slug.trim())
+            .find_by_slug(server_slug.trim())?
             .ok_or_else(|| MessageError::NoSuchServer(server_slug.to_string()))?;
         let name = domain::normalize_channel_name(channel_name);
         let channel = self
             .channels
-            .find_by_name(server.id, &name)
+            .find_by_name(server.id, &name)?
             .ok_or_else(|| MessageError::NoSuchChannel(channel_name.to_string()))?;
-        Ok(self.messages.list_for_channel(channel.id))
+        Ok(self.messages.list_for_channel(channel.id)?)
     }
 
     /// A channel's messages as visible to `viewer`, honouring each author's
@@ -368,16 +387,16 @@ impl Services {
         let all = self.channel_messages(server_slug, channel_name)?;
         let server = self
             .servers
-            .find_by_slug(server_slug.trim())
+            .find_by_slug(server_slug.trim())?
             .ok_or_else(|| MessageError::NoSuchServer(server_slug.to_string()))?;
-        let viewer_id = self.users.find_by_handle(viewer_handle.trim()).map(|u| u.id);
+        let viewer_id = self.users.find_by_handle(viewer_handle.trim())?.map(|u| u.id);
         // Gate the restricted appeals channel: to anyone who is not a voter, police
         // officer, or the muted appellant, it reads as nonexistent.
         let cname = domain::normalize_channel_name(channel_name);
-        if let Some(ch) = self.channels.find_by_name(server.id, &cname) {
+        if let Some(ch) = self.channels.find_by_name(server.id, &cname)? {
             if ch.visibility.is_appeals() {
                 let can = viewer_id
-                    .and_then(|id| self.memberships.get(id, server.id))
+                    .and_then(|id| self.memberships.get(id, server.id).ok().flatten())
                     .is_some_and(|m| crate::mute_service::membership_sees_appeals(&m));
                 if !can {
                     return Err(MessageError::NoSuchChannel(channel_name.to_string()));
@@ -385,7 +404,7 @@ impl Services {
             }
         }
         let viewer_joined = viewer_id
-            .and_then(|id| self.memberships.get(id, server.id))
+            .and_then(|id| self.memberships.get(id, server.id).ok().flatten())
             .map(|m| m.joined_at)
             .unwrap_or_else(|| self.clock.now());
         let mut author_cache: std::collections::HashMap<domain::UserId, Option<domain::Membership>> =
@@ -398,7 +417,7 @@ impl Services {
                 }
                 let author = author_cache
                     .entry(m.author)
-                    .or_insert_with(|| self.memberships.get(m.author, server.id));
+                    .or_insert_with(|| self.memberships.get(m.author, server.id).ok().flatten());
                 match author {
                     Some(a) => a.shows_message_to(m.created_at, viewer_joined),
                     None => true, // author left/unknown → nothing to hide
@@ -410,10 +429,10 @@ impl Services {
     /// This member's personal history-sharing preference for a server, if they are
     /// a member. `true` (share with newcomers) is the default.
     pub fn history_sharing(&self, handle: &str, server_slug: &str) -> Option<bool> {
-        let user = self.users.find_by_handle(handle.trim())?;
-        let server = self.servers.find_by_slug(server_slug.trim())?;
+        let user = self.users.find_by_handle(handle.trim()).ok().flatten()?;
+        let server = self.servers.find_by_slug(server_slug.trim()).ok().flatten()?;
         self.memberships
-            .get(user.id, server.id)
+            .get(user.id, server.id).ok().flatten()
             .map(|m| m.shares_history_with_newcomers)
     }
 
@@ -428,18 +447,18 @@ impl Services {
     ) -> Result<(), MessageError> {
         let user = self
             .users
-            .find_by_handle(handle.trim())
+            .find_by_handle(handle.trim())?
             .ok_or_else(|| MessageError::NoSuchUser(handle.to_string()))?;
         let server = self
             .servers
-            .find_by_slug(server_slug.trim())
+            .find_by_slug(server_slug.trim())?
             .ok_or_else(|| MessageError::NoSuchServer(server_slug.to_string()))?;
         let mut m = self
             .memberships
-            .get(user.id, server.id)
+            .get(user.id, server.id)?
             .ok_or_else(|| MessageError::NotAMember(handle.to_string()))?;
         m.shares_history_with_newcomers = shares;
-        self.memberships.upsert(m);
+        self.memberships.upsert(m)?;
         Ok(())
     }
 
@@ -458,23 +477,23 @@ impl Services {
         }
         let user = self
             .users
-            .find_by_handle(handle.trim())
+            .find_by_handle(handle.trim())?
             .ok_or_else(|| ReactionError::NoSuchUser(handle.to_string()))?;
         let message = self
             .messages
-            .get_message(domain::MessageId(message_id))
+            .get_message(domain::MessageId(message_id))?
             .ok_or(ReactionError::NoSuchMessage(message_id))?;
         let reactor = self
             .memberships
-            .get(user.id, message.server_id)
+            .get(user.id, message.server_id)?
             .ok_or_else(|| ReactionError::NotAMember(handle.to_string()))?;
 
         // Endorsement: a franchised citizen reacting (for the first time) to
         // someone else's message raises that author's contribution by one.
-        let first_reaction = !self.reactions.user_has_any(message.id, user.id);
+        let first_reaction = !self.reactions.user_has_any(message.id, user.id)?;
         let endorses = first_reaction && reactor.is_franchised() && user.id != message.author;
 
-        let added = self.reactions.add(Reaction::new(message.id, user.id, emoji));
+        let added = self.reactions.add(Reaction::new(message.id, user.id, emoji))?;
         if added && endorses {
             self.adjust_contribution(message.author, message.server_id, 1);
         }
@@ -492,17 +511,17 @@ impl Services {
         let emoji = emoji.trim();
         let user = self
             .users
-            .find_by_handle(handle.trim())
+            .find_by_handle(handle.trim())?
             .ok_or_else(|| ReactionError::NoSuchUser(handle.to_string()))?;
         let message = self
             .messages
-            .get_message(domain::MessageId(message_id))
+            .get_message(domain::MessageId(message_id))?
             .ok_or(ReactionError::NoSuchMessage(message_id))?;
 
-        let removed = self.reactions.remove(message.id, user.id, emoji);
+        let removed = self.reactions.remove(message.id, user.id, emoji)?;
         if removed {
-            let still_reacting = self.reactions.user_has_any(message.id, user.id);
-            if let Some(reactor) = self.memberships.get(user.id, message.server_id) {
+            let still_reacting = self.reactions.user_has_any(message.id, user.id)?;
+            if let Some(reactor) = self.memberships.get(user.id, message.server_id)? {
                 if !still_reacting && reactor.is_franchised() && user.id != message.author {
                     self.adjust_contribution(message.author, message.server_id, -1);
                 }
@@ -521,13 +540,13 @@ impl Services {
     ) -> Result<(domain::User, domain::Server, Channel, domain::UserId), MessageError> {
         let user = self
             .users
-            .find_by_handle(handle.trim())
+            .find_by_handle(handle.trim())?
             .ok_or_else(|| MessageError::NoSuchUser(handle.to_string()))?;
         let server = self
             .servers
-            .find_by_slug(server_slug.trim())
+            .find_by_slug(server_slug.trim())?
             .ok_or_else(|| MessageError::NoSuchServer(server_slug.to_string()))?;
-        let membership = match self.memberships.get(user.id, server.id) {
+        let membership = match self.memberships.get(user.id, server.id)? {
             None => return Err(MessageError::NotAMember(handle.to_string())),
             Some(m) if m.is_sanctioned => return Err(MessageError::Sanctioned(handle.to_string())),
             Some(m) => m,
@@ -535,7 +554,7 @@ impl Services {
         let name = domain::normalize_channel_name(channel_name);
         let channel = self
             .channels
-            .find_by_name(server.id, &name)
+            .find_by_name(server.id, &name)?
             .ok_or_else(|| MessageError::NoSuchChannel(channel_name.to_string()))?;
         if channel.visibility.is_appeals() {
             // The appeals room: only voters, police, and muted appellants may post —
@@ -572,7 +591,7 @@ impl Services {
             return Err(MessageError::EmptyBody);
         }
         let mut message = Message::new(
-            self.messages.next_message_id(),
+            self.messages.next_message_id()?,
             channel.id,
             channel.server_id,
             author,
@@ -581,18 +600,18 @@ impl Services {
             self.clock.now(),
         );
         message.attachments = attachments;
-        self.messages.insert_message(message.clone());
+        self.messages.insert_message(message.clone())?;
         Ok(message)
     }
 
     fn authored_message(&self, handle: &str, message_id: u64) -> Result<Message, MessageError> {
         let user = self
             .users
-            .find_by_handle(handle.trim())
+            .find_by_handle(handle.trim())?
             .ok_or_else(|| MessageError::NoSuchUser(handle.to_string()))?;
         let message = self
             .messages
-            .get_message(domain::MessageId(message_id))
+            .get_message(domain::MessageId(message_id))?
             .ok_or(MessageError::NoSuchMessage(message_id))?;
         if message.author != user.id {
             return Err(MessageError::NotTheAuthor);
@@ -601,9 +620,9 @@ impl Services {
     }
 
     fn adjust_contribution(&self, author: domain::UserId, server: domain::ServerId, delta: i64) {
-        if let Some(mut m) = self.memberships.get(author, server) {
+        if let Some(mut m) = self.memberships.get(author, server).ok().flatten() {
             m.contribution = (m.contribution + delta).max(0);
-            self.memberships.upsert(m);
+            self.memberships.upsert(m).unwrap_or_default();
         }
     }
 }

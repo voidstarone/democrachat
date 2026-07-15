@@ -65,6 +65,39 @@ impl JurySizing {
         };
         target.clamp(1, cap) as usize
     }
+
+    /// The law's canonical wire name — the single home for the string tag, paired
+    /// with [`factors`](Self::factors) and [`from_mode`](Self::from_mode) so the
+    /// web↔domain string mapping lives in one place. A new law is named here, not
+    /// at each serialize/parse call site.
+    pub const fn mode_name(self) -> &'static str {
+        match self {
+            JurySizing::Sqrt { .. } => "Sqrt",
+            JurySizing::Proportion { .. } => "Proportion",
+            JurySizing::Fixed { .. } => "Fixed",
+        }
+    }
+
+    /// The `(post, comment)` parameter pair, whatever the law — the two numbers the
+    /// wire carries alongside [`mode_name`](Self::mode_name).
+    pub const fn factors(self) -> (u32, u32) {
+        match self {
+            JurySizing::Sqrt { post_factor_bp, comment_factor_bp } => (post_factor_bp, comment_factor_bp),
+            JurySizing::Proportion { post_bp, comment_bp } => (post_bp, comment_bp),
+            JurySizing::Fixed { post, comment } => (post, comment),
+        }
+    }
+
+    /// Build a law from its wire `mode` name and `(post, comment)` parameters.
+    /// `None` for an unknown mode — the inverse of [`mode_name`](Self::mode_name).
+    pub fn from_mode(mode: &str, post: u32, comment: u32) -> Option<Self> {
+        match mode {
+            "Sqrt" => Some(JurySizing::Sqrt { post_factor_bp: post, comment_factor_bp: comment }),
+            "Proportion" => Some(JurySizing::Proportion { post_bp: post, comment_bp: comment }),
+            "Fixed" => Some(JurySizing::Fixed { post, comment }),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -115,5 +148,20 @@ mod tests {
         let fixed = JurySizing::Fixed { post: 50, comment: 50 };
         assert_eq!(fixed.jury_size(20, ContentScale::Post), 9);
         assert_eq!(fixed.jury_size(1_000, ContentScale::Post), 50);
+    }
+
+    /// The wire mapping round-trips: every law's `(mode_name, factors)` rebuilds the
+    /// same law via `from_mode`.
+    #[test]
+    fn the_wire_mapping_round_trips() {
+        for law in [
+            JurySizing::Sqrt { post_factor_bp: 10_000, comment_factor_bp: 5_000 },
+            JurySizing::Proportion { post_bp: 6_000, comment_bp: 3_000 },
+            JurySizing::Fixed { post: 12, comment: 7 },
+        ] {
+            let (post, comment) = law.factors();
+            assert_eq!(JurySizing::from_mode(law.mode_name(), post, comment), Some(law));
+        }
+        assert_eq!(JurySizing::from_mode("Nope", 1, 1), None);
     }
 }

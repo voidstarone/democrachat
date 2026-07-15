@@ -36,14 +36,10 @@ use crate::nonce_log::StoreNonceLog;
 use crate::vote_router::FederatedVoteRouter;
 
 /// The write routers the web layer installs, all backed by the one `WriteRouter`.
-/// Empty (`Default`) on the single-box deployment, where every write applies locally.
-#[derive(Default)]
-pub struct Routers {
-    pub vote: Option<Arc<dyn app::VoteRouter>>,
-    pub dm: Option<Arc<dyn app::DmRouter>>,
-    pub block: Option<Arc<dyn app::BlockRouter>>,
-    pub friend: Option<Arc<dyn app::FriendRouter>>,
-}
+/// Empty (`Default`) on the single-box deployment, where every write applies
+/// locally. This is exactly the bundle [`adapter_web::serve`] consumes, so it is
+/// that type rather than a parallel copy.
+pub use adapter_web::Routers;
 
 /// A non-empty, non-whitespace environment value, or `None`.
 fn env(key: &str) -> Option<String> {
@@ -292,13 +288,13 @@ pub async fn start(
 /// The scopes this node homes (the ones it minted the ids for): each minted server
 /// and each minted user.
 fn owned_scopes(store: &MemoryStore, node: NodeId) -> Vec<OwnedScope> {
-    let mut out: Vec<OwnedScope> = ServerStore::list_all(store)
+    let mut out: Vec<OwnedScope> = ServerStore::list_all(store).unwrap_or_default()
         .into_iter()
         .filter(|s| origin_node(s.id.0) == node)
         .map(|s| OwnedScope::Server(s.id.0))
         .collect();
     out.extend(
-        UserStore::list_all(store)
+        UserStore::list_all(store).unwrap_or_default()
             .into_iter()
             .filter(|u| origin_node(u.id.0) == node)
             .map(|u| OwnedScope::UserHome(u.id.0)),
@@ -318,13 +314,13 @@ fn scope_home(scope: OwnedScope) -> u16 {
 /// The scopes homed on OTHER nodes that this node has replicated — the failover
 /// candidates it may have to take over if a peer goes down.
 fn foreign_scopes(store: &MemoryStore, node: NodeId) -> Vec<OwnedScope> {
-    let mut out: Vec<OwnedScope> = ServerStore::list_all(store)
+    let mut out: Vec<OwnedScope> = ServerStore::list_all(store).unwrap_or_default()
         .into_iter()
         .filter(|s| origin_node(s.id.0) != node)
         .map(|s| OwnedScope::Server(s.id.0))
         .collect();
     out.extend(
-        UserStore::list_all(store)
+        UserStore::list_all(store).unwrap_or_default()
             .into_iter()
             .filter(|u| origin_node(u.id.0) != node)
             .map(|u| OwnedScope::UserHome(u.id.0)),
@@ -368,7 +364,7 @@ async fn reconcile_claims(
         }
         // Pin a server that its citizens voted to disable rehoming for.
         if let OwnedScope::Server(id) = scope {
-            let disabled = ServerStore::list_all(store)
+            let disabled = ServerStore::list_all(store).unwrap_or_default()
                 .into_iter()
                 .find(|s| s.id.0 == id)
                 .is_some_and(|s| s.is_rehoming_disabled);

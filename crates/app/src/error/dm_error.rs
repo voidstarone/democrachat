@@ -17,4 +17,8 @@ pub enum DmError {
     /// sees plaintext, so "empty" here means an absent ciphertext.
     #[error("message body cannot be empty")]
     EmptyBody,
+    /// The persistence layer itself failed (store unavailable, timeout, or
+    /// write conflict) — distinct from any domain-rule rejection.
+    #[error(transparent)]
+    Store(#[from] crate::StoreError),
 }

@@ -31,13 +31,13 @@ fn fixture() -> Fixture {
 fn seat_citizen(f: &Fixture, handle: &str, slug: &str) {
     f.services.register_account(handle).unwrap();
     f.services.join_server(handle, slug).unwrap();
-    let user = f.store.find_by_handle(handle).unwrap();
-    let server = f.store.find_by_slug(slug).unwrap();
-    let mut m = f.store.get(user.id, server.id).unwrap();
+    let user = f.store.find_by_handle(handle).unwrap().unwrap();
+    let server = f.store.find_by_slug(slug).unwrap().unwrap();
+    let mut m = f.store.get(user.id, server.id).unwrap().unwrap();
     m.tier = Tier::Citizen;
     m.contribution = 5;
     m.enfranchised_at = Some(f.clock.now());
-    f.store.upsert(m);
+    f.store.upsert(m).unwrap();
 }
 
 #[test]
@@ -51,9 +51,9 @@ fn an_invite_admits_a_member_but_never_a_voter() {
     let m = f.services.accept_invite("bo", &code).unwrap();
 
     assert!(!m.is_citizen(), "an invite must never grant the franchise");
-    let bo = f.store.find_by_handle("bo").unwrap();
-    let server = f.store.find_by_slug("secret-club").unwrap();
-    assert!(f.store.get(bo.id, server.id).is_some(), "bo is now a member");
+    let bo = f.store.find_by_handle("bo").unwrap().unwrap();
+    let server = f.store.find_by_slug("secret-club").unwrap().unwrap();
+    assert!(f.store.get(bo.id, server.id).unwrap().is_some(), "bo is now a member");
 }
 
 #[test]
@@ -108,22 +108,22 @@ fn voting_the_policy_closed_seals_minting() {
     seat_citizen(&f, "bob", "club");
     seat_citizen(&f, "cid", "club");
 
-    let before = f.store.find_by_slug("club").unwrap();
+    let before = f.store.find_by_slug("club").unwrap().unwrap();
     assert_eq!(before.invite_policy, InvitePolicy::Open, "invites start open");
 
     let p = f
-        .services
+        .services.governance()
         .open_proposal("ada", "club", ProposalKind::SetInvitePolicy { policy: InvitePolicy::Closed })
         .unwrap();
-    f.services.cast_vote("ada", p.id.0, true).unwrap();
-    f.services.cast_vote("bob", p.id.0, true).unwrap();
-    f.services.cast_vote("cid", p.id.0, true).unwrap();
+    f.services.governance().cast_vote("ada", p.id.0, true).unwrap();
+    f.services.governance().cast_vote("bob", p.id.0, true).unwrap();
+    f.services.governance().cast_vote("cid", p.id.0, true).unwrap();
 
     // Advance past the voting window and resolve.
     f.clock.set(Timestamp(1_000 * DAY + 5 * DAY));
-    f.services.resolve_due("club");
+    f.services.governance().resolve_due("club");
 
-    let after = f.store.find_by_slug("club").unwrap();
+    let after = f.store.find_by_slug("club").unwrap().unwrap();
     assert_eq!(after.invite_policy, InvitePolicy::Closed, "the vote closed the door");
     assert_eq!(
         f.services.create_invite("ada", "club"),

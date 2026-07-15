@@ -53,26 +53,26 @@ fn register_and_join(f: &Fixture, handle: &str, slug: &str) {
 /// electorate the red team then tries to overwhelm.
 fn seat_citizen(f: &Fixture, handle: &str, slug: &str) {
     register_and_join(f, handle, slug);
-    let u = f.store.find_by_handle(handle).unwrap();
-    let s = f.store.find_by_slug(slug).unwrap();
-    let mut m = f.store.get(u.id, s.id).unwrap();
+    let u = f.store.find_by_handle(handle).unwrap().unwrap();
+    let s = f.store.find_by_slug(slug).unwrap().unwrap();
+    let mut m = f.store.get(u.id, s.id).unwrap().unwrap();
     m.tier = Tier::Citizen;
     m.contribution = 5;
     m.enfranchised_at = Some(f.clock.now());
-    f.store.upsert(m);
+    f.store.upsert(m).unwrap();
 }
 
 fn set_contribution(f: &Fixture, handle: &str, slug: &str, contribution: i64) {
-    let u = f.store.find_by_handle(handle).unwrap();
-    let s = f.store.find_by_slug(slug).unwrap();
-    let mut m = f.store.get(u.id, s.id).unwrap();
+    let u = f.store.find_by_handle(handle).unwrap().unwrap();
+    let s = f.store.find_by_slug(slug).unwrap().unwrap();
+    let mut m = f.store.get(u.id, s.id).unwrap().unwrap();
     m.contribution = contribution;
-    f.store.upsert(m);
+    f.store.upsert(m).unwrap();
 }
 
 fn citizen_count(f: &Fixture, slug: &str) -> u64 {
-    let s = f.store.find_by_slug(slug).unwrap();
-    f.store.citizen_count(s.id)
+    let s = f.store.find_by_slug(slug).unwrap().unwrap();
+    f.store.citizen_count(s.id).unwrap()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -155,9 +155,9 @@ fn the_rate_cap_holds_even_when_criteria_are_trivialized() {
     found(&f, "boss", "Town");
     // Simulate a maximally-open constitution (as if every criterion were amended
     // to zero). Layer 2 must still hold on its own.
-    let mut s = f.store.find_by_slug("town").unwrap();
+    let mut s = f.store.find_by_slug("town").unwrap().unwrap();
     s.criteria = FranchiseCriteria { min_account_age_days: 0, min_membership_days: 0, min_contribution: 0 };
-    f.store.update_server(s);
+    f.store.update_server(s).unwrap();
 
     for i in 0..100 {
         register_and_join(&f, &format!("mob{i}"), "town");
@@ -223,7 +223,7 @@ fn a_lone_citizen_cannot_pass_a_capture_ballot() {
         seat_citizen(&f, &format!("cit{i}"), "town"); // 100 honest citizens total
     }
     seat_citizen(&f, "attacker", "town"); // + 1 attacker citizen = 101
-    let victim = f.store.find_by_handle("cit0").unwrap();
+    let victim = f.store.find_by_handle("cit0").unwrap().unwrap();
 
     let p = f
         .services.governance()
@@ -236,9 +236,9 @@ fn a_lone_citizen_cannot_pass_a_capture_ballot() {
 
     let closed = f.services.governance().list_proposals("town").into_iter().find(|x| x.id == p.id).unwrap();
     assert_eq!(closed.status, ProposalStatus::Failed, "one vote of 101 fails quorum");
-    let server = f.store.find_by_slug("town").unwrap();
+    let server = f.store.find_by_slug("town").unwrap().unwrap();
     assert!(
-        !f.store.get(victim.id, server.id).unwrap().is_sanctioned,
+        !f.store.get(victim.id, server.id).unwrap().unwrap().is_sanctioned,
         "the target keeps their standing — no capture"
     );
 }
@@ -259,9 +259,9 @@ fn there_is_no_founder_override_of_the_criteria() {
         other => panic!("an unqualified member must not be admitted, got {other:?}"),
     }
     assert!(!f.store.get(
-        f.store.find_by_handle("buddy").unwrap().id,
-        f.store.find_by_slug("town").unwrap().id,
-    ).unwrap().is_citizen());
+        f.store.find_by_handle("buddy").unwrap().unwrap().id,
+        f.store.find_by_slug("town").unwrap().unwrap().id,
+    ).unwrap().unwrap().is_citizen());
 }
 
 /// A franchise-barred puppet account (e.g. a staff/content bot) can never be
@@ -272,9 +272,9 @@ fn a_franchise_barred_puppet_never_gets_in() {
     found(&f, "boss", "Town");
     register_and_join(&f, "puppet", "town");
     // Bar the account and otherwise fully qualify it.
-    let mut u = f.store.find_by_handle("puppet").unwrap();
+    let mut u = f.store.find_by_handle("puppet").unwrap().unwrap();
     u.is_franchise_barred = true;
-    f.store.update_user(u);
+    f.store.update_user(u).unwrap();
     f.clock.set(Timestamp(1_050 * DAY));
     set_contribution(&f, "puppet", "town", 50);
 
@@ -289,9 +289,9 @@ fn a_franchise_barred_puppet_never_gets_in() {
 fn a_barred_account_cannot_found_a_server() {
     let f = fixture(1_000 * DAY);
     f.services.register_account("villain").unwrap();
-    let mut u = f.store.find_by_handle("villain").unwrap();
+    let mut u = f.store.find_by_handle("villain").unwrap().unwrap();
     u.is_franchise_barred = true;
-    f.store.update_user(u);
+    f.store.update_user(u).unwrap();
     assert_eq!(f.services.found_server("villain", "Lair"), Err(FoundError::FounderBarred));
 }
 
@@ -304,11 +304,11 @@ fn granting_vote_weight_to_a_non_citizen_does_not_let_them_vote() {
     found(&f, "boss", "Town");
     register_and_join(&f, "member", "town");
     // Simulate the effect of a passed GrantVoteWeight ballot on a non-citizen.
-    let u = f.store.find_by_handle("member").unwrap();
-    let s = f.store.find_by_slug("town").unwrap();
-    let mut m = f.store.get(u.id, s.id).unwrap();
+    let u = f.store.find_by_handle("member").unwrap().unwrap();
+    let s = f.store.find_by_slug("town").unwrap().unwrap();
+    let mut m = f.store.get(u.id, s.id).unwrap().unwrap();
     m.granted_weight = 1_000;
-    f.store.upsert(m);
+    f.store.upsert(m).unwrap();
 
     let p = f
         .services.governance()
@@ -329,11 +329,11 @@ fn a_sanctioned_citizen_cannot_vote() {
     found(&f, "boss", "Town");
     seat_citizen(&f, "rogue", "town");
     // Sanction them (as a passed Ban would).
-    let u = f.store.find_by_handle("rogue").unwrap();
-    let s = f.store.find_by_slug("town").unwrap();
-    let mut m = f.store.get(u.id, s.id).unwrap();
+    let u = f.store.find_by_handle("rogue").unwrap().unwrap();
+    let s = f.store.find_by_slug("town").unwrap().unwrap();
+    let mut m = f.store.get(u.id, s.id).unwrap().unwrap();
     m.is_sanctioned = true;
-    f.store.upsert(m);
+    f.store.upsert(m).unwrap();
 
     let p = f
         .services.governance()
@@ -446,11 +446,11 @@ fn a_sanctioned_member_cannot_post() {
     // They can post before sanction.
     f.services.chat().post_message("loudmouth", "town", "general", "hello").unwrap();
     // Sanction them (as a passed Ban ballot would).
-    let u = f.store.find_by_handle("loudmouth").unwrap();
-    let s = f.store.find_by_slug("town").unwrap();
-    let mut m = f.store.get(u.id, s.id).unwrap();
+    let u = f.store.find_by_handle("loudmouth").unwrap().unwrap();
+    let s = f.store.find_by_slug("town").unwrap().unwrap();
+    let mut m = f.store.get(u.id, s.id).unwrap().unwrap();
     m.is_sanctioned = true;
-    f.store.upsert(m);
+    f.store.upsert(m).unwrap();
 
     assert_eq!(
         f.services.chat().post_message("loudmouth", "town", "general", "again"),
@@ -620,11 +620,11 @@ fn police_powers_do_not_cross_servers() {
     // Make alice a police officer of Alpha (store shortcut — a passed AppointPolice
     // ballot would do the same in Alpha, and none of it reaches Beta).
     seat_citizen(&f, "alice", "alpha");
-    let ua = f.store.find_by_handle("alice").unwrap();
-    let sa = f.store.find_by_slug("alpha").unwrap();
-    let mut m = f.store.get(ua.id, sa.id).unwrap();
+    let ua = f.store.find_by_handle("alice").unwrap().unwrap();
+    let sa = f.store.find_by_slug("alpha").unwrap().unwrap();
+    let mut m = f.store.get(ua.id, sa.id).unwrap().unwrap();
     m.is_police = true;
-    f.store.upsert(m);
+    f.store.upsert(m).unwrap();
     // A target who is a genuine member of Beta.
     register_and_join(&f, "victim", "beta");
 
@@ -699,12 +699,12 @@ fn a_non_member_cannot_be_enfranchised() {
 /// what a passed sanction or a failed re-qualification does to the roll; used to
 /// prove revoked standing silently stops counting.
 fn revoke_franchise(f: &Fixture, handle: &str, slug: &str) {
-    let u = f.store.find_by_handle(handle).unwrap();
-    let s = f.store.find_by_slug(slug).unwrap();
-    let mut m = f.store.get(u.id, s.id).unwrap();
+    let u = f.store.find_by_handle(handle).unwrap().unwrap();
+    let s = f.store.find_by_slug(slug).unwrap().unwrap();
+    let mut m = f.store.get(u.id, s.id).unwrap().unwrap();
     m.tier = Tier::Member;
     m.enfranchised_at = None;
-    f.store.upsert(m);
+    f.store.upsert(m).unwrap();
 }
 
 /// Pass a proposal unanimously among the named citizens and sweep it in.
@@ -951,7 +951,7 @@ fn holding_a_role_grants_no_vote() {
     let citizens = ["boss", "cit1", "cit2"];
     pass_ballot(&f, "boss", "town", &citizens, ProposalKind::CreateRole { name: "Ops".into() });
     let role = f.services.roles().list_roles("town").into_iter().find(|r| r.name == "ops").unwrap();
-    let mole = f.store.find_by_handle("mole").unwrap();
+    let mole = f.store.find_by_handle("mole").unwrap().unwrap();
     pass_ballot(&f, "boss", "town", &citizens, ProposalKind::AssignRole { user: mole.id, role: role.id });
 
     // The mole now holds the role...
@@ -980,11 +980,11 @@ fn an_officer_cannot_mute_themselves() {
     let f = fixture(1_000 * DAY);
     found(&f, "boss", "Town");
     seat_citizen(&f, "cop", "town");
-    let u = f.store.find_by_handle("cop").unwrap();
-    let s = f.store.find_by_slug("town").unwrap();
-    let mut m = f.store.get(u.id, s.id).unwrap();
+    let u = f.store.find_by_handle("cop").unwrap().unwrap();
+    let s = f.store.find_by_slug("town").unwrap().unwrap();
+    let mut m = f.store.get(u.id, s.id).unwrap().unwrap();
     m.is_police = true;
-    f.store.upsert(m);
+    f.store.upsert(m).unwrap();
     assert_eq!(
         f.services.mute().mute_member("cop", "town", "cop"),
         Err(MuteError::CannotMutePolice),
@@ -998,11 +998,11 @@ fn an_officer_cannot_mute_a_non_member() {
     let f = fixture(1_000 * DAY);
     found(&f, "boss", "Town");
     seat_citizen(&f, "cop", "town");
-    let u = f.store.find_by_handle("cop").unwrap();
-    let s = f.store.find_by_slug("town").unwrap();
-    let mut m = f.store.get(u.id, s.id).unwrap();
+    let u = f.store.find_by_handle("cop").unwrap().unwrap();
+    let s = f.store.find_by_slug("town").unwrap().unwrap();
+    let mut m = f.store.get(u.id, s.id).unwrap().unwrap();
     m.is_police = true;
-    f.store.upsert(m);
+    f.store.upsert(m).unwrap();
     f.services.register_account("stranger").unwrap(); // registered, never joined
     assert_eq!(
         f.services.mute().mute_member("cop", "town", "stranger"),
@@ -1019,11 +1019,11 @@ fn a_muted_member_cannot_post_to_the_floor() {
     register_and_join(&f, "loud", "town");
     f.services.chat().post_message("loud", "town", "general", "hi").unwrap();
 
-    let u = f.store.find_by_handle("loud").unwrap();
-    let s = f.store.find_by_slug("town").unwrap();
-    let mut m = f.store.get(u.id, s.id).unwrap();
+    let u = f.store.find_by_handle("loud").unwrap().unwrap();
+    let s = f.store.find_by_slug("town").unwrap().unwrap();
+    let mut m = f.store.get(u.id, s.id).unwrap().unwrap();
     m.mute(None);
-    f.store.upsert(m);
+    f.store.upsert(m).unwrap();
 
     assert_eq!(
         f.services.chat().post_message("loud", "town", "general", "again"),

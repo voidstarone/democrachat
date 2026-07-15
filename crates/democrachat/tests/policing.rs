@@ -26,13 +26,13 @@ fn fixture(now_secs: i64) -> Fixture {
 fn seat_citizen(f: &Fixture, handle: &str, slug: &str) {
     f.services.register_account(handle).unwrap();
     f.services.join_server(handle, slug).unwrap();
-    let user = f.store.find_by_handle(handle).unwrap();
-    let server = f.store.find_by_slug(slug).unwrap();
-    let mut m = f.store.get(user.id, server.id).unwrap();
+    let user = f.store.find_by_handle(handle).unwrap().unwrap();
+    let server = f.store.find_by_slug(slug).unwrap().unwrap();
+    let mut m = f.store.get(user.id, server.id).unwrap().unwrap();
     m.tier = Tier::Citizen;
     m.contribution = 5;
     m.enfranchised_at = Some(f.clock.now());
-    f.store.upsert(m);
+    f.store.upsert(m).unwrap();
 }
 
 /// ada (founder) + bob + cid as citizens, plus "target" as a plain member.
@@ -46,27 +46,27 @@ fn setup(f: &Fixture) {
 }
 
 fn uid(f: &Fixture, handle: &str) -> UserId {
-    f.store.find_by_handle(handle).unwrap().id
+    f.store.find_by_handle(handle).unwrap().unwrap().id
 }
 
 /// Open a ballot, carry it unanimously through the three citizens, then close the
 /// window and apply it.
 fn pass(f: &Fixture, proposer: &str, kind: ProposalKind) {
-    let p = f.services.open_proposal(proposer, "town-square", kind).unwrap();
+    let p = f.services.governance().open_proposal(proposer, "town-square", kind).unwrap();
     for c in ["ada", "bob", "cid"] {
-        f.services.cast_vote(c, p.id.0, true).unwrap();
+        f.services.governance().cast_vote(c, p.id.0, true).unwrap();
     }
     let now = f.clock.now();
     f.clock.set(now.plus_days(4));
-    f.services.resolve_due("town-square");
+    f.services.governance().resolve_due("town-square");
 }
 
 fn is_police(f: &Fixture, handle: &str) -> bool {
-    let (police, _) = f.services.police_and_mute_status(handle, "town-square").unwrap();
+    let (police, _) = f.services.mute().police_and_mute_status(handle, "town-square").unwrap();
     police
 }
 fn is_muted(f: &Fixture, handle: &str) -> bool {
-    let (_, muted) = f.services.police_and_mute_status(handle, "town-square").unwrap();
+    let (_, muted) = f.services.mute().police_and_mute_status(handle, "town-square").unwrap();
     muted
 }
 
@@ -88,21 +88,21 @@ fn a_police_officer_instantly_mutes_and_unmutes() {
     pass(&f, "ada", ProposalKind::AppointPolice { user: uid(&f, "ada") });
 
     // Before the mute the target can post in #general.
-    f.services.post_message("target", "town-square", "general", "hi all").unwrap();
+    f.services.chat().post_message("target", "town-square", "general", "hi all").unwrap();
 
-    f.services.mute_member("ada", "town-square", "target").unwrap();
+    f.services.mute().mute_member("ada", "town-square", "target").unwrap();
     assert!(is_muted(&f, "target"));
     // Muted → cannot post in an ordinary channel …
     assert_eq!(
-        f.services.post_message("target", "town-square", "general", "still here?"),
+        f.services.chat().post_message("target", "town-square", "general", "still here?"),
         Err(MessageError::Muted("target".into())),
     );
     // … but *can* post in #appeals to plead their case.
-    f.services.post_message("target", "town-square", "appeals", "please unmute me").unwrap();
+    f.services.chat().post_message("target", "town-square", "appeals", "please unmute me").unwrap();
 
-    f.services.unmute_member("ada", "town-square", "target").unwrap();
+    f.services.mute().unmute_member("ada", "town-square", "target").unwrap();
     assert!(!is_muted(&f, "target"));
-    f.services.post_message("target", "town-square", "general", "thanks").unwrap();
+    f.services.chat().post_message("target", "town-square", "general", "thanks").unwrap();
 }
 
 #[test]
@@ -111,7 +111,7 @@ fn a_non_officer_cannot_mute() {
     setup(&f);
     // bob is a citizen but not police.
     assert_eq!(
-        f.services.mute_member("bob", "town-square", "target").unwrap_err(),
+        f.services.mute().mute_member("bob", "town-square", "target").unwrap_err(),
         MuteError::NotPolice,
     );
 }
@@ -123,7 +123,7 @@ fn police_cannot_be_muted() {
     pass(&f, "ada", ProposalKind::AppointPolice { user: uid(&f, "ada") });
     pass(&f, "ada", ProposalKind::AppointPolice { user: uid(&f, "bob") });
     assert_eq!(
-        f.services.mute_member("ada", "town-square", "bob").unwrap_err(),
+        f.services.mute().mute_member("ada", "town-square", "bob").unwrap_err(),
         MuteError::CannotMutePolice,
     );
 }
@@ -138,7 +138,7 @@ fn citizens_can_impose_and_lift_a_mute_by_vote() {
     pass(&f, "ada", ProposalKind::LiftMute { user: uid(&f, "target") });
     assert!(!is_muted(&f, "target"), "a LiftMute ballot restored them");
     // A vote-imposed mute has no officer, so lifting it bars no one.
-    f.services.mute_member("ada", "town-square", "target").ok(); // ada isn't police here → NotPolice, ignored
+    f.services.mute().mute_member("ada", "town-square", "target").ok(); // ada isn't police here → NotPolice, ignored
 }
 
 #[test]
@@ -148,20 +148,20 @@ fn a_vote_lift_bars_the_muting_officer_for_24h() {
     pass(&f, "ada", ProposalKind::AppointPolice { user: uid(&f, "ada") });
 
     // ada mutes target; the electorate overturns it by vote.
-    f.services.mute_member("ada", "town-square", "target").unwrap();
+    f.services.mute().mute_member("ada", "town-square", "target").unwrap();
     pass(&f, "ada", ProposalKind::LiftMute { user: uid(&f, "target") });
     assert!(!is_muted(&f, "target"));
 
     // ada is now barred from re-muting target within the 24h window.
     assert_eq!(
-        f.services.mute_member("ada", "town-square", "target").unwrap_err(),
+        f.services.mute().mute_member("ada", "town-square", "target").unwrap_err(),
         MuteError::RemuteBlocked,
     );
 
     // Past the cooldown, ada may mute again.
     let now = f.clock.now();
     f.clock.set(now.plus_days(2));
-    f.services.mute_member("ada", "town-square", "target").unwrap();
+    f.services.mute().mute_member("ada", "town-square", "target").unwrap();
     assert!(is_muted(&f, "target"));
 }
 
@@ -170,23 +170,23 @@ fn the_appeals_channel_is_hidden_from_ordinary_members() {
     let f = fixture(1_000 * DAY);
     setup(&f);
     // "target" is a plain, unmuted member: no vote, not police, not muted.
-    let visible = f.services.visible_channels("target", "town-square").unwrap();
+    let visible = f.services.chat().visible_channels("target", "town-square").unwrap();
     assert!(
         !visible.iter().any(|c| c.name == "appeals"),
         "an ordinary member does not see #appeals",
     );
     // Reading it directly is refused, as if it did not exist.
     assert!(matches!(
-        f.services.channel_messages_for("target", "town-square", "appeals"),
+        f.services.chat().channel_messages_for("target", "town-square", "appeals"),
         Err(MessageError::NoSuchChannel(_)),
     ));
 
     // A citizen (voter) does see it.
-    let seen_by_citizen = f.services.visible_channels("bob", "town-square").unwrap();
+    let seen_by_citizen = f.services.chat().visible_channels("bob", "town-square").unwrap();
     assert!(seen_by_citizen.iter().any(|c| c.name == "appeals"), "a voter sees #appeals");
 
     // And once muted, the target sees it too (to appeal).
     pass(&f, "ada", ProposalKind::Mute { user: uid(&f, "target") });
-    let seen_when_muted = f.services.visible_channels("target", "town-square").unwrap();
+    let seen_when_muted = f.services.chat().visible_channels("target", "town-square").unwrap();
     assert!(seen_when_muted.iter().any(|c| c.name == "appeals"), "a muted member sees #appeals");
 }

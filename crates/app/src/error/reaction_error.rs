@@ -12,4 +12,8 @@ pub enum ReactionError {
     NotAMember(String),
     #[error("emoji must not be empty")]
     EmptyEmoji,
+    /// The persistence layer itself failed (store unavailable, timeout, or
+    /// write conflict) — distinct from any domain-rule rejection.
+    #[error(transparent)]
+    Store(#[from] crate::StoreError),
 }

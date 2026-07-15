@@ -101,10 +101,42 @@ impl BallotKind {
         ]
     }
 
-    /// Parse the variant name (as rendered by `{:?}`) back into a kind, ignoring
-    /// any name the platform no longer knows.
+    /// The kind's canonical wire name — the single string form crossing the
+    /// web↔domain boundary. Deliberately explicit (not `{:?}`): the `Debug`
+    /// rendering is not a stability contract, and this is what both the serialized
+    /// surface and [`from_name`](Self::name) agree on. The strings match the
+    /// derived serde representation (pinned by a test), so a stored surface and a
+    /// client's surface parse identically.
+    pub const fn name(self) -> &'static str {
+        use BallotKind::*;
+        match self {
+            RemoveContent => "RemoveContent",
+            Ban => "Ban",
+            Timeout => "Timeout",
+            Mute => "Mute",
+            LiftMute => "LiftMute",
+            Policing => "Policing",
+            Recall => "Recall",
+            CreateChannel => "CreateChannel",
+            DeleteChannel => "DeleteChannel",
+            AddRule => "AddRule",
+            RemoveRule => "RemoveRule",
+            AmendCriteria => "AmendCriteria",
+            SetJurySizing => "SetJurySizing",
+            SetVoteWeighting => "SetVoteWeighting",
+            SetWeightingScope => "SetWeightingScope",
+            GrantVoteWeight => "GrantVoteWeight",
+            SetGovernanceSurface => "SetGovernanceSurface",
+            ManageRoles => "ManageRoles",
+            SetRehomingPolicy => "SetRehomingPolicy",
+            SetInvitePolicy => "SetInvitePolicy",
+        }
+    }
+
+    /// Parse a canonical [`name`](Self::name) back into a kind, ignoring any name
+    /// the platform no longer knows.
     pub fn from_name(name: &str) -> Option<Self> {
-        Self::all().into_iter().find(|k| format!("{k:?}") == name)
+        Self::all().into_iter().find(|k| k.name() == name)
     }
 
     /// The platform-default surface a new server starts from: everyday moderation
@@ -141,13 +173,26 @@ impl BallotKind {
 mod tests {
     use super::*;
 
-    /// The web layer serialises the surface with `{:?}` and parses it back with
-    /// `from_name`; every kind must survive that round-trip.
+    /// The web layer serialises the surface with [`BallotKind::name`] and parses it
+    /// back with `from_name`; every kind must survive that round-trip.
     #[test]
     fn every_kind_round_trips_through_its_name() {
         for k in BallotKind::all() {
-            assert_eq!(BallotKind::from_name(&format!("{k:?}")), Some(k));
+            assert_eq!(BallotKind::from_name(k.name()), Some(k));
         }
         assert_eq!(BallotKind::from_name("NotAKind"), None);
+    }
+
+    /// The canonical name must equal the derived serde representation. The stored
+    /// surface is (de)serialized through serde ([`Server::deserialize_surface`])
+    /// while the web surface goes through `name`/`from_name`; if the two forms ever
+    /// diverged (a `#[serde(rename)]`, a variant rename), a stored server and a
+    /// client would disagree about the same kind. This pins them together.
+    #[test]
+    fn the_name_matches_the_serde_representation() {
+        for k in BallotKind::all() {
+            let serde_repr = serde_json::to_string(&k).unwrap();
+            assert_eq!(serde_repr, format!("\"{}\"", k.name()), "serde and name must agree for {k:?}");
+        }
     }
 }

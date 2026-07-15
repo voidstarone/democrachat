@@ -27,13 +27,13 @@ fn fixture(now_secs: i64) -> Fixture {
 fn seat_citizen(f: &Fixture, handle: &str, slug: &str, contribution: i64) {
     f.services.register_account(handle).unwrap();
     f.services.join_server(handle, slug).unwrap();
-    let user = f.store.find_by_handle(handle).unwrap();
-    let server = f.store.find_by_slug(slug).unwrap();
-    let mut m = f.store.get(user.id, server.id).unwrap();
+    let user = f.store.find_by_handle(handle).unwrap().unwrap();
+    let server = f.store.find_by_slug(slug).unwrap().unwrap();
+    let mut m = f.store.get(user.id, server.id).unwrap().unwrap();
     m.tier = Tier::Citizen;
     m.contribution = contribution;
     m.enfranchised_at = Some(f.clock.now());
-    f.store.upsert(m);
+    f.store.upsert(m).unwrap();
 }
 
 fn setup(f: &Fixture) {
@@ -50,23 +50,23 @@ fn a_passed_rule_ballot_applies_after_its_window() {
     setup(&f);
 
     let p = f
-        .services
+        .services.governance()
         .open_proposal("ada", "town-square", ProposalKind::AddRule { text: "Be excellent".into() })
         .unwrap();
     // Unanimous aye from all three citizens.
-    f.services.cast_vote("ada", p.id.0, true).unwrap();
-    f.services.cast_vote("bob", p.id.0, true).unwrap();
-    f.services.cast_vote("cid", p.id.0, true).unwrap();
+    f.services.governance().cast_vote("ada", p.id.0, true).unwrap();
+    f.services.governance().cast_vote("bob", p.id.0, true).unwrap();
+    f.services.governance().cast_vote("cid", p.id.0, true).unwrap();
 
     // Before the window closes, nothing is applied.
-    f.services.resolve_due("town-square");
-    assert!(f.services.list_rules("town-square").is_empty());
+    f.services.governance().resolve_due("town-square");
+    assert!(f.services.governance().list_rules("town-square").is_empty());
 
     // Advance past the 3-day voting window and resolve.
     f.clock.set(Timestamp(1_000 * DAY + 4 * DAY));
-    f.services.resolve_due("town-square");
+    f.services.governance().resolve_due("town-square");
 
-    let rules = f.services.list_rules("town-square");
+    let rules = f.services.governance().list_rules("town-square");
     assert_eq!(rules.len(), 1);
     assert_eq!(rules[0].text, "Be excellent");
 }
@@ -76,17 +76,17 @@ fn a_failed_ballot_applies_nothing() {
     let f = fixture(1_000 * DAY);
     setup(&f);
     let p = f
-        .services
+        .services.governance()
         .open_proposal("ada", "town-square", ProposalKind::AddRule { text: "No fun".into() })
         .unwrap();
     // Only the proposer votes aye; the others vote nay → below 60%.
-    f.services.cast_vote("ada", p.id.0, true).unwrap();
-    f.services.cast_vote("bob", p.id.0, false).unwrap();
-    f.services.cast_vote("cid", p.id.0, false).unwrap();
+    f.services.governance().cast_vote("ada", p.id.0, true).unwrap();
+    f.services.governance().cast_vote("bob", p.id.0, false).unwrap();
+    f.services.governance().cast_vote("cid", p.id.0, false).unwrap();
 
     f.clock.set(Timestamp(1_000 * DAY + 4 * DAY));
-    f.services.resolve_due("town-square");
-    assert!(f.services.list_rules("town-square").is_empty());
+    f.services.governance().resolve_due("town-square");
+    assert!(f.services.governance().list_rules("town-square").is_empty());
 
     let ps = f.store_proposals();
     assert_eq!(ps[0].status, ProposalStatus::Failed);
@@ -99,22 +99,22 @@ fn a_ban_ballot_sanctions_and_silences_the_target() {
     // A member to be banned.
     f.services.register_account("troll").unwrap();
     f.services.join_server("troll", "town-square").unwrap();
-    assert!(f.services.post_message("troll", "town-square", "general", "spam").is_ok());
+    assert!(f.services.chat().post_message("troll", "town-square", "general", "spam").is_ok());
 
-    let target = f.store.find_by_handle("troll").unwrap();
+    let target = f.store.find_by_handle("troll").unwrap().unwrap();
     let p = f
-        .services
+        .services.governance()
         .open_proposal("ada", "town-square", ProposalKind::Ban { user: target.id })
         .unwrap();
-    f.services.cast_vote("ada", p.id.0, true).unwrap();
-    f.services.cast_vote("bob", p.id.0, true).unwrap();
-    f.services.cast_vote("cid", p.id.0, true).unwrap();
+    f.services.governance().cast_vote("ada", p.id.0, true).unwrap();
+    f.services.governance().cast_vote("bob", p.id.0, true).unwrap();
+    f.services.governance().cast_vote("cid", p.id.0, true).unwrap();
 
     f.clock.set(Timestamp(1_000 * DAY + 4 * DAY));
-    f.services.resolve_due("town-square");
+    f.services.governance().resolve_due("town-square");
 
     // The banned member can no longer post.
-    assert!(f.services.post_message("troll", "town-square", "general", "again").is_err());
+    assert!(f.services.chat().post_message("troll", "town-square", "general", "again").is_err());
 }
 
 #[test]
@@ -122,10 +122,10 @@ fn a_server_cannot_open_a_ballot_it_does_not_govern() {
     let f = fixture(1_000 * DAY);
     setup(&f);
     // Vote-weighting governance is opt-in and not enabled by default.
-    let server = f.store.find_by_slug("town-square").unwrap();
+    let server = f.store.find_by_slug("town-square").unwrap().unwrap();
     assert!(!server.governs(BallotKind::SetVoteWeighting));
     let err = f
-        .services
+        .services.governance()
         .open_proposal(
             "ada",
             "town-square",
@@ -143,7 +143,7 @@ fn only_a_citizen_may_open_or_vote() {
     f.services.join_server("newbie", "town-square").unwrap();
     // A fresh member is not a citizen.
     let err = f
-        .services
+        .services.governance()
         .open_proposal("newbie", "town-square", ProposalKind::AddRule { text: "x".into() })
         .unwrap_err();
     assert_eq!(err, app::ProposeError::NotACitizen);
@@ -164,10 +164,10 @@ fn citizens_can_vote_to_disable_server_rehoming() {
     }
 
     // A new server starts with rehoming enabled.
-    assert!(!f.store.find_by_slug("town-square").unwrap().is_rehoming_disabled);
+    assert!(!f.store.find_by_slug("town-square").unwrap().unwrap().is_rehoming_disabled);
 
     let p = f
-        .services
+        .services.governance()
         .open_proposal(
             "ada",
             "town-square",
@@ -175,23 +175,23 @@ fn citizens_can_vote_to_disable_server_rehoming() {
         )
         .unwrap();
     for h in ["ada", "bob", "cid", "dan", "eve", "fay", "gus", "hal", "ike", "jan"] {
-        f.services.cast_vote(h, p.id.0, true).unwrap();
+        f.services.governance().cast_vote(h, p.id.0, true).unwrap();
     }
 
     // Close the voting window: it Passes, but a Constitutional change is timelocked
     // through the recall window — so the flag is not flipped yet.
     f.clock.set(Timestamp(1_000 * DAY + 4 * DAY));
-    f.services.resolve_due("town-square");
+    f.services.governance().resolve_due("town-square");
     assert!(
-        !f.store.find_by_slug("town-square").unwrap().is_rehoming_disabled,
+        !f.store.find_by_slug("town-square").unwrap().unwrap().is_rehoming_disabled,
         "not yet effective during the recall timelock"
     );
 
     // Advance past the 7-day recall window and resolve → the effect applies.
     f.clock.set(Timestamp(1_000 * DAY + 4 * DAY + 8 * DAY));
-    f.services.resolve_due("town-square");
+    f.services.governance().resolve_due("town-square");
     assert!(
-        f.store.find_by_slug("town-square").unwrap().is_rehoming_disabled,
+        f.store.find_by_slug("town-square").unwrap().unwrap().is_rehoming_disabled,
         "citizens' vote disabled automatic rehoming"
     );
 }
@@ -203,12 +203,12 @@ fn citizens_can_change_jury_sizing_for_trials() {
     let f = fixture(1_000 * DAY);
     setup(&f);
     assert!(
-        matches!(f.store.find_by_slug("town-square").unwrap().jury_sizing, domain::JurySizing::Sqrt { .. }),
+        matches!(f.store.find_by_slug("town-square").unwrap().unwrap().jury_sizing, domain::JurySizing::Sqrt { .. }),
         "a new server defaults to square-root jury sizing"
     );
 
     let p = f
-        .services
+        .services.governance()
         .open_proposal(
             "ada",
             "town-square",
@@ -216,13 +216,13 @@ fn citizens_can_change_jury_sizing_for_trials() {
         )
         .unwrap();
     for h in ["ada", "bob", "cid"] {
-        f.services.cast_vote(h, p.id.0, true).unwrap();
+        f.services.governance().cast_vote(h, p.id.0, true).unwrap();
     }
     f.clock.set(Timestamp(1_000 * DAY + 4 * DAY));
-    f.services.resolve_due("town-square");
+    f.services.governance().resolve_due("town-square");
 
     assert_eq!(
-        f.store.find_by_slug("town-square").unwrap().jury_sizing,
+        f.store.find_by_slug("town-square").unwrap().unwrap().jury_sizing,
         domain::JurySizing::Fixed { post: 12, comment: 6 },
         "citizens' vote resized the trial jury"
     );
@@ -234,24 +234,24 @@ fn citizens_can_change_jury_sizing_for_trials() {
 fn citizens_can_change_what_the_server_votes_on() {
     let f = fixture(1_000 * DAY);
     setup(&f);
-    let before = f.store.find_by_slug("town-square").unwrap();
+    let before = f.store.find_by_slug("town-square").unwrap().unwrap();
     assert!(!before.governs(BallotKind::SetVoteWeighting), "vote-weighting governance is opt-in");
 
     let mut surface = before.enabled_ballots.clone();
     surface.insert(BallotKind::SetVoteWeighting);
     surface.insert(BallotKind::SetWeightingScope);
     let p = f
-        .services
+        .services.governance()
         .open_proposal("ada", "town-square", ProposalKind::SetGovernanceSurface { enabled: surface })
         .unwrap();
     for h in ["ada", "bob", "cid"] {
-        f.services.cast_vote(h, p.id.0, true).unwrap();
+        f.services.governance().cast_vote(h, p.id.0, true).unwrap();
     }
     f.clock.set(Timestamp(1_000 * DAY + 4 * DAY));
-    f.services.resolve_due("town-square");
+    f.services.governance().resolve_due("town-square");
 
     assert!(
-        f.store.find_by_slug("town-square").unwrap().governs(BallotKind::SetVoteWeighting),
+        f.store.find_by_slug("town-square").unwrap().unwrap().governs(BallotKind::SetVoteWeighting),
         "the surface now includes vote-weighting governance"
     );
 }
@@ -271,26 +271,26 @@ fn citizens_can_amend_who_may_vote() {
         domain::FranchiseCriteria { min_account_age_days: 60, min_membership_days: 30, min_contribution: 10 };
 
     let p = f
-        .services
+        .services.governance()
         .open_proposal("ada", "town-square", ProposalKind::AmendCriteria { proposed: proposed.clone() })
         .unwrap();
     for h in ["ada", "bob", "cid", "dan", "eve", "fay", "gus", "hal", "ike", "jan"] {
-        f.services.cast_vote(h, p.id.0, true).unwrap();
+        f.services.governance().cast_vote(h, p.id.0, true).unwrap();
     }
 
     // Passes at window close, but a Constitutional change is timelocked.
     f.clock.set(Timestamp(1_000 * DAY + 4 * DAY));
-    f.services.resolve_due("town-square");
+    f.services.governance().resolve_due("town-square");
     assert_ne!(
-        f.store.find_by_slug("town-square").unwrap().criteria.min_account_age_days, 60,
+        f.store.find_by_slug("town-square").unwrap().unwrap().criteria.min_account_age_days, 60,
         "not yet effective during the recall timelock"
     );
 
     // Past the recall window → the new criteria take effect.
     f.clock.set(Timestamp(1_000 * DAY + 4 * DAY + 8 * DAY));
-    f.services.resolve_due("town-square");
+    f.services.governance().resolve_due("town-square");
     assert_eq!(
-        f.store.find_by_slug("town-square").unwrap().criteria, proposed,
+        f.store.find_by_slug("town-square").unwrap().unwrap().criteria, proposed,
         "citizens' vote amended who may earn the franchise"
     );
 }
@@ -303,24 +303,24 @@ fn an_amended_bundle_enacts_all_its_changes_together() {
     // A proposal to add one rule, then amended to also create a channel: two
     // changes riding one ballot.
     let p = f
-        .services
+        .services.governance()
         .open_proposal("ada", "town-square", ProposalKind::AddRule { text: "Be excellent".into() })
         .unwrap();
-    f.services
+    f.services.governance()
         .amend_proposal("bob", p.id.0, ProposalKind::CreateChannel { name: "lounge".into(), topic: "".into() })
         .unwrap();
 
     // One vote decides the whole bundle.
-    f.services.cast_vote("ada", p.id.0, true).unwrap();
-    f.services.cast_vote("bob", p.id.0, true).unwrap();
-    f.services.cast_vote("cid", p.id.0, true).unwrap();
+    f.services.governance().cast_vote("ada", p.id.0, true).unwrap();
+    f.services.governance().cast_vote("bob", p.id.0, true).unwrap();
+    f.services.governance().cast_vote("cid", p.id.0, true).unwrap();
 
     f.clock.set(Timestamp(1_000 * DAY + 4 * DAY));
-    f.services.resolve_due("town-square");
+    f.services.governance().resolve_due("town-square");
 
     // Both the primary change and the amendment took effect.
-    assert_eq!(f.services.list_rules("town-square").len(), 1, "the rule was added");
-    let channels = f.services.list_channels("town-square").unwrap();
+    assert_eq!(f.services.governance().list_rules("town-square").len(), 1, "the rule was added");
+    let channels = f.services.chat().list_channels("town-square").unwrap();
     assert!(channels.iter().any(|c| c.name == "lounge"), "the amendment's channel was created");
 }
 
@@ -329,22 +329,22 @@ fn a_defeated_bundle_enacts_none_of_its_changes() {
     let f = fixture(1_000 * DAY);
     setup(&f);
     let p = f
-        .services
+        .services.governance()
         .open_proposal("ada", "town-square", ProposalKind::AddRule { text: "No fun".into() })
         .unwrap();
-    f.services
+    f.services.governance()
         .amend_proposal("ada", p.id.0, ProposalKind::CreateChannel { name: "lounge".into(), topic: "".into() })
         .unwrap();
     // The bundle fails its threshold.
-    f.services.cast_vote("ada", p.id.0, true).unwrap();
-    f.services.cast_vote("bob", p.id.0, false).unwrap();
-    f.services.cast_vote("cid", p.id.0, false).unwrap();
+    f.services.governance().cast_vote("ada", p.id.0, true).unwrap();
+    f.services.governance().cast_vote("bob", p.id.0, false).unwrap();
+    f.services.governance().cast_vote("cid", p.id.0, false).unwrap();
 
     f.clock.set(Timestamp(1_000 * DAY + 4 * DAY));
-    f.services.resolve_due("town-square");
+    f.services.governance().resolve_due("town-square");
 
-    assert!(f.services.list_rules("town-square").is_empty(), "rule not added");
-    let channels = f.services.list_channels("town-square").unwrap();
+    assert!(f.services.governance().list_rules("town-square").is_empty(), "rule not added");
+    let channels = f.services.chat().list_channels("town-square").unwrap();
     assert!(!channels.iter().any(|c| c.name == "lounge"), "amendment's channel not created");
     assert_eq!(f.store_proposals()[0].status, ProposalStatus::Failed);
 }
@@ -354,15 +354,15 @@ fn a_closed_proposal_takes_no_amendments() {
     let f = fixture(1_000 * DAY);
     setup(&f);
     let p = f
-        .services
+        .services.governance()
         .open_proposal("ada", "town-square", ProposalKind::AddRule { text: "Be excellent".into() })
         .unwrap();
     // Close the window.
     f.clock.set(Timestamp(1_000 * DAY + 4 * DAY));
-    f.services.resolve_due("town-square");
+    f.services.governance().resolve_due("town-square");
 
     let err = f
-        .services
+        .services.governance()
         .amend_proposal("bob", p.id.0, ProposalKind::AddRule { text: "too late".into() })
         .unwrap_err();
     assert_eq!(err, app::ProposeError::Closed);
@@ -377,16 +377,16 @@ fn only_a_citizen_may_join_the_debate() {
     f.services.join_server("newbie", "town-square").unwrap();
 
     let p = f
-        .services
+        .services.governance()
         .open_proposal("ada", "town-square", ProposalKind::AddRule { text: "Be excellent".into() })
         .unwrap();
 
     assert_eq!(
-        f.services.post_discussion("newbie", p.id.0, "aye!").unwrap_err(),
+        f.services.governance().post_discussion("newbie", p.id.0, "aye!").unwrap_err(),
         app::VoteError::NotACitizen
     );
-    f.services.post_discussion("ada", p.id.0, "I think aye.").unwrap();
-    let thread = f.services.list_discussion(p.id.0);
+    f.services.governance().post_discussion("ada", p.id.0, "I think aye.").unwrap();
+    let thread = f.services.governance().list_discussion(p.id.0);
     assert_eq!(thread.len(), 1);
     assert_eq!(thread[0].body, "I think aye.");
 }
@@ -394,7 +394,7 @@ fn only_a_citizen_may_join_the_debate() {
 impl Fixture {
     fn store_proposals(&self) -> Vec<domain::Proposal> {
         use app::ProposalStore;
-        let server = self.store.find_by_slug("town-square").unwrap();
-        ProposalStore::list_for_server(&*self.store, server.id)
+        let server = self.store.find_by_slug("town-square").unwrap().unwrap();
+        ProposalStore::list_for_server(&*self.store, server.id).unwrap()
     }
 }

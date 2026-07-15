@@ -66,32 +66,14 @@ impl Message {
         }
     }
 
-    /// Build a message whose `body` is already ciphertext, sealed under the given
-    /// channel-key `epoch`. The server never sees the plaintext or the key.
-    #[allow(clippy::too_many_arguments)]
-    pub fn sealed(
-        id: MessageId,
-        channel_id: ChannelId,
-        server_id: ServerId,
-        author: UserId,
-        ciphertext: impl Into<String>,
-        key_epoch: u32,
-        parent: Option<MessageId>,
-        created_at: Timestamp,
-    ) -> Self {
-        Self {
-            id,
-            channel_id,
-            server_id,
-            author,
-            body: ciphertext.into(),
-            key_epoch: Some(key_epoch),
-            parent,
-            created_at,
-            edited_at: None,
-            is_deleted: false,
-            attachments: Vec::new(),
-        }
+    /// Mark this message's `body` as ciphertext sealed under channel-key `epoch`,
+    /// so a reader knows which grant opens it. The body itself is set by [`new`](Self::new)
+    /// (the server never sees the plaintext or the key); this only records the epoch,
+    /// e.g. `Message::new(…, ciphertext, …).seal_under(epoch)`.
+    #[must_use]
+    pub fn seal_under(mut self, epoch: u32) -> Self {
+        self.key_epoch = Some(epoch);
+        self
     }
 
     /// Replace the body and stamp the edit time.

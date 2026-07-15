@@ -12,4 +12,8 @@ pub enum KeyError {
     /// The user has not published a directory entry yet.
     #[error("no keys published for '{0}'")]
     NotPublished(String),
+    /// The persistence layer itself failed (store unavailable, timeout, or
+    /// write conflict) — distinct from any domain-rule rejection.
+    #[error(transparent)]
+    Store(#[from] crate::StoreError),
 }

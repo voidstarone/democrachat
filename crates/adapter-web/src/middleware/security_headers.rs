@@ -34,6 +34,28 @@ form-action 'self'";
 
 const PERMISSIONS_POLICY: &str = "camera=(), microphone=(), geolocation=(), payment=()";
 
+pub async fn security_headers(req: Request, next: Next) -> Response {
+    let mut res = next.run(req).await;
+    let h = res.headers_mut();
+    // Don't clobber a stricter policy a handler set for itself (e.g. the media
+    // route sandboxes served blobs); only supply the app-wide default otherwise.
+    if !h.contains_key(header::CONTENT_SECURITY_POLICY) {
+        h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP));
+    }
+    h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("same-origin"));
+    h.insert(
+        header::STRICT_TRANSPORT_SECURITY,
+        HeaderValue::from_static("max-age=63072000; includeSubDomains"),
+    );
+    h.insert(
+        HeaderName::from_static("permissions-policy"),
+        HeaderValue::from_static(PERMISSIONS_POLICY),
+    );
+    res
+}
+
 #[cfg(test)]
 mod tests {
     //! Regression guards on the policy strings. These pin the security-relevant
@@ -80,26 +102,4 @@ mod tests {
             assert!(PERMISSIONS_POLICY.contains(feature), "must deny `{feature}`");
         }
     }
-}
-
-pub async fn security_headers(req: Request, next: Next) -> Response {
-    let mut res = next.run(req).await;
-    let h = res.headers_mut();
-    // Don't clobber a stricter policy a handler set for itself (e.g. the media
-    // route sandboxes served blobs); only supply the app-wide default otherwise.
-    if !h.contains_key(header::CONTENT_SECURITY_POLICY) {
-        h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP));
-    }
-    h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
-    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("same-origin"));
-    h.insert(
-        header::STRICT_TRANSPORT_SECURITY,
-        HeaderValue::from_static("max-age=63072000; includeSubDomains"),
-    );
-    h.insert(
-        HeaderName::from_static("permissions-policy"),
-        HeaderValue::from_static(PERMISSIONS_POLICY),
-    );
-    res
 }

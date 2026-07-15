@@ -29,7 +29,7 @@ pub use store_resolver::StoreResolver;
 
 pub use command::command::Command;
 pub use command::command_executor::CommandExecutor;
-pub use command::execute::execute;
+pub use command::execute::OwnerPipeline;
 pub use command::forward_error::ForwardError;
 pub use command::in_memory_nonce_log::InMemoryNonceLog;
 pub use command::nonce_log::NonceLog;

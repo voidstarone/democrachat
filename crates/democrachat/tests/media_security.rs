@@ -44,7 +44,7 @@ fn founded() -> Fixture {
 #[test]
 fn an_empty_upload_is_refused() {
     let f = fixture();
-    assert!(matches!(f.services.store_media("image/png", &[]), Err(MediaError::Empty)));
+    assert!(matches!(f.services.chat().store_media("image/png", &[]), Err(MediaError::Empty)));
 }
 
 /// An upload over the size cap is refused before anything is stored.
@@ -52,7 +52,7 @@ fn an_empty_upload_is_refused() {
 fn an_oversized_upload_is_refused() {
     let f = fixture();
     let huge = vec![0u8; MAX_MEDIA_BYTES + 1];
-    assert!(matches!(f.services.store_media("image/jpeg", &huge), Err(MediaError::TooLarge)));
+    assert!(matches!(f.services.chat().store_media("image/jpeg", &huge), Err(MediaError::TooLarge)));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -66,7 +66,7 @@ fn an_svg_upload_is_refused() {
     let f = fixture();
     let svg = br#"<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>"#;
     assert!(matches!(
-        f.services.store_media("image/svg+xml", svg),
+        f.services.chat().store_media("image/svg+xml", svg),
         Err(MediaError::UnsupportedType(_)),
     ));
 }
@@ -87,7 +87,7 @@ fn markup_is_rejected_even_when_declared_an_image() {
     ];
     for bytes in cases {
         assert!(
-            matches!(f.services.store_media("image/png", bytes), Err(MediaError::UnsupportedType(_))),
+            matches!(f.services.chat().store_media("image/png", bytes), Err(MediaError::UnsupportedType(_))),
             "markup blob {:?} must be refused",
             String::from_utf8_lossy(&bytes[..bytes.len().min(16)]),
         );
@@ -104,7 +104,7 @@ fn non_media_mime_types_are_refused() {
     let f = fixture();
     for ct in ["application/zip", "text/html", "application/octet-stream", "text/plain"] {
         assert!(
-            matches!(f.services.store_media(ct, b"\x00\x01\x02not-markup"), Err(MediaError::UnsupportedType(_))),
+            matches!(f.services.chat().store_media(ct, b"\x00\x01\x02not-markup"), Err(MediaError::UnsupportedType(_))),
             "`{ct}` is not a media type and must be refused",
         );
     }
@@ -118,13 +118,13 @@ fn a_content_type_parameter_is_stripped() {
     // Passthrough transcoder: the (non-markup) bytes are stored verbatim under the
     // base type, proving the `; charset=…` suffix was ignored, not rejected.
     let (key, stored_ct, kind) = f
-        .services
+        .services.chat()
         .store_media("image/png; charset=binary", b"\x89PNG\r\n\x1a\nnot-a-real-decode")
         .unwrap();
     assert_eq!(stored_ct, "image/png", "the parameter is dropped from the stored type");
     assert_eq!(kind, MediaKind::Image);
     // And it round-trips out of the blob store.
-    let (blob_ct, _bytes) = f.services.media_blob(&key).expect("the blob is retrievable");
+    let (blob_ct, _bytes) = f.services.chat().media_blob(&key).expect("the blob is retrievable");
     assert_eq!(blob_ct, "image/png");
 }
 
@@ -132,9 +132,9 @@ fn a_content_type_parameter_is_stripped() {
 #[test]
 fn video_and_audio_are_accepted() {
     let f = fixture();
-    let (_k, ct, kind) = f.services.store_media("video/mp4", b"\x00\x00\x00\x18ftypmp42").unwrap();
+    let (_k, ct, kind) = f.services.chat().store_media("video/mp4", b"\x00\x00\x00\x18ftypmp42").unwrap();
     assert_eq!((ct.as_str(), kind), ("video/mp4", MediaKind::Video));
-    let (_k, ct, kind) = f.services.store_media("audio/mpeg", b"ID3\x03\x00\x00\x00").unwrap();
+    let (_k, ct, kind) = f.services.chat().store_media("audio/mpeg", b"ID3\x03\x00\x00\x00").unwrap();
     assert_eq!((ct.as_str(), kind), ("audio/mpeg", MediaKind::Audio));
 }
 
@@ -151,13 +151,13 @@ fn too_many_attachments_are_refused() {
     let over: Vec<Attachment> = (0..=MAX_ATTACHMENTS).map(att).collect();
     assert_eq!(over.len(), MAX_ATTACHMENTS + 1);
     assert!(matches!(
-        f.services.post_message_with_attachments("boss", "town", "general", "", over),
+        f.services.chat().post_message_with_attachments("boss", "town", "general", "", over),
         Err(MessageError::TooManyAttachments(_)),
     ));
     // Exactly the cap is allowed.
     let ok: Vec<Attachment> = (0..MAX_ATTACHMENTS).map(att).collect();
     assert!(f
-        .services
+        .services.chat()
         .post_message_with_attachments("boss", "town", "general", "look", ok)
         .is_ok());
 }

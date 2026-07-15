@@ -22,4 +22,13 @@ impl ChannelVisibility {
     pub fn is_appeals(&self) -> bool {
         matches!(self, ChannelVisibility::Appeals)
     }
+
+    /// The visibility's canonical lowercase wire tag — the single home for the
+    /// string form, so a new class is named here rather than at each call site.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ChannelVisibility::Open => "open",
+            ChannelVisibility::Appeals => "appeals",
+        }
+    }
 }

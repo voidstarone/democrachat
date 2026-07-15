@@ -32,31 +32,31 @@ impl CommandExecutor for ServiceCommandExecutor {
             Command::CastVote { proposal, voter, aye } => {
                 // The owner re-checks eligibility here — it never trusts the
                 // forwarder's say-so about who may vote.
-                self.services
+                self.services.governance()
                     .cast_vote_by_id(*voter, *proposal, *aye)
                     .map_err(|e| ForwardError::Rejected(e.to_string()))?;
             }
             Command::SendDm { from, to, sealed_for_recipient, sealed_for_sender } => {
                 // The owner (the sender's home) re-checks the can_dm gate itself.
-                self.services
+                self.services.social()
                     .send_sealed_dm_by_id(*from, *to, sealed_for_recipient, sealed_for_sender)
                     .map_err(|e| ForwardError::Rejected(e.to_string()))?;
             }
             Command::Block { blocker, blocked } => {
                 // Each of the two homes runs this; the block is idempotent, so the
                 // two commits (and any re-drive of a partial one) converge.
-                self.services
+                self.services.social()
                     .block_user_by_id(*blocker, *blocked)
                     .map_err(|e| ForwardError::Rejected(e.to_string()))?;
             }
             Command::RequestFriend { requester, addressee } => {
                 // Runs on both users' homes; idempotent re-affirm converges.
-                self.services
+                self.services.social()
                     .request_friend_by_id(*requester, *addressee)
                     .map_err(|e| ForwardError::Rejected(e.to_string()))?;
             }
             Command::AcceptFriend { accepter, requester } => {
-                self.services
+                self.services.social()
                     .accept_friend_by_id(*accepter, *requester)
                     .map_err(|e| ForwardError::Rejected(e.to_string()))?;
             }
