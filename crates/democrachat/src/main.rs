@@ -127,6 +127,15 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let path = data_path();
 
+    // Production persistence: when `DATABASE_URL` is set, serve against Postgres
+    // (the source of truth) instead of the in-memory file store. Postgres backs the
+    // web app only — the file store + JSON snapshot stay the dev/CLI backend, and
+    // federation (which replicates the in-memory outbox) is not yet wired onto PG.
+    if let Ok(database_url) = std::env::var("DATABASE_URL") {
+        serve_postgres(&args, database_url);
+        return;
+    }
+
     let node = node_id_from_env();
     // The at-rest key (if any) is needed to both load and save the dataset.
     let data_key = data_key_from_env();
@@ -263,6 +272,102 @@ fn run_serve(
             save: save_hook,
         };
         adapter_web::serve(services, config, routers).await
+    });
+    if let Err(e) = served {
+        eprintln!("server error: {e}");
+        exit(1);
+    }
+}
+
+/// Serve the web app against Postgres (the production backend, selected by
+/// `DATABASE_URL`). Postgres is the source of truth, so there is no JSON snapshot
+/// and the save hook is a no-op; federation stays off until its outbox is ported to
+/// Postgres (Phase 3). Only the `serve` subcommand is supported — the CLI runs
+/// against the local file store.
+fn serve_postgres(args: &[String], database_url: String) {
+    if args.get(1).map(String::as_str) != Some("serve") {
+        eprintln!(
+            "error: DATABASE_URL is set, but the Postgres backend serves the web app only. \
+             Run `democrachat serve` (the CLI subcommands use the local file store)."
+        );
+        exit(2);
+    }
+
+    let is_dev = args.iter().any(|a| a == "--dev");
+    let addr: SocketAddr = arg_value(args, "--addr")
+        .unwrap_or_else(|| "127.0.0.1:3737".to_string())
+        .parse()
+        .unwrap_or_else(|e| {
+            eprintln!("error: bad --addr: {e}");
+            exit(2);
+        });
+
+    let is_loopback = addr.ip().is_loopback();
+    let signer = Arc::new(session_signer_from_env(is_loopback));
+    let secure_cookies = std::env::var_os("DEMOCRACHAT_SECURE_COOKIES").is_some();
+    if !is_loopback && !secure_cookies {
+        eprintln!(
+            "warning: serving on a non-loopback address without DEMOCRACHAT_SECURE_COOKIES — \
+             session cookies will lack the Secure flag. Set it when behind TLS."
+        );
+    }
+
+    let media = match adapter_media_fs::FsMediaStore::new(media_dir()) {
+        Ok(media) => Arc::new(media),
+        Err(e) => {
+            eprintln!("error: cannot open media directory {}: {e}", media_dir().display());
+            exit(2);
+        }
+    };
+    let image = Arc::new(adapter_image::ReencodingTranscoder::new());
+    // Pool ceiling: a burst queues rather than exhausting Postgres. Override with
+    // DEMOCRACHAT_PG_MAX_CONNECTIONS.
+    let max_connections: u32 = std::env::var("DEMOCRACHAT_PG_MAX_CONNECTIONS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(16);
+
+    let clock = Arc::new(FixedClock::new(SystemClock.now()));
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let served = rt.block_on(async move {
+        let store = match adapter_store_postgres::PgStore::connect(&database_url, max_connections).await {
+            Ok(store) => store,
+            Err(e) => {
+                eprintln!("error: cannot reach Postgres: {e}");
+                exit(2);
+            }
+        };
+        let stores = store.as_stores(media, image);
+        let services = Arc::new(Services::new(clock.clone(), stores));
+        services.backfill_default_channels().await;
+
+        if is_dev {
+            seed_if_empty(&services).await;
+            for who in ["ada", "grace"] {
+                let _ = services.set_password(who, DEV_SEED_PASSWORD).await;
+            }
+        }
+
+        let advance: Arc<dyn Fn(i64) + Send + Sync> = {
+            let c = clock.clone();
+            Arc::new(move |days| {
+                let now = c.now();
+                c.set(now.plus_days(days));
+            })
+        };
+        let config = adapter_web::WebConfig {
+            addr,
+            is_dev,
+            secure_cookies,
+            signer,
+            advance_days: advance,
+            // Postgres is the source of truth — every write is already durable, so
+            // there is nothing to snapshot.
+            save: Arc::new(|| {}),
+        };
+        // Federation replicates the in-memory outbox; it is not yet wired onto
+        // Postgres, so the single-box router bundle (no forwarding) is used.
+        adapter_web::serve(services, config, adapter_web::Routers::default()).await
     });
     if let Err(e) = served {
         eprintln!("server error: {e}");
