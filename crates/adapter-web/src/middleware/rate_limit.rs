@@ -25,7 +25,7 @@ const WINDOW: Duration = Duration::from_secs(60);
 /// churn.
 const PRUNE_THRESHOLD: usize = 10_000;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum Bucket {
     Auth,
     Write,
@@ -88,6 +88,84 @@ fn bucket_for(path: &str) -> Bucket {
         Bucket::Auth
     } else {
         Bucket::Write
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The limiter's core: per-IP, per-bucket fixed windows. Driven by an injected
+    //! `now: Instant` so the tests are deterministic (no sleeps, no wall clock).
+
+    use super::*;
+
+    fn ip(n: u8) -> IpAddr {
+        IpAddr::from([10, 0, 0, n])
+    }
+
+    /// The two auth paths land in the hard `Auth` bucket; everything else is `Write`.
+    #[test]
+    fn auth_paths_map_to_the_auth_bucket() {
+        assert_eq!(bucket_for("/api/login"), Bucket::Auth);
+        assert_eq!(bucket_for("/api/register"), Bucket::Auth);
+        assert_eq!(bucket_for("/api/servers"), Bucket::Write);
+        assert_eq!(bucket_for("/api/messages/1/react"), Bucket::Write);
+    }
+
+    /// A bucket admits exactly its limit within one window, then rejects with a
+    /// positive Retry-After — the online-guessing surface can't exceed the cap.
+    #[test]
+    fn the_auth_bucket_admits_its_limit_then_rejects() {
+        let rl = RateLimiter::new();
+        let t0 = Instant::now();
+        for i in 0..AUTH_MAX {
+            assert!(rl.check(ip(1), Bucket::Auth, t0).is_ok(), "request {i} is under the cap");
+        }
+        let retry = rl.check(ip(1), Bucket::Auth, t0).unwrap_err();
+        assert!(retry >= 1, "an over-limit hit reports a positive Retry-After, got {retry}");
+    }
+
+    /// The window resets: once it elapses, the counter is cleared and the IP is
+    /// admitted again (fixed-window semantics).
+    #[test]
+    fn the_window_resets_after_it_elapses() {
+        let rl = RateLimiter::new();
+        let t0 = Instant::now();
+        for _ in 0..AUTH_MAX {
+            rl.check(ip(2), Bucket::Auth, t0).unwrap();
+        }
+        assert!(rl.check(ip(2), Bucket::Auth, t0).is_err(), "capped inside the window");
+        // Step just past the window: the bucket is fresh again.
+        let later = t0 + WINDOW + Duration::from_secs(1);
+        assert!(rl.check(ip(2), Bucket::Auth, later).is_ok(), "a new window admits again");
+    }
+
+    /// Limits are per-IP: one IP exhausting its bucket does not throttle another.
+    #[test]
+    fn one_ip_hitting_its_limit_does_not_throttle_another() {
+        let rl = RateLimiter::new();
+        let t0 = Instant::now();
+        for _ in 0..AUTH_MAX {
+            rl.check(ip(3), Bucket::Auth, t0).unwrap();
+        }
+        assert!(rl.check(ip(3), Bucket::Auth, t0).is_err(), "the noisy IP is capped");
+        assert!(rl.check(ip(4), Bucket::Auth, t0).is_ok(), "a different IP is unaffected");
+    }
+
+    /// The buckets are independent per IP: burning the tight `Auth` allowance leaves
+    /// the same IP's `Write` allowance intact (and vice versa).
+    #[test]
+    fn the_auth_and_write_buckets_are_independent() {
+        let rl = RateLimiter::new();
+        let t0 = Instant::now();
+        for _ in 0..AUTH_MAX {
+            rl.check(ip(5), Bucket::Auth, t0).unwrap();
+        }
+        assert!(rl.check(ip(5), Bucket::Auth, t0).is_err(), "auth is spent");
+        // The write bucket for the same IP is untouched and far larger.
+        for _ in 0..WRITE_MAX {
+            assert!(rl.check(ip(5), Bucket::Write, t0).is_ok());
+        }
+        assert!(rl.check(ip(5), Bucket::Write, t0).is_err(), "write caps at its own, higher limit");
     }
 }
 
