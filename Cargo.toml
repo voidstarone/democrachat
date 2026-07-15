@@ -1,0 +1,92 @@
+# democrachat — Cargo workspace.
+#
+# A self-governing, Discord-style chat platform. Each server is a *guild* (a
+# demos): the powers a Discord owner would hold — bans, custom emojis, channels,
+# rules — are instead **ballots** decided by that guild's *citizens*, a tier
+# earned only by meeting criteria and never grantable by any person.
+#
+# Architecture: ports & adapters (hexagonal). `domain` and `app` cannot name a
+# database or a web framework, so storage and delivery are swapped only in the
+# `democrachat` composition root. This mirrors democratos (the Reddit-style
+# sibling) but is re-implemented from the governance spec, not copied.
+[workspace]
+resolver = "2"
+members = [
+    "crates/domain",
+    "crates/app",
+    "crates/federation",
+    "crates/adapter-control-etcd",
+    "crates/adapter-store-memory",
+    "crates/adapter-media-fs",
+    "crates/adapter-federation",
+    "crates/adapter-cli",
+    "crates/adapter-web",
+    "crates/e2ee-wasm",
+    "crates/democrachat",
+]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.dependencies]
+# internal crates
+domain = { path = "crates/domain" }
+app = { path = "crates/app" }
+federation = { path = "crates/federation" }
+adapter-control-etcd = { path = "crates/adapter-control-etcd" }
+adapter-store-memory = { path = "crates/adapter-store-memory" }
+adapter-media-fs = { path = "crates/adapter-media-fs" }
+adapter-federation = { path = "crates/adapter-federation" }
+adapter-cli = { path = "crates/adapter-cli" }
+adapter-web = { path = "crates/adapter-web" }
+# third-party
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.7", features = ["ws"] }
+# security primitives (P0 auth): password hashing, session HMAC, CSPRNG,
+# constant-time comparison. Kept in `app` — a use-case concern, not I/O.
+argon2 = "0.5"
+password-hash = { version = "0.5", features = ["std"] }
+hmac = "0.12"
+sha2 = "0.10"
+subtle = "2"
+rand = "0.8"
+hex = "0.4"
+# Decoding uploaded emoji images (base64 in the JSON propose request → bytes to
+# validate, then a `data:` URI).
+base64 = "0.22"
+# At-rest envelope encryption (M6): the governance surface is sealed on disk under
+# a per-node key, decrypted only in RAM. ChaCha20-Poly1305 (AEAD) — pure Rust, no
+# OpenSSL, so a node never links the system crypto stack.
+chacha20poly1305 = "0.10"
+# E2EE private surface (M7): X25519 key agreement for sealing DMs/message bodies to
+# a recipient's device key. Server-blind — the server only ever stores ciphertext.
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+# Federation (M2): Ed25519 signatures over change events. Keys load from a
+# persistent seed (a node's identity must be stable across reboots), so the
+# rand_core/OsRng integration is off; `getrandom` covers the keygen helper only.
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+getrandom = "0.2"
+# The control-plane trait (M3) is async (etcd calls it in M4); async-trait lets
+# the in-memory registry + rehoming logic stay exhaustively testable.
+async-trait = "0.1"
+# etcd client (M4 control-plane adapter): leases for liveness, compare-and-swap
+# txns for epoch-fenced claims. `tls` for the mutual-TLS control-plane link.
+etcd-client = { version = "0.14", features = ["tls"] }
+# Federation transport (M5): node-to-node HTTP. `rustls-tls` so a node never
+# falls back to the system OpenSSL; `tracing` for the background puller's logs.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tracing = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"

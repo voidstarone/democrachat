@@ -1,0 +1,29 @@
+# democrachat reverse proxy.
+#
+# Caddy terminates TLS (automatic Let's Encrypt for SITE_ADDRESS) and forwards to
+# the app on the internal network. It is the only service that publishes ports.
+# The app speaks plain HTTP on the private `edge` network; DEMOCRACHAT_SECURE_COOKIES
+# and HSTS handle the TLS coupling on the app side.
+
+{$SITE_ADDRESS} {
+	encode gzip zstd
+
+	# Forward everything (including the /ws WebSocket upgrade, which Caddy proxies
+	# transparently) to the app.
+	reverse_proxy app:3000
+
+	# Defense-in-depth headers at the edge, in addition to the app's own.
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+		# Don't advertise the server software.
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

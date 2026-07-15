@@ -1,0 +1,42 @@
+# ============================================================================
+# EDGE HOST — the public reverse proxy (stateless).
+#
+# Caddy is the ONLY internet-exposed service in the split deployment. It
+# terminates TLS (automatic Let's Encrypt for ${SITE_ADDRESS}) and forwards every
+# request — including the /ws WebSocket upgrade — to the app host across the LAN.
+# It holds no application state; it can be rebuilt or moved freely.
+#
+#   internet ─▶ this host :80/:443 (Caddy, TLS) ──LAN──▶ ${APP_UPSTREAM} (app host)
+#
+#   cp .env.example .env && $EDITOR .env       # SITE_ADDRESS + APP_UPSTREAM
+#   docker compose up -d
+# ============================================================================
+
+services:
+  caddy:
+    image: caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+    restart: unless-stopped
+    ports:
+      - "80:80"        # public — HTTP→HTTPS redirect + ACME http-01
+      - "443:443"      # public — HTTPS for SITE_ADDRESS
+    environment:
+      # The public hostname Caddy serves and gets a Let's Encrypt cert for.
+      SITE_ADDRESS: ${SITE_ADDRESS:?set SITE_ADDRESS (e.g. chat.example.com) in .env}
+      # The app host's LAN address (host:port) this proxy forwards to.
+      APP_UPSTREAM: ${APP_UPSTREAM:?set APP_UPSTREAM to the app host, e.g. 10.0.0.4:3000}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data      # ACME account + issued certs (durable)
+      - caddy_config:/config
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE      # bind 80/443 as non-root
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+    cpus: "0.5"
+
+volumes:
+  caddy_data:
+  caddy_config:

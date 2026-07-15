@@ -1,0 +1,5 @@
+/target
+**/*.rs.bk
+*.pdb
+democrachat.json
+.DS_Store

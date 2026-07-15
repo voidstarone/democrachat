@@ -1,0 +1,32 @@
+# Federation core (M2) — the security-critical types shared by every node.
+#
+# Pure and dependency-light on purpose: node identity (Ed25519 keypairs) and the
+# signed change-event envelope that lets one node replicate its authoritative
+# servers — and the social graph it homes — to peers *without those peers having
+# to trust the transport or each other*. A tampered or forged event fails
+# signature verification and is dropped.
+#
+# No async, no database, no HTTP here — those live in the adapters. Keeping the
+# crypto and wire format in one small, pure crate makes them exhaustively
+# unit-testable and gives every node exactly one definition of "a valid event".
+# See docs/federation.md §4.
+[package]
+name = "federation"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+domain = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Ed25519 signatures over change events. `rand_core`/OsRng avoided; keys load
+# from a persistent seed (a node's identity must be stable across reboots).
+ed25519-dalek = { workspace = true }
+# OS randomness, used only by the keygen helper (`NodeKeypair::generate`).
+getrandom = { workspace = true }
+# The control-plane trait (M3 ownership registry) is async.
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

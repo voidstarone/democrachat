@@ -1,0 +1,27 @@
+# democrachat edge proxy (split deployment).
+#
+# Terminates TLS for the public hostname and forwards to the app host across the
+# LAN. Unlike the single-box Caddyfile (which proxies to the compose service
+# `app:3000`), here the upstream is another machine, injected as APP_UPSTREAM.
+
+{$SITE_ADDRESS} {
+	encode gzip zstd
+
+	# Forward everything (including the /ws WebSocket upgrade, proxied
+	# transparently) to the app host over the private network.
+	reverse_proxy {$APP_UPSTREAM}
+
+	# Defense-in-depth headers at the edge, on top of the app's own.
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

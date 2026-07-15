@@ -1,0 +1,26 @@
+# The federation transport: node-to-node HTTP that carries a node's signed change
+# feed to its peers, and applies a peer's feed only after `federation::authorize`.
+# Deliberately thin — the security-critical produce/authorize logic lives in the
+# `federation` crate; this crate is the wire and the ordered-cursor replicator.
+[package]
+name = "adapter-federation"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+domain = { workspace = true }
+app = { workspace = true }
+federation = { workspace = true }
+adapter-store-memory = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+axum = { workspace = true }

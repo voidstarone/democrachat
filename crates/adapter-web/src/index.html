@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title data-t="ui.title">democrachat</title>
+<style>
+  /* Civic palette, shared with the democratos sibling: an off-white canvas, a
+     green accent, and a serif for headings. Light is the default; dark is a
+     tinted derivation that keeps the same green. */
+  :root, :root[data-theme="light"] {
+    --bg:#f6f7f5; --surface:#ffffff; --surface2:#fbfcfb;
+    --ink:#14201b; --muted:#5f6b66; --line:#e4e8e6;
+    --accent:#0a7d5a; --accent-ink:#086048; --accent-soft:#e3f5ee;
+    --ok:#2b8a3e; --bad:#a50e0e; --warn:#b4690e; --warn-soft:#f7efe0;
+    --mine:#0a7d5a; --mine-ink:#ffffff;
+    --shadow-sm:0 1px 2px rgba(20,32,27,.04), 0 1px 3px rgba(20,32,27,.05);
+    --shadow-md:0 6px 18px -6px rgba(20,32,27,.14), 0 2px 6px rgba(20,32,27,.06);
+    --shadow-lg:0 24px 60px -18px rgba(20,32,27,.30), 0 8px 20px -10px rgba(20,32,27,.18);
+  }
+  :root[data-theme="dark"] {
+    --bg:#0f1411; --surface:#161d18; --surface2:#131a15;
+    --ink:#e7ece8; --muted:#9aa8a1; --line:#26302a;
+    --accent:#2ea67c; --accent-ink:#8bdcbc; --accent-soft:#17251e;
+    --ok:#4ec27a; --bad:#e2726b; --warn:#e0a35a; --warn-soft:#2a2213;
+    --mine:#1f6f52; --mine-ink:#eafef5;
+    --shadow-sm:0 1px 2px rgba(0,0,0,.3); --shadow-md:0 8px 22px -8px rgba(0,0,0,.55);
+    --shadow-lg:0 28px 70px -20px rgba(0,0,0,.7), 0 10px 24px -12px rgba(0,0,0,.5);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#0f1411; --surface:#161d18; --surface2:#131a15;
+      --ink:#e7ece8; --muted:#9aa8a1; --line:#26302a;
+      --accent:#2ea67c; --accent-ink:#8bdcbc; --accent-soft:#17251e;
+      --ok:#4ec27a; --bad:#e2726b; --warn:#e0a35a; --warn-soft:#2a2213;
+      --mine:#1f6f52; --mine-ink:#eafef5;
+      --shadow-sm:0 1px 2px rgba(0,0,0,.3); --shadow-md:0 8px 22px -8px rgba(0,0,0,.55);
+      --shadow-lg:0 28px 70px -20px rgba(0,0,0,.7), 0 10px 24px -12px rgba(0,0,0,.5);
+    }
+  }
+  :root {
+    --display:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,ui-serif,serif;
+    --ease:cubic-bezier(.2,.7,.2,1); --dur:.16s;
+    --ava-gutter:calc(26px + .6rem); /* sm avatar width + message row gap */
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust:100%; }
+  body { margin:0; height:100vh; overflow:hidden; background:var(--bg); color:var(--ink);
+         font:15px/1.5 system-ui, -apple-system, sans-serif; -webkit-font-smoothing:antialiased;
+         display:grid; grid-template-rows:auto 1fr; }
+  h1,h2,h3 { font-family:var(--display); font-weight:600; letter-spacing:.005em; margin:0; }
+  a { color:var(--accent-ink); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  .muted, .sub { color:var(--muted); }
+  .sub { font-size:12px; }
+  ::selection { background:var(--accent-soft); }
+  /* Slim, unobtrusive scrollbars */
+  .col::-webkit-scrollbar, #messages::-webkit-scrollbar, #dmThread::-webkit-scrollbar { width:10px; }
+  .col::-webkit-scrollbar-thumb, #messages::-webkit-scrollbar-thumb, #dmThread::-webkit-scrollbar-thumb {
+    background:var(--line); border-radius:999px; border:3px solid transparent; background-clip:padding-box; }
+
+  /* Header */
+  header { display:flex; align-items:center; gap:1rem; padding:.55rem 1.1rem;
+           background:var(--surface); border-bottom:1px solid var(--line); box-shadow:var(--shadow-sm); z-index:5; }
+  .brand { font-family:var(--display); font-size:1.25rem; color:var(--accent-ink); display:flex; align-items:center; gap:.4rem; }
+  .brand .mark { font-size:1.15rem; }
+  .header-actions { margin-left:auto; display:flex; align-items:center; gap:.6rem; }
+
+  /* Segmented mode switch (Chat / Direct Messages) */
+  .seg { display:inline-flex; background:var(--surface2); border:1px solid var(--line); border-radius:9px; padding:2px; gap:2px; }
+  .seg button { background:none; border:none; color:var(--muted); border-radius:7px; padding:.32rem .8rem; font-weight:600;
+                font-size:13px; position:relative; }
+  .seg button:hover { color:var(--ink); filter:none; }
+  .seg button.on { background:var(--accent); color:#fff; box-shadow:var(--shadow-sm); }
+  .seg .dot { position:absolute; top:2px; right:4px; min-width:15px; height:15px; padding:0 3px; border-radius:999px;
+              background:var(--bad); color:#fff; font-size:10px; line-height:15px; font-weight:700; }
+
+  button { font:inherit; cursor:pointer; border:1px solid var(--accent); background:var(--accent);
+           color:#fff; border-radius:8px; padding:.42rem .75rem; font-weight:500;
+           transition:filter var(--dur) var(--ease), transform var(--dur) var(--ease), background var(--dur) var(--ease); }
+  button:hover { filter:brightness(1.07); }
+  button:active { transform:translateY(1px); }
+  button:disabled { opacity:.5; cursor:not-allowed; filter:none; transform:none; }
+  button.ghost { background:var(--surface); color:var(--accent-ink); }
+  button.ghost:hover { background:var(--accent-soft); filter:none; }
+  button.sm { padding:.22rem .55rem; font-size:12px; }
+  button.icon { background:none; border:1px solid var(--line); color:var(--ink); padding:.32rem .52rem; line-height:1; }
+  button.icon:hover { background:var(--accent-soft); filter:none; }
+  button.danger { border-color:var(--bad); color:var(--bad); background:var(--surface); }
+  button.danger:hover { background:var(--bad); color:#fff; filter:none; }
+  .full { width:100%; }
+  .row { display:flex; gap:.5rem; align-items:center; }
+  .grow { flex:1; min-width:0; }
+  .spacer { flex:1; }
+
+  input, textarea, select { font:inherit; color:var(--ink); background:var(--surface); border:1px solid var(--line);
+           border-radius:9px; padding:.6rem .7rem; width:100%;
+           transition:border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease); }
+  input:focus, textarea:focus, select:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+  textarea { resize:vertical; min-height:72px; }
+  label.field { display:block; text-align:left; margin-bottom:.7rem; }
+  label.field > span { display:block; font-size:12px; color:var(--muted); margin-bottom:.25rem; font-weight:600; }
+
+  /* Avatars — deterministic tint from the handle */
+  .ava { flex:none; width:34px; height:34px; border-radius:50%; display:grid; place-items:center;
+         font-weight:700; font-size:13px; color:#fff; font-family:system-ui,sans-serif; user-select:none; }
+  .ava.sm { width:26px; height:26px; font-size:11px; }
+  .ava.lg { width:44px; height:44px; font-size:16px; }
+
+  /* Three-column app body */
+  #app { display:grid; min-height:0; }
+  #app.chat { grid-template-columns:250px 1fr 310px; }
+  #app.dms  { grid-template-columns:290px 1fr 260px; }
+  .col { min-height:0; overflow-y:auto; }
+  .screen { display:contents; }
+  .hidden { display:none !important; }
+  #side, #dmPeople { background:var(--surface2); border-right:1px solid var(--line); padding:1rem .8rem; }
+  #main, #dmMain { background:var(--bg); display:flex; flex-direction:column; min-height:0; }
+  #gov, #dmRel { background:var(--surface2); border-left:1px solid var(--line); padding:1rem 1rem; }
+
+  h2.section { font-size:.72rem; text-transform:uppercase; letter-spacing:.06em; color:var(--muted);
+               margin:.4rem .2rem .5rem; font-family:system-ui, sans-serif; font-weight:700; }
+
+  .item { display:flex; align-items:center; gap:.55rem; padding:.45rem .55rem; border-radius:9px; cursor:pointer; margin-bottom:2px;
+          border-left:3px solid transparent; transition:background var(--dur) var(--ease); }
+  .item:hover { background:var(--accent-soft); }
+  .item.sel { background:var(--accent-soft); border-left-color:var(--accent); color:var(--accent-ink); }
+  .item .t { min-width:0; }
+  .item .t .nm { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:600; }
+  .item.sel .t .nm { color:var(--accent-ink); }
+  .item .t .sub { font-weight:400; }
+
+  /* Messages (server chat) — pinned to the bottom: few messages sit at the
+     bottom and fill upward; new ones always enter from the bottom. */
+  #messages { flex:1; overflow-y:auto; padding:1.1rem 1.4rem; display:flex; flex-direction:column; }
+  #msgList { margin-top:auto; }
+  #channelTitle { font-size:1.15rem; color:var(--ink); margin:0 0 .2rem; }
+  .chan-head { display:flex; align-items:center; gap:.6rem; margin:0 0 .2rem; }
+  .chan-head h3 { font-size:1.15rem; margin:0; }
+  .chan-head button { margin-left:auto; }
+  /* A message group = optional reply quote (full width, above) + the message row
+     (avatar inline with the name). --ava-gutter aligns the quote past the avatar. */
+  .msg-group { padding:.18rem 0; border-radius:8px; scroll-margin:1rem; }
+  .msg-group.flash { animation:flash 1.2s var(--ease); }
+  @keyframes flash { 0%,60% { background:var(--accent-soft); } 100% { background:transparent; } }
+  .msg { display:flex; gap:.6rem; align-items:flex-start; }
+  .msg .ava { margin-top:1px; }
+  .msg .bubblewrap { min-width:0; flex:1; }
+  .msg .hdr { display:flex; align-items:baseline; gap:.35rem; }
+  .msg .when { color:var(--muted); font-size:11px; }
+
+  /* Reply reference: a compact quote of the answered message, above the row and
+     aligned past the avatar gutter so it reads as belonging to this message. */
+  .replyref { display:flex; align-items:center; gap:.35rem; font-size:12px; color:var(--muted);
+              margin:0 0 .1rem var(--ava-gutter); cursor:pointer; max-width:100%; }
+  .replyref:hover .rr-ex { color:var(--ink); }
+  .replyref .rr-arrow { color:var(--muted); flex:none; }
+  .replyref .rr-who { color:var(--accent-ink); font-weight:600; flex:none; }
+  .replyref .rr-ex { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; opacity:.85; }
+
+  /* Viewer display preferences (per-user, persisted): hide avatars / timestamps. */
+  body.no-avatars .msg .ava, body.no-avatars .dmrow .ava { display:none; }
+  body.no-avatars .replyref { margin-left:0; }
+  body.no-timestamps .msg .when.time { display:none; }
+  .msg .who { font-weight:600; }
+  .msg .when { color:var(--muted); font-size:11px; margin-left:.35rem; }
+  .msg .body { white-space:pre-wrap; overflow-wrap:anywhere; margin-top:.05rem; }
+  .msg .tools { visibility:hidden; margin-left:.4rem; }
+  .msg:hover .tools { visibility:visible; }
+
+  /* Compact chat mode: no avatar, the name sits inline with the message, and a
+     tiny (optional) date rides above the line. Toggled from Display settings. */
+  .msg .compact-date { display:none; }
+  body.compact .msg .ava { display:none; }
+  body.compact .replyref { margin-left:0; }
+  body.compact .msg-group { padding:.06rem 0; }
+  body.compact .msg { position:relative; align-items:baseline; }
+  body.compact .msg .compact-date { display:block; font-size:10px; line-height:1.3; margin:0; color:var(--muted); }
+  body.compact.no-timestamps .msg .compact-date { display:none; } /* the date is optional */
+  body.compact .msg .hdr { display:inline; }
+  body.compact .msg .hdr .when.time { display:none; }
+  body.compact .msg .who { margin-right:.4rem; }
+  body.compact .msg .body { display:inline; margin-top:0; }
+  body.compact .msg .tools { position:absolute; right:.15rem; top:0; margin-left:0;
+      background:var(--surface); border:1px solid var(--line); border-radius:6px; padding:0 .15rem; box-shadow:var(--shadow-md); }
+
+  .reacts { margin-top:.3rem; display:flex; gap:.35rem; flex-wrap:wrap; }
+  .chip { display:inline-flex; align-items:center; gap:.25rem; font-size:12px; padding:.1rem .5rem;
+          border-radius:999px; background:var(--accent-soft); color:var(--accent-ink); cursor:pointer;
+          border:1px solid transparent; transition:border-color var(--dur) var(--ease); }
+  .chip:hover { border-color:var(--accent); }
+
+  /* Mentions */
+  .mention { font-weight:600; border-radius:4px; padding:0 .15rem; }
+  .mention.m-user { color:var(--accent-ink); background:var(--accent-soft); }
+  .mention.m-role { color:var(--warn); background:var(--warn-soft); }
+  .msg-group.mentions-me { background:var(--accent-soft); margin-left:-.4rem; padding-left:.4rem; }
+
+  /* @-autocomplete popover */
+  #acPopup { position:absolute; left:1.4rem; bottom:3.4rem; z-index:15; background:var(--surface); border:1px solid var(--line);
+             box-shadow:var(--shadow-md); border-radius:10px; padding:.25rem; min-width:200px; max-height:230px;
+             overflow-y:auto; display:none; }
+  #acPopup .ac { display:flex; align-items:center; gap:.5rem; padding:.35rem .5rem; border-radius:7px; cursor:pointer; }
+  #acPopup .ac.on, #acPopup .ac:hover { background:var(--accent-soft); }
+  #acPopup .ac .k { margin-left:auto; font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+
+  .composer { position:relative; padding:.8rem 1.4rem; border-top:1px solid var(--line); background:var(--surface); }
+  .composer .box { display:flex; gap:.5rem; align-items:center; }
+  .composer input { flex:1; }
+  #replybar { font-size:12px; color:var(--muted); margin-bottom:.4rem; display:none; }
+
+  /* Empty states */
+  .empty { height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center;
+           text-align:center; color:var(--muted); gap:.5rem; padding:2rem; }
+  .empty .big { font-size:2.4rem; opacity:.5; }
+  .empty.home h3 { margin:.2rem 0 0; color:var(--text); font-size:1.15rem; }
+  .homeacts { display:flex; flex-direction:column; gap:.5rem; margin-top:1rem; min-width:280px; }
+  .homeacts button { width:100%; padding:.7rem 1rem; border-radius:10px; border:1px solid var(--line);
+                     background:var(--surface2); color:var(--text); cursor:pointer; font-size:.95rem; }
+  .homeacts button:hover { background:var(--accent-soft); }
+  .homeacts button.primary { background:var(--accent); color:#fff; border-color:transparent; font-weight:600; }
+  .browse { padding:1.4rem; max-width:560px; margin:0 auto; width:100%; }
+  .browse h3 { margin:.2rem 0 1rem; }
+  .browserow { display:flex; align-items:center; gap:.75rem; padding:.7rem .2rem; border-bottom:1px solid var(--line); }
+  .browserow .nm { font-weight:600; }
+
+  /* Governance panel */
+  .card { background:var(--surface); border:1px solid var(--line); border-radius:12px;
+          padding:.85rem 1rem; box-shadow:var(--shadow-sm); margin-bottom:.9rem; }
+  .pill { display:inline-block; font-size:.68rem; font-weight:700; letter-spacing:.04em; text-transform:uppercase;
+          padding:.15rem .55rem; border-radius:999px; background:var(--accent-soft); color:var(--accent-ink); }
+  .pill.citizen { background:var(--accent); color:#fff; }
+  .pill.member { background:var(--line); color:var(--ink); }
+  .pill.guest { background:var(--warn-soft); color:var(--warn); }
+  .surface-chips span { display:inline-block; background:var(--accent-soft); color:var(--accent-ink);
+          border-radius:6px; padding:.1rem .45rem; margin:.15rem .15rem 0 0; font-size:11px; }
+  .bar { height:7px; background:var(--line); border-radius:999px; overflow:hidden; margin:.4rem 0; }
+  .bar > i { display:block; height:100%; background:var(--accent); transition:width .4s var(--ease); }
+  .prop { background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:.6rem .7rem; margin-bottom:.6rem; box-shadow:var(--shadow-sm); }
+  .prop .head { font-size:13px; font-weight:600; }
+  .prop .st-open { color:var(--accent-ink); } .prop .st-passed { color:var(--ok); } .prop .st-failed { color:var(--bad); }
+  .prop .votes { margin-top:.4rem; display:flex; gap:.4rem; align-items:center; }
+  .prop .tal { font-size:12px; color:var(--muted); margin-left:auto; }
+  .vbtn { border:1px solid var(--line); background:var(--surface); color:var(--ink); border-radius:6px; padding:.15rem .5rem; font-size:12px; }
+  .vbtn.on-aye { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .vbtn.on-nay { background:var(--bad); color:#fff; border-color:var(--bad); }
+  ul.reasons { margin:.4rem 0 0 1rem; padding:0; }
+  .online { color:var(--ok); font-size:11px; }
+
+  /* Custom-emoji vote list (server settings) */
+  .emoji-row { display:flex; align-items:center; gap:.55rem; padding:.4rem 0; border-bottom:1px solid var(--line); }
+  .emoji-row:last-child { border-bottom:0; }
+  .emoji-row img { width:28px; height:28px; object-fit:contain; flex:none; }
+  .emoji-row .en { font-size:12px; font-weight:600; }
+  .emoji-row .sub { font-size:11px; }
+  .emoji-row .tier { font-size:10px; text-transform:uppercase; letter-spacing:.04em; padding:.05rem .35rem;
+          border-radius:999px; background:var(--line); color:var(--muted); }
+  .emoji-row .tier.active { background:var(--accent-soft); color:var(--accent-ink); }
+  .emoji-row .grow { flex:1; min-width:0; }
+  .emoji-row .sc { font-size:12px; color:var(--muted); min-width:1.6rem; text-align:center; }
+  /* Custom emoji rendered inline in a message. */
+  img.cemoji { height:1.35em; width:auto; vertical-align:-.25em; }
+  img.cemoji.jumbo { height:52px; vertical-align:middle; }
+
+  /* ── Message markdown ── */
+  .body pre { background:var(--surface2); border:1px solid var(--line); border-radius:8px;
+              padding:.5rem .7rem; overflow-x:auto; margin:.3rem 0; }
+  .body pre code { background:none; padding:0; }
+  .body code { background:var(--surface2); border:1px solid var(--line); border-radius:4px;
+               padding:.05rem .3rem; font-size:.9em; }
+  .body blockquote { margin:.15rem 0; padding:.1rem 0 .1rem .6rem; border-left:3px solid var(--line); color:var(--muted); }
+  .body a { color:var(--accent-ink); }
+
+  /* ── Inline spoiler text ── */
+  .spoiler { background:var(--surface2); border-radius:4px; padding:0 .2rem; cursor:pointer;
+             filter:blur(5px); transition:filter .12s; user-select:none; }
+  .spoiler.revealed { filter:none; user-select:auto; cursor:auto; }
+
+  /* ── Message attachments ── */
+  .attachments { display:flex; flex-wrap:wrap; gap:.5rem; margin-top:.35rem; }
+  .att { display:flex; flex-direction:column; gap:.2rem; max-width:100%; }
+  .att-cap { font-size:12px; color:var(--muted); }
+  .att img, .att video { max-width:min(100%,400px); max-height:300px; border-radius:10px;
+                         border:1px solid var(--line); display:block; }
+  .att img { cursor:zoom-in; }
+  .att audio { width:min(100%,340px); }
+  /* Spoilered media: blurred behind a click-to-reveal overlay. */
+  .spoiler-media { position:relative; display:inline-block; border-radius:10px; overflow:hidden; cursor:pointer; }
+  .spoiler-media > img, .spoiler-media > video, .spoiler-media > audio { filter:blur(22px); pointer-events:none; }
+  .spoiler-media .sm-label { position:absolute; inset:0; display:grid; place-items:center; z-index:1;
+             font-size:12px; font-weight:600; letter-spacing:.03em; text-transform:uppercase;
+             color:#fff; background:rgba(0,0,0,.35); }
+  .spoiler-media.revealed { cursor:auto; }
+  .spoiler-media.revealed > img, .spoiler-media.revealed > video, .spoiler-media.revealed > audio { filter:none; pointer-events:auto; }
+  .spoiler-media.revealed .sm-label { display:none; }
+
+  /* ── Composer pending attachments ── */
+  #pendingAtts { display:flex; flex-wrap:wrap; gap:.4rem; margin-bottom:.5rem; }
+  .pa-chip { display:flex; align-items:center; gap:.4rem; background:var(--surface2);
+             border:1px solid var(--line); border-radius:8px; padding:.25rem .4rem; max-width:100%; }
+  .pa-chip .pa-thumb { width:28px; height:28px; object-fit:cover; border-radius:5px; }
+  .pa-chip .pa-ic { display:grid; place-items:center; color:var(--muted); }
+  .pa-chip .pa-name { font-size:12px; max-width:12rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .pa-chip .pa-sp { font-size:10px; text-transform:uppercase; letter-spacing:.03em; border:1px solid var(--line);
+                    background:none; color:var(--muted); border-radius:999px; padding:.05rem .4rem; cursor:pointer; }
+  .pa-chip .pa-sp.on { background:var(--accent-soft); color:var(--accent-ink); border-color:transparent; }
+  .pa-chip .pa-x { background:none; border:none; color:var(--muted); cursor:pointer; font-size:16px; line-height:1; padding:0 .15rem; }
+  .pa-chip .pa-x:hover { color:var(--bad); }
+  #attachBtn { flex:none; }
+
+  /* DM thread */
+  #dmThread { flex:1; overflow-y:auto; padding:1.2rem 1.4rem; display:flex; flex-direction:column; gap:.45rem; }
+  .dmrow { display:flex; gap:.55rem; max-width:78%; align-items:flex-end; }
+  .dmrow.mine { align-self:flex-end; flex-direction:row-reverse; }
+  .dmrow .bubble { padding:.5rem .75rem; border-radius:14px; background:var(--surface); border:1px solid var(--line);
+                   box-shadow:var(--shadow-sm); white-space:pre-wrap; overflow-wrap:anywhere; }
+  .body .sealed { font-style:italic; opacity:.8; }
+  .body .sealed .sub { font-size:12px; }
+  .clock { font-size:11px; opacity:.8; }
+  .dmrow .bubble.locked { font-style:italic; opacity:.85; display:flex; align-items:center; gap:.35rem; }
+  .dmrow .bubble.locked .sub { font-size:11px; }
+  .dmrow.mine .bubble { background:var(--mine); color:var(--mine-ink); border-color:transparent; border-bottom-right-radius:5px; }
+  .dmrow:not(.mine) .bubble { border-bottom-left-radius:5px; }
+  #dmHeaderBar { display:flex; align-items:center; gap:.6rem; padding:.7rem 1.1rem; border-bottom:1px solid var(--line);
+                 background:var(--surface); }
+  .warnstrip { background:var(--warn-soft); color:var(--warn); font-size:12px; padding:.45rem 1.1rem; border-bottom:1px solid var(--line); text-align:center; }
+
+  /* Friends view (Discord-style) */
+  #dmMain { min-height:0; }
+  #friendsView, #convoView { display:flex; flex-direction:column; min-height:0; height:100%; }
+  .navbtn { display:flex; align-items:center; gap:.55rem; width:100%; text-align:left; background:transparent;
+            color:var(--ink); border:0; padding:.5rem .6rem; border-radius:9px; font-weight:600; cursor:pointer; }
+  .navbtn:hover { background:var(--accent-soft); filter:none; }
+  .navbtn.on { background:var(--accent-soft); color:var(--accent-ink); }
+  .navbtn .ic { width:19px; height:19px; flex:none; }
+  .friendsbar { display:flex; align-items:center; gap:.35rem; padding:.6rem 1rem; border-bottom:1px solid var(--line);
+                background:var(--surface); flex:none; }
+  .friendsbar .ic { width:20px; height:20px; color:var(--muted); }
+  .icononly { display:inline-grid; place-items:center; padding:.25rem; }
+  .icononly svg { width:16px; height:16px; }
+  .iconbtn svg { width:17px; height:17px; }
+  .friendsbar .ftitle { font-weight:700; margin-right:.2rem; }
+  .friendsbar .vsep { width:1px; height:20px; background:var(--line); margin:0 .4rem; }
+  .ftab { background:transparent; border:0; color:var(--muted); font-weight:600; font-size:.9rem;
+          padding:.3rem .6rem; border-radius:7px; cursor:pointer; }
+  .ftab:hover { background:var(--accent-soft); color:var(--ink); filter:none; }
+  .ftab.on { background:var(--line); color:var(--ink); }
+  .ftab.add { background:var(--accent); color:#fff; margin-left:.2rem; }
+  .ftab.add:hover { filter:brightness(1.05); color:#fff; }
+  .ftab.add.on { background:var(--accent); color:#fff; }
+  #friendsBody { flex:1; overflow-y:auto; padding:1rem 1.2rem; }
+  .flabel { font-size:.72rem; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); font-weight:700;
+            margin:.2rem 0 .5rem; }
+  .frow { display:flex; align-items:center; gap:.6rem; padding:.55rem .5rem; border-top:1px solid var(--line); }
+  .frow:hover { background:var(--accent-soft); border-radius:9px; border-top-color:transparent; }
+  .frow .nm { font-weight:600; }
+  .frow .st { font-size:12px; color:var(--muted); }
+  .frow .acts { display:flex; gap:.4rem; margin-left:auto; }
+  .iconbtn { width:34px; height:34px; border-radius:50%; display:grid; place-items:center; background:var(--surface2);
+             border:1px solid var(--line); cursor:pointer; font-size:15px; }
+  .iconbtn:hover { background:var(--accent-soft); filter:none; }
+  .iconbtn.ok:hover { color:var(--ok); }
+  .iconbtn.bad:hover { color:var(--bad); }
+  .addfriend { max-width:640px; }
+  .addfriend h3 { font-size:1.05rem; margin-bottom:.2rem; }
+  .addfriend .hint { color:var(--muted); font-size:13px; margin-bottom:.8rem; }
+  .addfriend .box { display:flex; gap:.5rem; }
+  .addfriend .box input { flex:1; }
+  .femptily { text-align:center; color:var(--muted); padding:2.4rem 1rem; }
+  .femptily .big { display:inline-flex; margin-bottom:.5rem; opacity:.65; }
+
+  /* Inline SVG icons keep the baseline tidy inside buttons and text. */
+  .iconrow { display:inline-flex; align-items:center; justify-content:center; gap:.4rem; }
+  svg.i { vertical-align:-.15em; flex:none; }
+  .lockic { display:inline-flex; vertical-align:-.15em; }
+  #themeBtn svg { vertical-align:middle; }
+
+  /* Toggle switch */
+  .switch { display:inline-flex; align-items:center; gap:.5rem; cursor:pointer; user-select:none; }
+  .switch input { display:none; }
+  .switch .track { width:38px; height:22px; border-radius:999px; background:var(--line); position:relative; transition:background var(--dur) var(--ease); flex:none; }
+  .switch .track::after { content:""; position:absolute; top:2px; left:2px; width:18px; height:18px; border-radius:50%;
+                          background:#fff; box-shadow:var(--shadow-sm); transition:transform var(--dur) var(--ease); }
+  .switch input:checked + .track { background:var(--accent); }
+  .switch input:checked + .track::after { transform:translateX(16px); }
+
+  /* Modal + toast */
+  #scrim { position:fixed; inset:0; background:rgba(20,32,27,.5); backdrop-filter:blur(3px);
+           display:flex; align-items:center; justify-content:center; z-index:30; padding:1rem;
+           opacity:0; transition:opacity var(--dur) var(--ease); }
+  #scrim.show { opacity:1; }
+  .modal { background:var(--surface); border:1px solid var(--line); box-shadow:var(--shadow-lg);
+           padding:1.4rem 1.5rem; border-radius:16px; width:380px; max-width:100%;
+           transform:translateY(8px) scale(.98); transition:transform var(--dur) var(--ease); }
+  #scrim.show .modal { transform:none; }
+  .modal h3 { font-size:1.2rem; color:var(--accent-ink); margin-bottom:.2rem; }
+  .modal .msg { color:var(--muted); font-size:13px; margin-bottom:1rem; display:block; }
+  .modal .actions { display:flex; gap:.5rem; justify-content:flex-end; margin-top:1rem; }
+  .modal.wide { width:480px; }
+  .modal.wide { max-height:82vh; overflow-y:auto; }
+  .tabbar { display:flex; gap:.3rem; border-bottom:1px solid var(--line); margin:.2rem 0 .8rem; }
+  .tabbar .tab { background:none; border:none; color:var(--muted); border-radius:0; padding:.4rem .2rem; margin-right:.9rem;
+                 font-weight:600; font-size:13px; border-bottom:2px solid transparent; }
+  .tabbar .tab:hover { color:var(--ink); filter:none; }
+  .tabbar .tab.on { color:var(--accent-ink); border-bottom-color:var(--accent); }
+  h4.setsec { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted);
+              margin:1.1rem 0 .5rem; font-weight:700; }
+  h4.setsec:first-of-type { margin-top:.6rem; }
+  .setrow { display:flex; align-items:center; gap:.75rem; padding:.55rem 0; border-top:1px solid var(--line); }
+  .setrow .setname { font-weight:600; font-size:14px; }
+  .setrow .sub { margin-top:.15rem; }
+  .setrow button { flex:none; white-space:nowrap; }
+  .emojibar { display:flex; gap:.3rem; flex-wrap:wrap; }
+  .emojibar button { background:var(--surface2); border:1px solid var(--line); font-size:18px; padding:.25rem .45rem; }
+  .emojibar button:hover { background:var(--accent-soft); filter:none; }
+
+  #toasts { position:fixed; bottom:1.1rem; right:1.1rem; z-index:40; display:flex; flex-direction:column; gap:.5rem; align-items:flex-end; }
+  .toast { background:var(--surface); border:1px solid var(--line); border-left:3px solid var(--accent);
+           box-shadow:var(--shadow-md); border-radius:10px; padding:.6rem .8rem; font-size:13px; max-width:340px;
+           animation:toastIn .18s var(--ease); }
+  .toast.err { border-left-color:var(--bad); }
+  .toast.ok { border-left-color:var(--ok); }
+  @keyframes toastIn { from { opacity:0; transform:translateX(12px); } }
+
+  /* Login overlay */
+  /* Menu (hamburger) button — only shown on phones. */
+  .menuonly { display:none; }
+  #navScrim { display:none; }
+
+  /* ── Responsive: tablet & phone ──────────────────────────────────── */
+  /* Give the chat column room by dropping the right rail on narrow viewports. */
+  @media (max-width: 980px) {
+    #app.chat { grid-template-columns:210px 1fr; }
+    #app.dms  { grid-template-columns:240px 1fr; }
+    #gov, #dmRel { display:none; }
+  }
+  /* Phones: a single column; the left rail becomes a slide-in drawer. */
+  @media (max-width: 680px) {
+    body { height:100dvh; overflow-x:hidden; }
+    header { gap:.4rem; padding:.5rem .6rem; position:relative; z-index:30; min-height:52px; }
+    .brand { font-size:1.05rem; }
+    .brand svg { width:18px; height:18px; }
+    #online, .header-actions .sub { display:none; }
+    .header-actions { gap:.3rem; }
+    .seg button { padding:.35rem .5rem; font-size:.8rem; }
+    [data-act="logout"] { display:none; }
+    .menuonly { display:inline-flex !important; }
+
+    #app.chat, #app.dms { grid-template-columns:1fr; }
+    #side, #dmPeople {
+      position:fixed; top:52px; left:0; bottom:0; width:84%; max-width:320px; z-index:25;
+      transform:translateX(-100%); transition:transform var(--dur,.2s) var(--ease,ease);
+      box-shadow:var(--shadow-md);
+    }
+    body.nav-open #side, body.nav-open #dmPeople { transform:none; }
+    #navScrim { display:block; position:fixed; inset:52px 0 0 0; background:rgba(0,0,0,.42);
+                z-index:24; opacity:0; pointer-events:none; transition:opacity var(--dur,.2s); }
+    body.nav-open #navScrim { opacity:1; pointer-events:auto; }
+
+    #messages, #dmThread { padding:.9rem .85rem; }
+    .composer { padding:.6rem .7rem; }
+    .dmrow { max-width:92%; }
+    .modal { width:100%; }
+    .homeacts { min-width:0; width:100%; }
+  }
+
+  #overlay { position:fixed; inset:0; background:rgba(20,32,27,.55); backdrop-filter:blur(2px);
+             display:flex; align-items:center; justify-content:center; z-index:20; }
+  #overlay .box { background:var(--surface); border:1px solid var(--line); box-shadow:var(--shadow-lg);
+                  padding:2.2rem; border-radius:18px; width:340px; text-align:center; }
+  #overlay .title { font-family:var(--display); font-size:1.6rem; color:var(--accent-ink); }
+  #overlay input { text-align:center; margin:1.1rem 0; }
+</style>
+</head>
+<body>
+<div id="overlay">
+  <div class="box">
+    <div class="title"><svg class="i" aria-hidden="true" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> democrachat</div>
+    <div class="sub" id="authSub" data-t="ui.auth.tagline" style="margin-top:.4rem">a chat that governs itself — sign in</div>
+    <input id="handleInput" placeholder="handle" data-t-ph="ui.auth.handle_ph" autocomplete="username" autofocus />
+    <input id="passwordInput" type="password" placeholder="password (min 16 chars)" data-t-ph="ui.auth.password_ph" autocomplete="current-password" style="margin-top:.6rem" />
+    <button class="full" style="margin-top:1rem" data-act="submitAuth"><span id="authBtnLabel" data-t="ui.auth.signin_btn">Sign in</span></button>
+    <div class="sub" style="margin-top:.8rem">
+      <span id="authSwitchText" data-t="ui.auth.switch_prompt">New here?</span>
+      <a href="#" id="authSwitch" data-act="toggleAuthMode" data-t="ui.auth.switch_link">Create an account</a>
+    </div>
+  </div>
+</div>
+
+<header>
+  <button class="icon menuonly" id="menuBtn" data-act="toggleNav" title="Menu" data-t-title="ui.nav.menu_title" aria-label="Open menu"><svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
+  <div class="brand"><svg class="mark" aria-hidden="true" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> democrachat</div>
+  <div class="seg" id="modeSwitch">
+    <button id="tabChat" class="on" data-act="setModeChat" data-t="ui.nav.chat">Chat</button>
+    <button id="tabDms" data-act="setModeDms"><span data-t="ui.nav.dms">Direct Messages</span> <span class="dot hidden" id="dmBadge">0</span></button>
+  </div>
+  <div class="header-actions">
+    <span class="online" id="online">•</span>
+    <span class="sub row" style="gap:.35rem">@<b id="meHandle">—</b></span>
+    <button class="icon" id="settingsBtn" title="Display settings" data-t-title="ui.header.settings_title" data-act="openSettings"><svg class="i" aria-hidden="true" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
+    <button class="icon" id="themeBtn" title="Toggle light / dark" data-t-title="ui.header.theme_title" data-act="toggleTheme"><svg class="i" aria-hidden="true" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></button>
+    <button class="ghost sm" data-act="logout" data-t="ui.header.signout">sign out</button>
+  </div>
+</header>
+<div id="navScrim" data-act="closeNav"></div>
+
+<div id="app" class="chat">
+  <!-- ── Chat screen ───────────────────────────────────────────── -->
+  <div id="chatScreen" class="screen">
+    <div id="side" class="col">
+      <div class="row"><h2 class="section grow" data-t="ui.servers.heading">Servers</h2>
+        <button class="sm iconbtn" data-act="browseServers" title="Browse public servers" data-t-title="ui.servers.browse_title"><svg aria-hidden="true" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></button>
+        <button class="sm iconbtn" data-act="joinByCode" title="Join with an invite code" data-t-title="ui.servers.join_title"><svg aria-hidden="true" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 7a5 5 0 1 0 -3.5 8.5L13 17l2 2 2-2 2-2-1.5-1.5A5 5 0 0 0 15 7z"/><circle cx="15" cy="9" r="1.2" fill="currentColor" stroke="none"/></svg></button>
+        <button class="sm" data-act="newServer" title="Found a server" data-t-title="ui.servers.new_title">＋</button>
+      </div>
+      <div id="serverList"></div>
+      <div class="row" style="margin-top:1rem">
+        <h2 class="section grow" id="channelsHeading" data-t="ui.channels.heading">Channels</h2>
+        <button class="sm iconbtn" id="serverSettingsBtn" data-act="openServerSettings" title="Server settings — governance, voting &amp; trials" data-t-title="ui.server.settings_title" style="display:none"><svg aria-hidden="true" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
+        <button class="sm iconbtn" id="inviteBtn" data-act="inviteToServer" title="Create an invite code" data-t-title="ui.server.invite_title" style="display:none"><svg aria-hidden="true" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg></button>
+        <button class="sm" id="addChannelBtn" data-act="newChannel" style="display:none">＋</button>
+      </div>
+      <div id="channelList"></div>
+    </div>
+
+    <div id="main">
+      <div id="messages"><div class="empty"><div class="big"><svg aria-hidden="true" viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div><div data-t="ui.messages.empty">Select a server to begin.</div></div></div>
+      <div class="composer">
+        <div id="acPopup"></div>
+        <div id="replybar"></div>
+        <div id="pendingAtts" style="display:none"></div>
+        <input id="attachInput" type="file" multiple accept="image/*,video/*,audio/*" hidden />
+        <div class="box">
+          <button id="attachBtn" class="iconbtn" data-act="attachFile" title="Attach media" data-t-title="ui.composer.attach"><svg aria-hidden="true" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
+          <input id="msgInput" placeholder="Message… (@ to mention, Enter to send)" data-t-ph="ui.composer.placeholder" autocomplete="off" />
+          <button data-act="sendMessage" data-t="ui.composer.send">Send</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="gov" class="col">
+      <h2 class="section" data-t="ui.gov.standing">Your standing</h2>
+      <div class="card" id="govBody"><span class="sub" data-t="ui.common.select_server">Select a server.</span></div>
+      <div class="row"><h2 class="section grow" data-t="ui.gov.proposals">Proposals</h2><button class="sm" id="newProposalBtn" data-act="newProposal" style="display:none">＋</button></div>
+      <div id="proposals"></div>
+      <h2 class="section" data-t="ui.gov.roles">Roles</h2>
+      <div id="roles"></div>
+      <div class="row"><h2 class="section grow" data-t="ui.gov.custom_emoji">Custom emoji</h2><button class="sm" id="addEmojiBtn" data-act="addEmoji" style="display:none">＋</button></div>
+      <div class="card" id="emojiList"><span class="sub" data-t="ui.common.select_server">Select a server.</span></div>
+      <h2 class="section" data-t="ui.gov.votes_on">This server votes on</h2>
+      <div class="card surface-chips sub" id="surface"></div>
+      <div id="devBox" style="display:none">
+        <h2 class="section" data-t="ui.gov.dev_clock">Dev clock</h2>
+        <div class="card">
+          <div class="sub" id="clockNow"></div>
+          <button class="ghost sm full" style="margin-top:.5rem" data-act="advance15" data-t="ui.gov.fast_forward">fast-forward 15 days</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Direct-messages screen ────────────────────────────────── -->
+  <div id="dmScreen" class="screen hidden">
+    <div id="dmPeople" class="col">
+      <button id="friendsNav" class="navbtn" data-act="showFriends">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        <span class="grow" data-t="ui.dms.friends_nav">Friends</span><span class="dot hidden" id="friendsNavBadge">0</span>
+      </button>
+      <div class="row" style="margin-top:1rem"><h2 class="section grow" data-t="ui.dms.heading">Direct Messages</h2><button class="sm icononly" data-act="startDm" title="Create DM" data-t-title="ui.dms.new_title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button></div>
+      <div id="partnerList"></div>
+    </div>
+
+    <div id="dmMain">
+      <!-- Friends view (Discord-style tabs) -->
+      <div id="friendsView">
+        <div class="friendsbar">
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span class="ftitle" data-t="ui.friends.title">Friends</span>
+          <span class="vsep"></span>
+          <button class="ftab" data-act="friendTab" data-tab="all" data-t="ui.friends.tab_all">All</button>
+          <button class="ftab" data-act="friendTab" data-tab="pending"><span data-t="ui.friends.tab_pending">Pending</span> <span class="dot hidden" id="pendingTabBadge">0</span></button>
+          <button class="ftab" data-act="friendTab" data-tab="blocked" data-t="ui.friends.tab_blocked">Blocked</button>
+          <button class="ftab add" data-act="friendTab" data-tab="add" data-t="ui.friends.tab_add">Add Friend</button>
+        </div>
+        <div id="friendsBody" class="col"></div>
+      </div>
+
+      <!-- Conversation view -->
+      <div id="convoView" class="hidden">
+        <div id="dmHeaderBar" class="hidden"></div>
+        <div id="dmWarn" class="warnstrip hidden"></div>
+        <div id="dmThread"></div>
+        <div class="composer">
+          <div class="box">
+            <input id="dmInput" placeholder="Message… (Enter to send)" data-t-ph="ui.dms.composer_ph" disabled />
+            <button id="dmSendBtn" data-act="sendDm" data-t="ui.dms.send" disabled>Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="dmRel" class="col">
+      <h2 class="section" data-t="ui.privacy.heading">Your privacy</h2>
+      <div class="card">
+        <label class="switch full" style="justify-content:space-between">
+          <span data-t="ui.privacy.friends_only">Friends-only DMs</span>
+          <span style="display:flex"><input type="checkbox" id="foToggle" data-change="setPolicy"><span class="track"></span></span>
+        </label>
+        <div class="sub" style="margin-top:.5rem" data-t="ui.privacy.friends_only_hint">When on, only accepted friends can start a DM with you.</div>
+      </div>
+      <div id="relPanel"></div>
+    </div>
+  </div>
+</div>
+
+<div id="toasts"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

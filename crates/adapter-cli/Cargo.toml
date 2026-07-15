@@ -1,0 +1,10 @@
+[package]
+name = "adapter-cli"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+domain = { workspace = true }
+app = { workspace = true }
+clap = { workspace = true }

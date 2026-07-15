@@ -1,0 +1,34 @@
+# cargo-deny — supply-chain gate for democrachat.
+#
+# Run in CI:  cargo deny check
+#
+# This enforces the security-relevant subset (advisories + bans + sources).
+# Licenses are deliberately left permissive for now (see [licenses]) so the gate
+# runs cleanly without blocking on license triage; tighten to an allow-list later.
+
+[advisories]
+# Pull the RustSec advisory DB and fail on any vulnerable or unmaintained crate
+# in the locked graph, and on any yanked version.
+version = 2
+yanked = "deny"
+# No advisory ignores at present. When one is genuinely unavoidable, add it here
+# with a comment justifying *why* it does not affect this build.
+ignore = []
+
+[bans]
+# Warn (don't fail) on duplicate versions — common and low-risk in a big graph.
+multiple-versions = "warn"
+# Never allow wildcard version requirements: they make the build non-reproducible
+# and can silently pull a compromised newer release.
+wildcards = "deny"
+
+[sources]
+# Restrict dependencies to crates.io. No arbitrary git or alternate registries,
+# which are a supply-chain injection vector.
+unknown-registry = "deny"
+unknown-git = "deny"
+
+[licenses]
+# Permissive for now (version = 2 defaults). TODO: tighten to an explicit
+# allow-list (MIT / Apache-2.0 / BSD / Unicode-DFS) once the graph is reviewed.
+version = 2

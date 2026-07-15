@@ -1,0 +1,60 @@
+# Fully-containerized live 2-node federation stack — the CI equivalent of
+# run-local.sh (which uses local binaries + a Docker etcd for fast iteration).
+#
+#   docker compose -f deploy/fed-test/docker-compose.yml up --build
+#
+# Brings up etcd + two democrachat nodes wired into one federation. node1 is
+# published on :5101, node2 on :5102; the feed/command ports (4101/4102) and etcd
+# (2379) stay on the internal network. Point run-local.sh's scenarios (or your own
+# curl) at the two published ports. This is NOT a production topology — it colocates
+# everything on one host with a shared session secret so a cookie works on either
+# node; production runs one node per host behind its own TLS edge.
+
+networks:
+  fed:
+
+services:
+  etcd:
+    image: gcr.io/etcd-development/etcd:v3.5.16
+    networks: [fed]
+    command:
+      - /usr/local/bin/etcd
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-client-urls=http://0.0.0.0:2379
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/etcdctl", "endpoint", "health"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  node1:
+    build: { context: ../.. }
+    networks: [fed]
+    depends_on:
+      etcd: { condition: service_healthy }
+    ports: ["5101:3000"]
+    environment:
+      DEMOCRACHAT_NODE_ID: "1"
+      DEMOCRACHAT_NODE_SEED: "1111111111111111111111111111111111111111111111111111111111111111"
+      DEMOCRACHAT_ETCD_ENDPOINTS: "http://etcd:2379"
+      DEMOCRACHAT_FED_ADDR: "0.0.0.0:4101"
+      DEMOCRACHAT_PEERS: "2=http://node2:4102"
+      DEMOCRACHAT_FED_TOKEN: "fedtest-cluster-secret"
+      DEMOCRACHAT_FED_POLL_SECS: "2"
+      DEMOCRACHAT_SESSION_SECRET: "fedtest_session_secret_0123456789abcdef"
+
+  node2:
+    build: { context: ../.. }
+    networks: [fed]
+    depends_on:
+      etcd: { condition: service_healthy }
+    ports: ["5102:3000"]
+    environment:
+      DEMOCRACHAT_NODE_ID: "2"
+      DEMOCRACHAT_NODE_SEED: "2222222222222222222222222222222222222222222222222222222222222222"
+      DEMOCRACHAT_ETCD_ENDPOINTS: "http://etcd:2379"
+      DEMOCRACHAT_FED_ADDR: "0.0.0.0:4102"
+      DEMOCRACHAT_PEERS: "1=http://node1:4101"
+      DEMOCRACHAT_FED_TOKEN: "fedtest-cluster-secret"
+      DEMOCRACHAT_FED_POLL_SECS: "2"
+      DEMOCRACHAT_SESSION_SECRET: "fedtest_session_secret_0123456789abcdef"

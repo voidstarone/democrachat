@@ -1,0 +1,25 @@
+[package]
+name = "democrachat"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "democrachat"
+path = "src/main.rs"
+
+[dependencies]
+domain = { workspace = true }
+app = { workspace = true }
+federation = { workspace = true }
+adapter-store-memory = { workspace = true }
+adapter-media-fs = { workspace = true }
+adapter-federation = { workspace = true }
+adapter-control-etcd = { workspace = true }
+adapter-cli = { workspace = true }
+adapter-web = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+hex = { workspace = true }

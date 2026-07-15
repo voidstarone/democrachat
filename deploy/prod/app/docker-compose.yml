@@ -1,0 +1,62 @@
+# ============================================================================
+# APP HOST — the stateful democrachat node.
+#
+# democrachat is a single process with an in-memory model persisted to one JSON
+# snapshot. It is NOT sharded or replicated (there is no federation like the
+# democratos sibling), so exactly ONE app host runs, and it owns the durable
+# `/data` volume. This host is the source of truth; the edge host in ../edge is
+# a stateless proxy in front of it.
+#
+#   edge host (public 80/443)  ──LAN──▶  this host  ${APP_BIND}  ──▶  app:3000
+#
+# The app binds a LAN address (${APP_BIND}, e.g. 10.0.0.4:3000) so the edge host
+# can reach it. That hop is plain HTTP on your private network — keep it on a
+# trusted/firewalled LAN (or a WireGuard/tailnet address); see README "the LAN
+# hop". Only the edge host is ever internet-exposed.
+#
+#   cp .env.example .env && $EDITOR .env       # set the session secret + APP_BIND
+#   docker compose up -d --build
+# ============================================================================
+
+services:
+  app:
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+    image: democrachat:latest
+    restart: unless-stopped
+    # Publish on the LAN interface only (host-IP-scoped), never 0.0.0.0. The edge
+    # host reverse-proxies to ${APP_BIND}. Compose refuses to start if APP_BIND is
+    # unset, so the app is never accidentally bound to every interface.
+    ports:
+      - "${APP_BIND:?set APP_BIND to this host's LAN ip:port, e.g. 10.0.0.4:3000}:3000"
+    environment:
+      # REQUIRED. A non-loopback bind makes the app fail-closed without a real
+      # secret. Must be IDENTICAL to any future app host and stable across
+      # restarts (else every live session cookie is invalidated).
+      DEMOCRACHAT_SESSION_SECRET: ${DEMOCRACHAT_SESSION_SECRET:?set a strong random DEMOCRACHAT_SESSION_SECRET in .env}
+      # Cookies carry Secure because the public origin (at the edge) is HTTPS.
+      DEMOCRACHAT_SECURE_COOKIES: "1"
+      DEMOCRACHAT_DATA: /data/democrachat.json
+    volumes:
+      - data:/data
+    # ---- kernel-level hardening (identical to the single-box compose) ----
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    cpus: "1.0"
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  data:   # the durable JSON snapshot — this is the whole database

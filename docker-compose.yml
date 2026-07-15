@@ -1,0 +1,72 @@
+# democrachat — single-box production compose.
+#
+#   cp .env.example .env      # then edit: set a strong DEMOCRACHAT_SESSION_SECRET
+#   docker compose up -d --build
+#
+# Trust model: only the Caddy reverse proxy publishes ports (80/443). The app's
+# :3000 is never published — it is reachable only over the internal `edge`
+# network. Every secret is `${VAR:?}` so the stack refuses to start if one is
+# missing (no service ever runs with a committed/default credential).
+
+networks:
+  # Public edge: proxy <-> app. The proxy is the only ingress.
+  edge:
+
+volumes:
+  data:          # durable app state (the JSON snapshot)
+  caddy_data:    # Let's Encrypt certs + ACME account
+  caddy_config:
+
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    networks: [edge]
+    # No `ports:` — the app is not published. Only Caddy reaches it.
+    expose:
+      - "3000"
+    environment:
+      # REQUIRED: a strong, random session secret. Fail-closed if unset — the app
+      # itself also refuses a placeholder/<16-char secret on this non-loopback bind.
+      DEMOCRACHAT_SESSION_SECRET: ${DEMOCRACHAT_SESSION_SECRET:?set a strong random DEMOCRACHAT_SESSION_SECRET in .env}
+      # Cookies get the Secure flag (served behind Caddy TLS).
+      DEMOCRACHAT_SECURE_COOKIES: "1"
+      DEMOCRACHAT_DATA: /data/democrachat.json
+    volumes:
+      - data:/data
+    # ---- kernel-level hardening (beyond democratos's compose) ----
+    read_only: true                 # immutable root filesystem
+    tmpfs:
+      - /tmp:size=32m               # scratch space, in RAM
+    cap_drop:
+      - ALL                          # drop every Linux capability
+    security_opt:
+      - no-new-privileges:true       # no setuid escalation
+    # ---- resource guards (stop one runaway from taking the box) ----
+    mem_limit: 256m
+    cpus: "1.0"
+    pids_limit: 256
+
+  caddy:
+    image: caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+    restart: unless-stopped
+    networks: [edge]
+    depends_on: [app]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # The public hostname Caddy serves + gets a Let's Encrypt cert for.
+      SITE_ADDRESS: ${SITE_ADDRESS:?set SITE_ADDRESS (e.g. chat.example.com) in .env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE            # bind 80/443
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+    cpus: "0.5"

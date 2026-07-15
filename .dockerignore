@@ -1,0 +1,30 @@
+# Keep secrets, local state, and build cruft out of the build context so they
+# never enter even an intermediate image layer (the Dockerfile does `COPY . .`).
+
+# Secrets / env
+.env
+.env.*
+*.pem
+*.key
+
+# Deployment (compose, Caddyfile, prod notes) — not needed to build the binary,
+# and may reference example creds.
+deploy/
+
+# Local runtime state / data snapshots
+democrachat.json
+*.json.bak*
+/data/
+
+# Build artifacts and VCS
+target/
+.git/
+.gitignore
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Docs and media (not needed for the build)
+*.md
