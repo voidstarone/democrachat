@@ -9,9 +9,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 
 use app::{
-    BlockStore, ChannelKeyStore, ChannelStore, Clock, DmStore, EmojiStore, EmojiVoteStore,
-    FriendStore, KeyDirectoryStore, MembershipStore, MessageStore, ProposalStore, ReactionStore,
-    RoleColorVoteStore, RoleStore, RuleStore, ServerStore, StoreError, Stores, UserStore, VoteStore,
+    BlockStore, CapAdmission, ChannelKeyStore, ChannelStore, Clock, DmStore, EmojiStore,
+    EmojiVoteStore, FriendStore, KeyDirectoryStore, MembershipStore, MessageStore, ProposalStore,
+    ReactionStore, RoleColorVoteStore, RoleStore, RuleStore, ServerStore, StoreError, Stores,
+    UserStore, VoteStore,
 };
 use domain::{
     compose_id, Block, Channel, ChannelId, ChannelKeyGrant, DmId, DmMessage, Emoji, EmojiId,
@@ -706,6 +707,34 @@ impl MembershipStore for MemoryStore {
             .filter(|m| m.server_id == server && m.enfranchised_at.is_some_and(|at| at >= since))
             .count() as u64
         })
+    }
+    async fn admit_within_cap(
+        &self,
+        admitted: Membership,
+        window_start: Timestamp,
+        slots_open: &(dyn Fn(u64, u64) -> u64 + Send + Sync),
+    ) -> Result<CapAdmission, StoreError> {
+        // The whole check-then-write happens under the store's single lock, so it is
+        // already atomic against any other admission — the memory analogue of the
+        // Postgres `SELECT … FOR UPDATE` transaction.
+        let mut inner = self.0.lock().unwrap();
+        let server = admitted.server_id;
+        let citizens = inner
+            .memberships
+            .values()
+            .filter(|m| m.server_id == server && m.is_citizen())
+            .count() as u64;
+        let admitted_this_window = inner
+            .memberships
+            .values()
+            .filter(|m| m.server_id == server && m.enfranchised_at.is_some_and(|at| at >= window_start))
+            .count() as u64;
+        if slots_open(citizens, admitted_this_window) == 0 {
+            return Ok(CapAdmission::RateCapped { admitted_this_window });
+        }
+        inner.record("memberships", ChangeOp::Upsert, to_payload(&admitted));
+        inner.memberships.insert((admitted.user_id, admitted.server_id), admitted);
+        Ok(CapAdmission::Admitted)
     }
 }
 

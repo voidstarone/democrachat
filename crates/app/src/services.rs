@@ -10,6 +10,7 @@ use domain::{
     Phase, Tier, Timestamp, User,
 };
 
+use crate::CapAdmission;
 use crate::channel_key_service::ChannelKeyService;
 use crate::chat_service::ChatService;
 use crate::emoji_service::EmojiService;
@@ -511,21 +512,22 @@ impl Services {
             return Ok(EnfranchiseOutcome::NotEligible(eligibility.unmet));
         }
 
-        // Layer 2 — enfranchisement rate cap.
-        let citizens = self.memberships.citizen_count(server.id).await?;
-        let window_start = Timestamp(now.0 - RATE_CAP_WINDOW_DAYS * Timestamp::SECONDS_PER_DAY);
-        let admitted = self.memberships.admitted_since(server.id, window_start).await?;
-        if enfranchisement_slots(citizens, admitted) == 0 {
-            return Ok(EnfranchiseOutcome::RateCapped {
-                admitted_this_window: admitted,
-            });
-        }
-
-        // Admit.
+        // Layer 2 — enfranchisement rate cap. The count-then-admit runs as one
+        // atomic, server-locked step in the store so two concurrent admissions can't
+        // both claim the final slot; the domain rule rides along as `slots_open`.
         membership.tier = Tier::Citizen;
         membership.enfranchised_at = Some(now);
-        self.memberships.upsert(membership).await?;
-        Ok(EnfranchiseOutcome::Admitted)
+        let window_start = Timestamp(now.0 - RATE_CAP_WINDOW_DAYS * Timestamp::SECONDS_PER_DAY);
+        match self
+            .memberships
+            .admit_within_cap(membership, window_start, &enfranchisement_slots)
+            .await?
+        {
+            CapAdmission::Admitted => Ok(EnfranchiseOutcome::Admitted),
+            CapAdmission::RateCapped { admitted_this_window } => {
+                Ok(EnfranchiseOutcome::RateCapped { admitted_this_window })
+            }
+        }
     }
 
     /// Read-only: how a member currently stands against the franchise criteria.

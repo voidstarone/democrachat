@@ -24,16 +24,24 @@ use app::{
     RoleColorVoteStore, RoleStore, RuleStore, ServerStore, UserStore, VoteStore,
 };
 use domain::{
-    Block, Channel, ChannelKeyGrant, DmMessage, Emoji, EmojiVote, Friendship, Invite, Membership,
-    Message, Proposal, ProposalKind, Reaction, Role, RoleAssignment, RoleColor, RoleColorVote,
-    Rule, Server, Tier, Timestamp, User, UserKeys, Vote, WrappedKey,
+    enfranchisement_slots, Block, Channel, ChannelKeyGrant, DmMessage, Emoji, EmojiVote, Friendship,
+    Invite, Membership, Message, Proposal, ProposalKind, Reaction, Role, RoleAssignment, RoleColor,
+    RoleColorVote, Rule, Server, Tier, Timestamp, User, UserKeys, Vote, WrappedKey,
 };
 
 const T: Timestamp = Timestamp(1_000);
 
+/// Tests in a binary run on parallel threads, but both reset the one shared schema.
+/// This lock serializes them so a reset never lands mid-run of the other test. Held
+/// for the whole test body (returned to the caller), released on drop.
+fn db_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 /// Wipe and rebuild the schema so each run starts clean, then connect (which runs
 /// the DDL). Returns `None` when `DATABASE_URL` is unset — the caller then skips.
-async fn fresh_store() -> Option<std::sync::Arc<PgStore>> {
+async fn fresh_store(max_connections: u32) -> Option<std::sync::Arc<PgStore>> {
     let url = std::env::var("DATABASE_URL").ok()?;
     let reset = sqlx::postgres::PgPool::connect(&url).await.expect("connect for reset");
     sqlx::raw_sql("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
@@ -41,12 +49,13 @@ async fn fresh_store() -> Option<std::sync::Arc<PgStore>> {
         .await
         .expect("reset schema");
     reset.close().await;
-    Some(PgStore::connect(&url, 5).await.expect("connect PgStore"))
+    Some(PgStore::connect(&url, max_connections).await.expect("connect PgStore"))
 }
 
 #[tokio::test]
 async fn every_port_round_trips_against_a_live_postgres() {
-    let Some(store) = fresh_store().await else {
+    let _guard = db_lock().lock().await;
+    let Some(store) = fresh_store(5).await else {
         eprintln!("DATABASE_URL unset — skipping the live Postgres round-trip test");
         return;
     };
@@ -226,4 +235,70 @@ async fn every_port_round_trips_against_a_live_postgres() {
     assert_eq!(InviteStore::list_for_server(s, sid).await.unwrap().len(), 1);
     InviteStore::revoke(s, "hash1").await.unwrap();
     assert!(!InviteStore::by_hash(s, "hash1").await.unwrap().unwrap().is_live(), "revoke flipped the flag");
+}
+
+/// The rate-cap TOCTOU under real concurrency: with one founding citizen the cap
+/// floor gives exactly 5 open slots, so 20 simultaneous admissions of distinct
+/// eligible members must admit **exactly 5** — the `SELECT … FOR UPDATE` serializes
+/// them so two can never both claim the last slot. Without the lock, more than 5
+/// would slip through.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn concurrent_admissions_never_overrun_the_rate_cap() {
+    // A pool wide enough that every racing transaction gets a connection and truly
+    // contends on the row lock (not on connection availability).
+    let _guard = db_lock().lock().await;
+    let Some(store) = fresh_store(24).await else {
+        eprintln!("DATABASE_URL unset — skipping the live Postgres rate-cap concurrency test");
+        return;
+    };
+    let s = &*store;
+
+    let founder = UserStore::next_user_id(s).await.unwrap();
+    UserStore::insert_user(s, User::new(founder, "founder", T)).await.unwrap();
+    let sid = ServerStore::next_server_id(s).await.unwrap();
+    ServerStore::insert_server(s, Server::new(sid, "town", "Town", founder, T)).await.unwrap();
+    // Seat the founder as the lone citizen. A founder is citizen #1 by founding,
+    // not by enfranchisement, so `enfranchised_at` stays None and does not consume a
+    // rate-cap slot: 10% of 1 floors to exactly 5 open slots.
+    let mut fm = Membership::joined(founder, sid, T);
+    fm.tier = Tier::Citizen;
+    fm.enfranchised_at = None;
+    MembershipStore::upsert(s, fm).await.unwrap();
+
+    // 20 distinct, already-Layer-1-eligible members, each promoted to citizen and
+    // ready to be committed iff a slot is open.
+    let now = Timestamp(5_000);
+    let mut pending = Vec::new();
+    for i in 0..20u64 {
+        let uid = UserStore::next_user_id(s).await.unwrap();
+        UserStore::insert_user(s, User::new(uid, format!("m{i}"), T)).await.unwrap();
+        let mut m = Membership::joined(uid, sid, T);
+        m.tier = Tier::Citizen;
+        m.enfranchised_at = Some(now);
+        pending.push(m);
+    }
+
+    let window_start = Timestamp(now.0 - 30 * 86_400);
+    let mut tasks = Vec::new();
+    for m in pending {
+        let store = store.clone();
+        tasks.push(tokio::spawn(async move {
+            MembershipStore::admit_within_cap(&*store, m, window_start, &enfranchisement_slots)
+                .await
+                .unwrap()
+        }));
+    }
+    let mut admitted = 0u64;
+    for t in tasks {
+        if matches!(t.await.unwrap(), app::CapAdmission::Admitted) {
+            admitted += 1;
+        }
+    }
+
+    assert_eq!(admitted, 5, "exactly the 5 open slots were filled, never more");
+    assert_eq!(
+        MembershipStore::citizen_count(s, sid).await.unwrap(),
+        6,
+        "founder + 5 admitted; the lock held the cap under 20-way contention",
+    );
 }

@@ -97,7 +97,7 @@ pub use ports::image_transcoder::ImageTranscoder;
 pub use ports::key_directory_store::KeyDirectoryStore;
 pub use ports::media_store::MediaStore;
 pub use passthrough_transcoder::PassthroughTranscoder;
-pub use ports::membership_store::MembershipStore;
+pub use ports::membership_store::{CapAdmission, MembershipStore};
 pub use ports::message_store::MessageStore;
 pub use ports::proposal_store::ProposalStore;
 pub use ports::reaction_store::ReactionStore;

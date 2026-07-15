@@ -17,7 +17,8 @@ use std::sync::Arc;
 
 use adapter_store_memory::{FixedClock, MemoryStore};
 use app::{
-    EnfranchiseError, EnfranchiseOutcome, MembershipStore, Services, StoreError, VoteError,
+    CapAdmission, EnfranchiseError, EnfranchiseOutcome, MembershipStore, Services, StoreError,
+    VoteError,
 };
 use domain::{FranchiseCriteria, Membership, ProposalKind, ServerId, Timestamp, UserId};
 
@@ -71,6 +72,15 @@ impl MembershipStore for FailingMembershipStore {
     async fn admitted_since(&self, server: ServerId, since: Timestamp) -> Result<u64, StoreError> {
         self.guard()?;
         self.inner.admitted_since(server, since).await
+    }
+    async fn admit_within_cap(
+        &self,
+        admitted: Membership,
+        window_start: Timestamp,
+        slots_open: &(dyn Fn(u64, u64) -> u64 + Send + Sync),
+    ) -> Result<CapAdmission, StoreError> {
+        self.guard()?;
+        self.inner.admit_within_cap(admitted, window_start, slots_open).await
     }
 }
 
