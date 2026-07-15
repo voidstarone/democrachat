@@ -3,3 +3,7 @@
 *.pdb
 democrachat.json
 .DS_Store
+
+# Runtime upload blobs (the local media tier). Real deployments store these on
+# DEMOCRACHAT_MEDIA_DIR (an external drive); never commit them.
+/media/
