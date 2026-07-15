@@ -4,7 +4,7 @@
 #   docker compose up -d --build
 #
 # Trust model: only the Caddy reverse proxy publishes ports (80/443). The app's
-# :3000 is never published — it is reachable only over the internal `edge`
+# :3737 is never published — it is reachable only over the internal `edge`
 # network. Every secret is `${VAR:?}` so the stack refuses to start if one is
 # missing (no service ever runs with a committed/default credential).
 
@@ -24,7 +24,7 @@ services:
     networks: [edge]
     # No `ports:` — the app is not published. Only Caddy reaches it.
     expose:
-      - "3000"
+      - "3737"
     environment:
       # REQUIRED: a strong, random session secret. Fail-closed if unset — the app
       # itself also refuses a placeholder/<16-char secret on this non-loopback bind.

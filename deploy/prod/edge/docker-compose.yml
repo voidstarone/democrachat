@@ -23,7 +23,7 @@ services:
       # The public hostname Caddy serves and gets a Let's Encrypt cert for.
       SITE_ADDRESS: ${SITE_ADDRESS:?set SITE_ADDRESS (e.g. chat.example.com) in .env}
       # The app host's LAN address (host:port) this proxy forwards to.
-      APP_UPSTREAM: ${APP_UPSTREAM:?set APP_UPSTREAM to the app host, e.g. 10.0.0.4:3000}
+      APP_UPSTREAM: ${APP_UPSTREAM:?set APP_UPSTREAM to the app host, e.g. 10.0.0.4:3737}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data      # ACME account + issued certs (durable)

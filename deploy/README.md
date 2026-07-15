@@ -18,7 +18,7 @@ Container-based deployment mirroring the democratos sibling. Two topologies:
 ## Trust model
 
 Two-tier in both topologies: the **Caddy reverse proxy** is the only service that
-publishes ports (80/443) and terminates TLS. The **app** listens on `:3000` and is
+publishes ports (80/443) and terminates TLS. The **app** listens on `:3737` and is
 never internet-exposed — single-box keeps it on an internal Docker network;
 split binds it to a private LAN address the edge host reaches. All public traffic
 arrives through Caddy.

@@ -40,5 +40,5 @@ And `interop/e2e.mjs` drives the full browser E2EE flow (device-key setup, seale
 DMs, encrypted channels with an open-history backlog) against a running server:
 
 ```sh
-node crates/e2ee-wasm/interop/e2e.mjs http://127.0.0.1:3000
+node crates/e2ee-wasm/interop/e2e.mjs http://127.0.0.1:3737
 ```

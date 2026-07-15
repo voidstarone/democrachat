@@ -45,7 +45,7 @@ delivery are chosen only in the `democrachat` composition root.
 
 ```sh
 cargo run -p democrachat -- serve --dev
-# → http://127.0.0.1:3000   (open two browser tabs to see realtime chat)
+# → http://127.0.0.1:3737   (open two browser tabs to see realtime chat)
 ```
 
 It auto-seeds a sample server on first run. Pick a handle, join, chat (replies +
@@ -55,7 +55,7 @@ become a *member*, and earn the *citizen* vote only by meeting the criteria. In
 waiting 30 real days: **fast-forward 15 days** and **simulate citizen
 endorsements**. Data persists to `democrachat.json` (override `DEMOCRACHAT_DATA`).
 
-Flags: `--addr <host:port>` (default `127.0.0.1:3000`), `--dev` (enables the clock
+Flags: `--addr <host:port>` (default `127.0.0.1:3737`), `--dev` (enables the clock
 and endorsement shortcuts — never use in a real deployment).
 
 > Per the design, there is **no owner and no mods**, and **no way to grant the

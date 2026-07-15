@@ -7,7 +7,7 @@
 # data + media. This host is the source of truth; the edge host in ../edge (or an
 # existing Caddy elsewhere, e.g. a separate Pi 4) is a stateless proxy in front.
 #
-#   edge host (public 80/443)  ──LAN──▶  this host  ${APP_BIND}  ──▶  app:3000
+#   edge host (public 80/443)  ──LAN──▶  this host  ${APP_BIND}  ──▶  app:3737
 #
 # Everything is env-driven — copy .env.example to .env and edit. Durable state
 # lives on host paths you choose (${DATA_DIR}, ${MEDIA_DIR}), so it belongs on an
@@ -33,7 +33,7 @@ services:
     # host reverse-proxies to ${APP_BIND}. Compose refuses to start if APP_BIND is
     # unset, so the app is never accidentally bound to every interface.
     ports:
-      - "${APP_BIND:?set APP_BIND to this host's LAN ip:port, e.g. 192.168.1.5:3000}:3000"
+      - "${APP_BIND:?set APP_BIND to this host's LAN ip:port, e.g. 192.168.1.5:3737}:3737"
     environment:
       # REQUIRED. A non-loopback bind makes the app fail-closed without a real
       # secret. Keep it stable across restarts (else every live session cookie is
@@ -68,7 +68,7 @@ services:
     cpus: "${APP_CPUS:-2.0}"
     pids_limit: ${APP_PIDS:-256}
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3737/"]
       interval: 30s
       timeout: 3s
       start_period: 20s
