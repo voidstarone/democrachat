@@ -161,7 +161,15 @@ fn main() {
             exit(2);
         }
     }
+    // Re-encode uploaded images (strip metadata/exploits, HEIC/HEIF → JPEG). Only
+    // production wires the real codec; tests keep the identity transcoder.
+    stores.image = Arc::new(adapter_image::ReencodingTranscoder::new());
     let services = Arc::new(Services::new(clock.clone(), stores));
+
+    // Backfill floor channels for any server persisted before channels were
+    // auto-provisioned (older datasets have servers with no channels, and none had
+    // an #appeals room). Idempotent; the next save writes the repaired dataset.
+    services.backfill_default_channels();
 
     if args.get(1).map(String::as_str) == Some("serve") {
         run_serve(&args, services, clock, store, path, node, data_key);
@@ -185,7 +193,7 @@ fn run_serve(
 ) {
     let is_dev = args.iter().any(|a| a == "--dev");
     let addr: SocketAddr = arg_value(args, "--addr")
-        .unwrap_or_else(|| "127.0.0.1:3000".to_string())
+        .unwrap_or_else(|| "127.0.0.1:3737".to_string())
         .parse()
         .unwrap_or_else(|e| {
             eprintln!("error: bad --addr: {e}");
@@ -320,7 +328,7 @@ fn seed_if_empty(services: &Services) {
     }
     let _ = services.register_account("ada");
     if services.found_server("ada", "Founders Lounge").is_ok() {
-        let _ = services.create_channel("ada", "founders-lounge", "general", "say hello");
+        // #general is provisioned automatically when the server is founded.
         let _ = services.create_channel("ada", "founders-lounge", "governance", "how we govern ourselves");
         let _ = services.post_message("ada", "founders-lounge", "general", "Welcome to democrachat — a chat that governs itself. No owner, no mods: citizens vote.");
         let _ = services.post_message("ada", "founders-lounge", "general", "You start as a guest. Join, chat, and once citizens endorse your messages you can earn the vote.");

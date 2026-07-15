@@ -14,17 +14,28 @@
 # and paste the new digest below (keep the human-readable tag alongside it).
 
 # ---- builder ----
-FROM rust:1.83-bookworm@sha256:a45bf1f5d9af0a23b26703b3500d70af1abff7f984a7abef5a104b42c02a292b AS builder
+# Debian *Trixie* (not Bookworm): the HEIC/HEIF→JPEG transcoder (adapter-image)
+# links libheif via libheif-sys 4.x, which needs libheif ≥ 1.19. Bookworm apt
+# ships only 1.15; Trixie ships 1.19.8, matching the pinned libheif-sys.
+# NOTE: the base digests below must be re-pinned for Trixie (the Bookworm digests
+# are left as placeholders) — run the refresh procedure at the top of this file:
+#   docker pull rust:1.83-trixie && docker image inspect … --format '{{index .RepoDigests 0}}'
+FROM rust:1.83-trixie AS builder
 WORKDIR /src
+# libheif headers (+ pkg-config) to link the transcoder at build time.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libheif-dev pkg-config \
+ && rm -rf /var/lib/apt/lists/*
 COPY . .
 # --locked: fail if Cargo.lock is stale, so the built graph is exactly the audited one.
 RUN cargo build --release --locked -p democrachat
 
 # ---- runtime ----
-FROM debian:bookworm-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df AS runtime
-# Minimal runtime deps: TLS roots + curl for the healthcheck.
+FROM debian:trixie-slim AS runtime
+# Runtime deps: TLS roots + curl for the healthcheck, and libheif (the shared lib
+# the binary links for HEIC/HEIF decoding; it pulls in libde265 automatically).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl \
+ && apt-get install -y --no-install-recommends ca-certificates curl libheif1 \
  && rm -rf /var/lib/apt/lists/*
 
 # Non-root system user; durable state lives in /data owned by it.
@@ -35,13 +46,13 @@ RUN useradd --system --create-home --home-dir /home/app app \
 COPY --from=builder /src/target/release/democrachat /usr/local/bin/democrachat
 
 ENV DEMOCRACHAT_DATA=/data/democrachat.json
-EXPOSE 3000
+EXPOSE 3737
 VOLUME ["/data"]
 
-# Behind the reverse proxy, bind all interfaces on 3000. A non-loopback bind makes
+# Behind the reverse proxy, bind all interfaces on 3737. A non-loopback bind makes
 # the app *require* a real DEMOCRACHAT_SESSION_SECRET (fail-closed) — see the
 # composition root.
 USER app
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD curl -fsS http://127.0.0.1:3000/ || exit 1
-CMD ["democrachat", "serve", "--addr", "0.0.0.0:3000"]
+  CMD curl -fsS http://127.0.0.1:3737/ || exit 1
+CMD ["democrachat", "serve", "--addr", "0.0.0.0:3737"]

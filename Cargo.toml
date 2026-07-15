@@ -18,6 +18,7 @@ members = [
     "crates/adapter-control-etcd",
     "crates/adapter-store-memory",
     "crates/adapter-media-fs",
+    "crates/adapter-image",
     "crates/adapter-federation",
     "crates/adapter-cli",
     "crates/adapter-web",
@@ -38,6 +39,7 @@ federation = { path = "crates/federation" }
 adapter-control-etcd = { path = "crates/adapter-control-etcd" }
 adapter-store-memory = { path = "crates/adapter-store-memory" }
 adapter-media-fs = { path = "crates/adapter-media-fs" }
+adapter-image = { path = "crates/adapter-image" }
 adapter-federation = { path = "crates/adapter-federation" }
 adapter-cli = { path = "crates/adapter-cli" }
 adapter-web = { path = "crates/adapter-web" }
@@ -61,6 +63,14 @@ hex = "0.4"
 # Decoding uploaded emoji images (base64 in the JSON propose request → bytes to
 # validate, then a `data:` URI).
 base64 = "0.22"
+# Re-encoding uploaded message images (adapter-image): decode + re-encode to strip
+# EXIF and neutralize decoder exploits. Pure-Rust codecs for the common formats;
+# `libheif-rs` links the system libheif (a C lib) only for HEIC/HEIF → JPEG.
+# Pinned to ~2.2 so it links libheif-sys 4.x (targets libheif 1.19), the newest
+# libheif apt-installable on a Debian base — 2.6+ needs libheif ≥ 1.21, which no
+# stable distro ships yet.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
+libheif-rs = "~2.2"
 # At-rest envelope encryption (M6): the governance surface is sealed on disk under
 # a per-node key, decrypted only in RAM. ChaCha20-Poly1305 (AEAD) — pure Rust, no
 # OpenSSL, so a node never links the system crypto stack.
