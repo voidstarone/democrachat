@@ -35,7 +35,8 @@ pub fn classify(part: &SignedPart) -> DerivedScope {
         "servers" => server("id"),
         // Server-scoped rows that carry their server directly.
         "channels" | "messages" | "proposals" | "memberships" | "rules" | "roles"
-        | "role_assignments" | "emojis" | "emoji_votes" | "channel_grants" | "invites" => {
+        | "role_assignments" | "role_color_votes" | "emojis" | "emoji_votes"
+        | "channel_grants" | "invites" => {
             server("server_id")
         }
         // Parent-scoped: a vote's server is its proposal's; a reaction's is its message's.
