@@ -11,13 +11,14 @@ use async_trait::async_trait;
 use app::{
     BlockStore, ChannelKeyStore, ChannelStore, Clock, DmStore, EmojiStore, EmojiVoteStore,
     FriendStore, KeyDirectoryStore, MembershipStore, MessageStore, ProposalStore, ReactionStore,
-    RoleStore, RuleStore, ServerStore, Stores, UserStore, VoteStore,
+    RoleColorVoteStore, RoleStore, RuleStore, ServerStore, Stores, UserStore, VoteStore,
 };
 use domain::{
     compose_id, Block, Channel, ChannelId, ChannelKeyGrant, DmId, DmMessage, Emoji, EmojiId,
     EmojiVote, Friendship, Invite, Membership, Message, MessageId, NodeId, Proposal, ProposalId,
     Reaction,
-    Role, RoleAssignment, RoleId, Rule, RuleId, Server, ServerId, Timestamp, User, UserId, UserKeys,
+    Role, RoleAssignment, RoleColor, RoleColorVote, RoleId, Rule, RuleId, Server, ServerId,
+    Timestamp, User, UserId, UserKeys,
     Vote,
 };
 use federation::{ChangeOp, ChangeRecord, ChangeSink, ChangeSource, SignedPart};
@@ -74,6 +75,7 @@ struct Inner {
     friends: Vec<Friendship>,
     roles: HashMap<RoleId, Role>,
     role_assignments: Vec<RoleAssignment>,
+    role_color_votes: Vec<RoleColorVote>,
     /// Server invite codes, keyed by their SHA-256 digest (never the raw code).
     invites: HashMap<String, Invite>,
     /// Transient media blobs (key → (content_type, bytes)). Deliberately outside the
@@ -299,6 +301,13 @@ fn apply_row(inner: &mut Inner, part: &SignedPart) -> Result<(), String> {
                 .role_assignments
                 .retain(|x| !(x.role_id == a.role_id && x.user == a.user));
         }
+        ("role_color_votes", ChangeOp::Upsert) => {
+            let v: RoleColorVote = row!(RoleColorVote);
+            inner
+                .role_color_votes
+                .retain(|x| !(x.role_id == v.role_id && x.voter == v.voter));
+            inner.role_color_votes.push(v);
+        }
         (other, _) => return Err(format!("unknown replicated entity `{other}`")),
     }
     Ok(())
@@ -343,10 +352,14 @@ impl MemoryStore {
             blocks: self.clone(),
             friends: self.clone(),
             roles: self.clone(),
+            role_color_votes: self.clone(),
             keys: self.clone(),
             channel_keys: self.clone(),
             invites: self.clone(),
             media: self.clone(),
+            // No codec by default — the composition root overrides this with the
+            // re-encoding adapter; tests and codec-free drivers keep the identity.
+            image: Arc::new(app::PassthroughTranscoder),
         }
     }
 
@@ -372,6 +385,7 @@ impl MemoryStore {
             friends: inner.friends.clone(),
             roles: inner.roles.values().cloned().collect(),
             role_assignments: inner.role_assignments.clone(),
+            role_color_votes: inner.role_color_votes.clone(),
             invites: inner.invites.values().cloned().collect(),
             user_keys: inner.user_keys.values().cloned().collect(),
             channel_grants: inner.channel_grants.values().cloned().collect(),
@@ -400,6 +414,7 @@ impl MemoryStore {
             blocks: snap.blocks,
             friends: snap.friends,
             role_assignments: snap.role_assignments,
+            role_color_votes: snap.role_color_votes,
             invites: snap
                 .invites
                 .into_iter()
@@ -500,6 +515,8 @@ struct Snapshot {
     roles: Vec<Role>,
     #[serde(default)]
     role_assignments: Vec<RoleAssignment>,
+    #[serde(default)]
+    role_color_votes: Vec<RoleColorVote>,
     #[serde(default)]
     invites: Vec<Invite>,
     #[serde(default)]
@@ -899,6 +916,36 @@ impl EmojiVoteStore for MemoryStore {
             .iter()
             .find(|v| v.emoji_id == emoji && v.voter == voter)
             .map(|v| v.is_up)
+    }
+}
+
+impl RoleColorVoteStore for MemoryStore {
+    fn upsert_role_color_vote(&self, vote: RoleColorVote) {
+        let mut inner = self.0.lock().unwrap();
+        inner
+            .role_color_votes
+            .retain(|x| !(x.role_id == vote.role_id && x.voter == vote.voter));
+        inner.record("role_color_votes", ChangeOp::Upsert, to_payload(&vote));
+        inner.role_color_votes.push(vote);
+    }
+    fn role_color_votes_for_server(&self, server: ServerId) -> Vec<RoleColorVote> {
+        self.0
+            .lock()
+            .unwrap()
+            .role_color_votes
+            .iter()
+            .filter(|v| v.server_id == server)
+            .cloned()
+            .collect()
+    }
+    fn my_role_color_vote(&self, role: RoleId, voter: UserId) -> Option<RoleColor> {
+        self.0
+            .lock()
+            .unwrap()
+            .role_color_votes
+            .iter()
+            .find(|v| v.role_id == role && v.voter == voter)
+            .map(|v| v.color.clone())
     }
 }
 

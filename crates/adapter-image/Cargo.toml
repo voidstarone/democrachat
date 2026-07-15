@@ -1,0 +1,10 @@
+[package]
+name = "adapter-image"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+app.workspace = true
+image.workspace = true
+libheif-rs.workspace = true
