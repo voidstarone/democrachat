@@ -24,6 +24,15 @@ pub enum ProposalKind {
     Ban { user: UserId },
     /// Time a user out until a given instant (seconds since epoch).
     Timeout { user: UserId, until: i64 },
+    /// Mute a member by ballot — silence them everywhere but the appeals channel.
+    Mute { user: UserId },
+    /// Lift a member's mute by ballot. If the mute was imposed by a police officer,
+    /// passing this bars that officer from re-muting the member for 24 hours.
+    LiftMute { user: UserId },
+    /// Appoint a member as a **police** officer — granting the instant-mute power.
+    AppointPolice { user: UserId },
+    /// Dismiss a police officer, revoking the instant-mute power.
+    DismissPolice { user: UserId },
     /// Recall a leader from office.
     Recall { leader: UserId },
     /// Create a new channel — chat-native layout governance (past Seed, where the
@@ -81,6 +90,11 @@ impl ProposalKind {
             ProposalKind::RemoveContent { .. } => BallotKind::RemoveContent,
             ProposalKind::Ban { .. } => BallotKind::Ban,
             ProposalKind::Timeout { .. } => BallotKind::Timeout,
+            ProposalKind::Mute { .. } => BallotKind::Mute,
+            ProposalKind::LiftMute { .. } => BallotKind::LiftMute,
+            ProposalKind::AppointPolice { .. } | ProposalKind::DismissPolice { .. } => {
+                BallotKind::Policing
+            }
             ProposalKind::Recall { .. } => BallotKind::Recall,
             ProposalKind::CreateChannel { .. } => BallotKind::CreateChannel,
             ProposalKind::DeleteChannel { .. } => BallotKind::DeleteChannel,
@@ -103,9 +117,16 @@ impl ProposalKind {
 
     pub fn decision_class(&self) -> DecisionClass {
         match self {
-            ProposalKind::RemoveContent { .. } => DecisionClass::Moderation,
+            // Lifting a mute restores a member — forgiveness is a routine, low-bar
+            // moderation act, unlike imposing the sanction in the first place.
+            ProposalKind::RemoveContent { .. } | ProposalKind::LiftMute { .. } => {
+                DecisionClass::Moderation
+            }
             ProposalKind::Ban { .. }
             | ProposalKind::Timeout { .. }
+            | ProposalKind::Mute { .. }
+            | ProposalKind::AppointPolice { .. }
+            | ProposalKind::DismissPolice { .. }
             | ProposalKind::Recall { .. }
             | ProposalKind::GrantVoteWeight { .. } => DecisionClass::BanOrRecall,
             // Who holds how much power, who may vote, and where the server's data

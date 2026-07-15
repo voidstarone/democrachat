@@ -44,6 +44,7 @@ pub mod weighting;
 pub use chat::attachment::Attachment;
 pub use chat::build_message_tree::build_message_tree;
 pub use chat::channel::Channel;
+pub use chat::channel_visibility::ChannelVisibility;
 pub use chat::media_kind::MediaKind;
 pub use chat::channel_key_grant::ChannelKeyGrant;
 pub use chat::history_mode::HistoryMode;
@@ -63,6 +64,7 @@ pub use governance::ballot_kind::BallotKind;
 pub use governance::decide::decide;
 pub use governance::decision::Decision;
 pub use governance::decision_class::DecisionClass;
+pub use governance::discussion_post::DiscussionPost;
 pub use governance::proposal::Proposal;
 pub use governance::proposal_kind::ProposalKind;
 pub use governance::proposal_status::ProposalStatus;
@@ -130,7 +132,10 @@ pub use node::sequence_mask::SEQUENCE_MASK;
 pub use roles::normalize_role_name::normalize_role_name;
 pub use roles::role::Role;
 pub use roles::role_assignment::RoleAssignment;
+pub use roles::role_color::RoleColor;
+pub use roles::role_color_vote::RoleColorVote;
 pub use roles::standing_role::StandingRole;
+pub use roles::tally_role_color::winning_color;
 
 pub use rules::Rule;
 

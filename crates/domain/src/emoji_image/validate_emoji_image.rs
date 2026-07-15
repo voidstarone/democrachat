@@ -58,5 +58,63 @@ fn sniff(bytes: &[u8]) -> Result<(EmojiImageFormat, u32, u32), EmojiImageError> 
         let height = u16::from_le_bytes(bytes[8..10].try_into().expect("checked length")) as u32;
         return Ok((EmojiImageFormat::Gif, width, height));
     }
+    // JPEG: SOI (FFD8) then a run of marker segments. Walk them — without decoding
+    // any entropy data — to the Start-Of-Frame that carries the real dimensions.
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        let (width, height) = sniff_jpeg(bytes)?;
+        return Ok((EmojiImageFormat::Jpeg, width, height));
+    }
+    Err(EmojiImageError::UnsupportedFormat)
+}
+
+/// Read a JPEG's width/height from its Start-Of-Frame marker by scanning the
+/// segment chain, never touching the compressed scan data (so no decode work and
+/// no "image bomb" surface). A JPEG whose SOF isn't found before the scan begins
+/// is treated as an unsupported/corrupt file.
+fn sniff_jpeg(bytes: &[u8]) -> Result<(u32, u32), EmojiImageError> {
+    let mut i = 2; // past the SOI (FFD8)
+    while i + 4 <= bytes.len() {
+        if bytes[i] != 0xFF {
+            return Err(EmojiImageError::UnsupportedFormat);
+        }
+        // Skip any 0xFF fill bytes to the marker code.
+        let mut m = i + 1;
+        while m < bytes.len() && bytes[m] == 0xFF {
+            m += 1;
+        }
+        if m >= bytes.len() {
+            return Err(EmojiImageError::Truncated);
+        }
+        let marker = bytes[m];
+        i = m + 1;
+        // Standalone markers carry no length: RSTn (D0–D7), SOI (D8), EOI (D9), TEM (01).
+        if marker == 0xD8 || marker == 0xD9 || (0xD0..=0xD7).contains(&marker) || marker == 0x01 {
+            continue;
+        }
+        // Start-Of-Scan: entropy data follows; dimensions must already have appeared.
+        if marker == 0xDA {
+            break;
+        }
+        if i + 2 > bytes.len() {
+            return Err(EmojiImageError::Truncated);
+        }
+        let len = u16::from_be_bytes([bytes[i], bytes[i + 1]]) as usize;
+        if len < 2 {
+            return Err(EmojiImageError::UnsupportedFormat);
+        }
+        // The Start-Of-Frame markers (baseline C0, progressive C2, …) carry
+        // precision(1) then height(2 BE) then width(2 BE) right after the length.
+        let is_sof =
+            matches!(marker, 0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF);
+        if is_sof {
+            if i + 7 > bytes.len() {
+                return Err(EmojiImageError::Truncated);
+            }
+            let height = u16::from_be_bytes([bytes[i + 3], bytes[i + 4]]) as u32;
+            let width = u16::from_be_bytes([bytes[i + 5], bytes[i + 6]]) as u32;
+            return Ok((width, height));
+        }
+        i += len; // skip this segment (len counts its own 2 length bytes)
+    }
     Err(EmojiImageError::UnsupportedFormat)
 }

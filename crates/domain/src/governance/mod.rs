@@ -13,6 +13,7 @@ pub mod ballot_kind;
 pub mod decide;
 pub mod decision;
 pub mod decision_class;
+pub mod discussion_post;
 pub mod proposal;
 pub mod proposal_kind;
 pub mod proposal_status;

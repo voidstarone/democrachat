@@ -6,6 +6,7 @@
 pub mod attachment;
 pub mod build_message_tree;
 pub mod channel;
+pub mod channel_visibility;
 pub mod media_kind;
 pub mod channel_key_grant;
 pub mod history_mode;

@@ -26,6 +26,12 @@ pub enum BallotKind {
     Ban,
     /// Time a user out for a bounded duration.
     Timeout,
+    /// Mute a member (silence them everywhere but the appeals channel).
+    Mute,
+    /// Lift a member's mute.
+    LiftMute,
+    /// Appoint or dismiss a **police** officer (the instant-mute power).
+    Policing,
     /// Recall a leader from office.
     Recall,
     /// Create a channel.
@@ -69,12 +75,15 @@ impl BallotKind {
 
     /// Every ballot kind the platform knows, in a stable order. The catalogue a
     /// server picks from when it edits its governance surface.
-    pub fn all() -> [BallotKind; 17] {
+    pub fn all() -> [BallotKind; 20] {
         use BallotKind::*;
         [
             RemoveContent,
             Ban,
             Timeout,
+            Mute,
+            LiftMute,
+            Policing,
             Recall,
             CreateChannel,
             DeleteChannel,
@@ -108,6 +117,9 @@ impl BallotKind {
             RemoveContent,
             Ban,
             Timeout,
+            Mute,
+            LiftMute,
+            Policing,
             Recall,
             CreateChannel,
             DeleteChannel,

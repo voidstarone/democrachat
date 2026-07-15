@@ -36,6 +36,31 @@ pub struct Membership {
     /// datasets to sharing.
     #[serde(default = "default_shares_history")]
     pub shares_history_with_newcomers: bool,
+    /// Whether this member holds the **police** power on the server: the ability to
+    /// instantly mute another member (and to lift any mute). Appointed and dismissed
+    /// only by ballot ([`crate::ProposalKind::AppointPolice`]); never a self-grant.
+    /// Orthogonal to the franchise — a police officer need not be a citizen, and
+    /// being one confers no vote.
+    #[serde(default)]
+    pub is_police: bool,
+    /// Whether this member is currently **muted** — silenced everywhere but the
+    /// `#appeals` channel. A mute never touches the franchise (a muted citizen still
+    /// votes); it only gags posting. Imposed instantly by police or by a `Mute`
+    /// ballot, lifted by police or by a `LiftMute` ballot.
+    #[serde(default)]
+    pub is_muted: bool,
+    /// The officer who imposed the current mute, if it was a police mute (a
+    /// vote-imposed mute has none). Recorded so a vote that lifts the mute can bar
+    /// *that* officer from immediately re-muting the same member.
+    #[serde(default)]
+    pub muted_by: Option<UserId>,
+    /// After a vote lifts an officer's mute, that officer is barred from re-muting
+    /// this member until this instant — a 24-hour cooldown that stops a lone officer
+    /// from overriding the electorate's decision. `None` when no bar is in force.
+    #[serde(default)]
+    pub remute_blocked_officer: Option<UserId>,
+    #[serde(default)]
+    pub remute_blocked_until: Option<Timestamp>,
 }
 
 fn default_granted_weight() -> u32 {
@@ -58,7 +83,41 @@ impl Membership {
             enfranchised_at: None,
             granted_weight: 1,
             shares_history_with_newcomers: true,
+            is_police: false,
+            is_muted: false,
+            muted_by: None,
+            remute_blocked_officer: None,
+            remute_blocked_until: None,
         }
+    }
+
+    /// Whether `officer` may mute this member right now. A police mute is barred
+    /// only when a vote recently overturned *this same officer's* mute of *this*
+    /// member and the 24-hour cooldown has not yet elapsed.
+    pub fn is_remute_blocked_for(&self, officer: UserId, now: Timestamp) -> bool {
+        self.remute_blocked_officer == Some(officer)
+            && self.remute_blocked_until.is_some_and(|until| now < until)
+    }
+
+    /// Impose a mute. `by` is the officer for a police mute, or `None` for a mute
+    /// imposed by ballot. Clears any spent re-mute cooldown.
+    pub fn mute(&mut self, by: Option<UserId>) {
+        self.is_muted = true;
+        self.muted_by = by;
+    }
+
+    /// Lift the mute. When `by_vote`, any officer who imposed it is barred from
+    /// re-muting this member until `cooldown_until` (24 hours on); a police-lifted
+    /// mute carries no such bar.
+    pub fn unmute(&mut self, by_vote: bool, cooldown_until: Timestamp) {
+        if by_vote {
+            if let Some(officer) = self.muted_by {
+                self.remute_blocked_officer = Some(officer);
+                self.remute_blocked_until = Some(cooldown_until);
+            }
+        }
+        self.is_muted = false;
+        self.muted_by = None;
     }
 
     /// Whether `self` (as the author of a message posted at `posted_at`) lets

@@ -21,7 +21,7 @@ impl std::fmt::Display for EmojiImageError {
                 write!(f, "image is {actual} bytes; the limit is {limit}")
             }
             EmojiImageError::UnsupportedFormat => {
-                write!(f, "unrecognized image format (only PNG and GIF are allowed)")
+                write!(f, "unrecognized image format (only PNG, GIF, and JPEG are allowed)")
             }
             EmojiImageError::Truncated => write!(f, "image header is truncated"),
             EmojiImageError::EmptyDimensions => write!(f, "image has zero width or height"),

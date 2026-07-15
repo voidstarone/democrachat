@@ -10,4 +10,7 @@
 pub mod normalize_role_name;
 pub mod role;
 pub mod role_assignment;
+pub mod role_color;
+pub mod role_color_vote;
 pub mod standing_role;
+pub mod tally_role_color;

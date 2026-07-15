@@ -32,6 +32,19 @@ mod tests {
         b
     }
 
+    /// A minimal JPEG: SOI + a baseline SOF0 segment carrying `w × h`.
+    fn jpeg(w: u16, h: u16) -> Vec<u8> {
+        let mut b = vec![0xFF, 0xD8]; // SOI
+        b.extend_from_slice(&[0xFF, 0xC0]); // SOF0 marker
+        b.extend_from_slice(&[0x00, 0x11]); // segment length (17)
+        b.push(0x08); // sample precision
+        b.extend_from_slice(&h.to_be_bytes());
+        b.extend_from_slice(&w.to_be_bytes());
+        b.push(0x03); // component count
+        b.extend_from_slice(&[0u8; 9]); // 3 components × 3 bytes
+        b
+    }
+
     #[test]
     fn a_png_at_the_limit_is_accepted() {
         assert_eq!(validate_emoji_image(&png(256, 256)), Ok(EmojiImageFormat::Png));
@@ -41,6 +54,16 @@ mod tests {
     #[test]
     fn a_gif_is_accepted() {
         assert_eq!(validate_emoji_image(&gif(128, 128)), Ok(EmojiImageFormat::Gif));
+    }
+
+    #[test]
+    fn a_jpeg_is_accepted_with_its_dimensions() {
+        assert_eq!(validate_emoji_image(&jpeg(200, 128)), Ok(EmojiImageFormat::Jpeg));
+        // The size/dimension rules apply to JPEG just the same.
+        assert!(matches!(
+            validate_emoji_image(&jpeg(300, 10)),
+            Err(EmojiImageError::TooBig { .. })
+        ));
     }
 
     #[test]
@@ -62,8 +85,9 @@ mod tests {
 
     #[test]
     fn an_unknown_format_is_rejected() {
-        assert_eq!(validate_emoji_image(b"\xff\xd8\xff\xe0JFIF"), Err(EmojiImageError::UnsupportedFormat));
         assert_eq!(validate_emoji_image(b"not an image"), Err(EmojiImageError::UnsupportedFormat));
+        // A JPEG signature with no Start-Of-Frame is rejected, not accepted blind.
+        assert_eq!(validate_emoji_image(b"\xff\xd8\xff\xe0JFIF"), Err(EmojiImageError::UnsupportedFormat));
     }
 
     #[test]

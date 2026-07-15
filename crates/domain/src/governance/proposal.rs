@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    decide, threshold_for, DecisionClass, ServerId, Phase, ProposalId, ProposalKind, ProposalStatus,
-    Tally, Timestamp, UserId, RECALL_WINDOW_DAYS,
+    decide, threshold_for, DecisionClass, DiscussionPost, ServerId, Phase, ProposalId, ProposalKind,
+    ProposalStatus, Tally, Timestamp, UserId, RECALL_WINDOW_DAYS,
 };
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -12,7 +12,21 @@ pub struct Proposal {
     pub id: ProposalId,
     pub server_id: ServerId,
     pub proposer: UserId,
+    /// The primary change the proposal enacts. Together with [`amendments`] it
+    /// forms the **bundle** decided by this ballot's single aye/nay.
+    ///
+    /// [`amendments`]: Proposal::amendments
     pub kind: ProposalKind,
+    /// Further changes folded into this proposal after it opened (see
+    /// [`amend`](Self::amend)). The bundle is voted as one and applied all-or-nothing:
+    /// if the ballot passes, every change enacts together; if it fails, none do.
+    /// `#[serde(default)]` reads older records as an empty bundle.
+    #[serde(default)]
+    pub amendments: Vec<ProposalKind>,
+    /// The citizen deliberation thread — "aye or nay?" — carried on the proposal
+    /// itself. `#[serde(default)]` reads older records as an empty thread.
+    #[serde(default)]
+    pub discussion: Vec<DiscussionPost>,
     pub opened_at: Timestamp,
     pub closes_at: Timestamp,
     pub status: ProposalStatus,
@@ -38,11 +52,37 @@ impl Proposal {
             server_id,
             proposer,
             kind,
+            amendments: Vec::new(),
+            discussion: Vec::new(),
             opened_at,
             closes_at,
             status: ProposalStatus::Open,
             is_applied: false,
         }
+    }
+
+    /// Every change this ballot would enact, primary first, then amendments in the
+    /// order they were folded in — the exact order [`apply`](crate::Services) walks.
+    pub fn changes(&self) -> impl Iterator<Item = &ProposalKind> {
+        std::iter::once(&self.kind).chain(self.amendments.iter())
+    }
+
+    /// The decision class the whole bundle is judged at: the **strictest** class
+    /// among its changes. Bundling a constitutional amendment onto a routine
+    /// channel rename lifts the entire ballot to constitutional — the community
+    /// can't slip a hard change past an easy bar by riding it on an easy one.
+    pub fn effective_decision_class(&self) -> DecisionClass {
+        self.changes()
+            .map(ProposalKind::decision_class)
+            .max()
+            .unwrap_or(DecisionClass::Moderation)
+    }
+
+    /// Fold another change into the bundle. Caller (the app use-case) is
+    /// responsible for the gating — that the proposal is still open, and that the
+    /// amendment is itself governed and permitted in the current phase.
+    pub fn amend(&mut self, kind: ProposalKind) {
+        self.amendments.push(kind);
     }
 
     /// Layers 3 & 4 together — close the proposal at `closed_at`: apply the
@@ -60,7 +100,7 @@ impl Proposal {
         phase: Phase,
         closed_at: Timestamp,
     ) -> ProposalStatus {
-        let class = self.kind.decision_class();
+        let class = self.effective_decision_class();
         let status = match threshold_for(class, phase) {
             None => ProposalStatus::Failed,
             Some(threshold) => {

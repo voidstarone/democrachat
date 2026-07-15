@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::chat::channel_visibility::ChannelVisibility;
 use crate::chat::history_mode::HistoryMode;
 use crate::{ChannelId, ServerId, Timestamp};
 
@@ -24,6 +25,11 @@ pub struct Channel {
     /// How the channel key reaches members — only meaningful when encrypted.
     #[serde(default)]
     pub history_mode: HistoryMode,
+    /// Who may see and post in this channel. Defaults to
+    /// [`ChannelVisibility::Open`] (every member), and older datasets read that
+    /// way too; the restricted `#appeals` channel is the sole exception.
+    #[serde(default)]
+    pub visibility: ChannelVisibility,
 }
 
 impl Channel {
@@ -42,7 +48,23 @@ impl Channel {
             created_at,
             is_encrypted: false,
             history_mode: HistoryMode::Open,
+            visibility: ChannelVisibility::Open,
         }
+    }
+
+    /// A restricted `#appeals` channel — where muted members plead their case to
+    /// the server's voters. Same as [`new`](Self::new) but tagged
+    /// [`ChannelVisibility::Appeals`].
+    pub fn appeals(
+        id: ChannelId,
+        server_id: ServerId,
+        name: impl Into<String>,
+        topic: impl Into<String>,
+        created_at: Timestamp,
+    ) -> Self {
+        let mut c = Self::new(id, server_id, name, topic, created_at);
+        c.visibility = ChannelVisibility::Appeals;
+        c
     }
 
     /// Turn on end-to-end encryption for this channel with the given history mode.
