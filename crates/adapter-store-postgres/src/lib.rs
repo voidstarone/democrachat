@@ -17,10 +17,12 @@ use std::sync::Arc;
 use app::{ImageTranscoder, MediaStore, StoreError, Stores};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use federation::ChangeOp;
 use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
 use sqlx::types::Json;
 use sqlx::Row;
 
+mod outbox;
 mod schema;
 mod stores;
 
@@ -118,6 +120,34 @@ pub(crate) fn to_json<T: Serialize>(value: &T) -> Json<&T> {
 pub(crate) fn decode<T: DeserializeOwned>(row: &PgRow) -> Result<T, StoreError> {
     let value: serde_json::Value = row.try_get("data").map_err(to_store_err)?;
     from_json(value)
+}
+
+/// Append one change to the outbox on `conn`. Callers run this on the **same
+/// transaction** as the row write it records, so the feed can never diverge from the
+/// data: either both land or neither does. The scope is not stored — the consumer
+/// derives it from the payload, exactly as the producer does.
+pub(crate) async fn push_outbox<'e, E, T>(
+    exec: E,
+    entity: &str,
+    op: ChangeOp,
+    payload: &T,
+) -> Result<(), StoreError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+    T: Serialize + Sync,
+{
+    let op = match op {
+        ChangeOp::Upsert => "upsert",
+        ChangeOp::Delete => "delete",
+    };
+    sqlx::query("INSERT INTO outbox (entity, op, payload) VALUES ($1, $2, $3)")
+        .bind(entity)
+        .bind(op)
+        .bind(Json(payload))
+        .execute(exec)
+        .await
+        .map_err(to_store_err)?;
+    Ok(())
 }
 
 /// Pull the next value from a Postgres sequence — the id-minting primitive behind

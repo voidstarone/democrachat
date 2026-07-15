@@ -302,3 +302,65 @@ async fn concurrent_admissions_never_overrun_the_rate_cap() {
         "founder + 5 admitted; the lock held the cap under 20-way contention",
     );
 }
+
+/// The transactional outbox producer: writes made through the ordinary ports must
+/// appear in `changes_since` in commit order with the right entity/op, and
+/// `sign_feed` must turn that outbox into a valid signed feed straight from the
+/// PgStore — proving it is a drop-in `ChangeSource` for federation.
+#[tokio::test]
+async fn writes_land_in_the_transactional_outbox_and_sign() {
+    use federation::{
+        sign_feed, ChangeOp, ChangeSource, InMemoryRegistry, NodeKeypair, OwnedScope,
+        OwnershipRegistry, ScopeResolver,
+    };
+
+    struct NoParents;
+    #[async_trait::async_trait]
+    impl ScopeResolver for NoParents {
+        async fn proposal_server(&self, _: u64) -> Option<u64> {
+            None
+        }
+        async fn message_server(&self, _: u64) -> Option<u64> {
+            None
+        }
+    }
+
+    let _guard = db_lock().lock().await;
+    let Some(store) = fresh_store(5).await else {
+        eprintln!("DATABASE_URL unset — skipping the live Postgres outbox test");
+        return;
+    };
+    let s = &*store;
+
+    // A server, a channel, and a message — three writes, three outbox rows.
+    let founder = UserStore::next_user_id(s).await.unwrap();
+    UserStore::insert_user(s, User::new(founder, "ada", T)).await.unwrap();
+    let sid = domain::ServerId(7);
+    ServerStore::insert_server(s, Server::new(sid, "town", "Town", founder, T)).await.unwrap();
+    let cid = ChannelStore::next_channel_id(s).await.unwrap();
+    ChannelStore::insert_channel(s, Channel::new(cid, sid, "general", "", T)).await.unwrap();
+    let mid = MessageStore::next_message_id(s).await.unwrap();
+    MessageStore::insert_message(s, Message::new(mid, cid, sid, founder, "hi", None, T)).await.unwrap();
+
+    let feed = ChangeSource::changes_since(s, 0, 100).await;
+    let entities: Vec<&str> = feed.iter().map(|r| r.entity.as_str()).collect();
+    assert_eq!(entities, ["users", "servers", "channels", "messages"], "in commit order");
+    let seqs: Vec<u64> = feed.iter().map(|r| r.seq).collect();
+    assert_eq!(seqs, [1, 2, 3, 4], "monotonic outbox sequence");
+    assert!(feed.iter().all(|r| r.op == ChangeOp::Upsert));
+
+    // A cursor pull returns only the tail.
+    let tail = ChangeSource::changes_since(s, 2, 100).await;
+    assert_eq!(tail.len(), 2, "a peer at cursor 2 sees only the channel + message");
+
+    // Sign the outbox straight from the PgStore: node A owns Server(7) + the user's
+    // home, so its rows sign; every event verifies under A's key.
+    let node_a = NodeKeypair::generate(domain::NodeId(1));
+    let reg = InMemoryRegistry::new();
+    reg.publish_key(domain::NodeId(1), &node_a.public().to_hex()).await.unwrap();
+    reg.claim(OwnedScope::Server(7), domain::NodeId(1)).await.unwrap();
+    reg.claim(OwnedScope::UserHome(founder.0), domain::NodeId(1)).await.unwrap();
+    let signed = sign_feed(s, &node_a, &reg, &NoParents, 0, 100).await;
+    assert_eq!(signed.len(), 4, "all four owned rows signed");
+    assert!(signed.iter().all(|e| e.verify(&node_a.public()).is_ok()), "A signs its own feed");
+}

@@ -1,21 +1,25 @@
 use app::{KeyDirectoryStore, StoreError};
 use async_trait::async_trait;
 use domain::{UserId, UserKeys};
+use federation::ChangeOp;
 
-use crate::{decode, to_json, to_store_err, PgStore};
+use crate::{decode, push_outbox, to_json, to_store_err, PgStore};
 
 #[async_trait]
 impl KeyDirectoryStore for PgStore {
     async fn put_keys(&self, keys: UserKeys) -> Result<(), StoreError> {
+        let mut tx = self.pool().begin().await.map_err(to_store_err)?;
         sqlx::query(
             "INSERT INTO user_keys (user_id, data) VALUES ($1, $2) \
              ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data",
         )
         .bind(keys.user_id.0 as i64)
         .bind(to_json(&keys))
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await
         .map_err(to_store_err)?;
+        push_outbox(&mut *tx, "user_keys", ChangeOp::Upsert, &keys).await?;
+        tx.commit().await.map_err(to_store_err)?;
         Ok(())
     }
 

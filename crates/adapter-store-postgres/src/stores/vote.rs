@@ -1,12 +1,14 @@
 use app::{StoreError, VoteStore};
 use async_trait::async_trait;
 use domain::{ProposalId, UserId, Vote};
+use federation::ChangeOp;
 
-use crate::{decode, to_json, to_store_err, PgStore};
+use crate::{decode, push_outbox, to_json, to_store_err, PgStore};
 
 #[async_trait]
 impl VoteStore for PgStore {
     async fn upsert_vote(&self, vote: Vote) -> Result<(), StoreError> {
+        let mut tx = self.pool().begin().await.map_err(to_store_err)?;
         sqlx::query(
             "INSERT INTO votes (proposal_id, voter_id, data) VALUES ($1, $2, $3) \
              ON CONFLICT (proposal_id, voter_id) DO UPDATE SET data = EXCLUDED.data",
@@ -14,9 +16,11 @@ impl VoteStore for PgStore {
         .bind(vote.proposal_id.0 as i64)
         .bind(vote.voter.0 as i64)
         .bind(to_json(&vote))
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await
         .map_err(to_store_err)?;
+        push_outbox(&mut *tx, "votes", ChangeOp::Upsert, &vote).await?;
+        tx.commit().await.map_err(to_store_err)?;
         Ok(())
     }
 

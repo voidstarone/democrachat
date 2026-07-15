@@ -1,13 +1,15 @@
 use app::{BlockStore, StoreError};
 use async_trait::async_trait;
 use domain::{Block, UserId};
+use federation::ChangeOp;
 use sqlx::Row;
 
-use crate::{decode, to_json, to_store_err, PgStore};
+use crate::{decode, push_outbox, to_json, to_store_err, PgStore};
 
 #[async_trait]
 impl BlockStore for PgStore {
     async fn add(&self, block: Block) -> Result<bool, StoreError> {
+        let mut tx = self.pool().begin().await.map_err(to_store_err)?;
         let done = sqlx::query(
             "INSERT INTO blocks (blocker_id, blocked_id, data) VALUES ($1, $2, $3) \
              ON CONFLICT (blocker_id, blocked_id) DO NOTHING",
@@ -15,10 +17,15 @@ impl BlockStore for PgStore {
         .bind(block.blocker.0 as i64)
         .bind(block.blocked.0 as i64)
         .bind(to_json(&block))
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await
         .map_err(to_store_err)?;
-        Ok(done.rows_affected() > 0)
+        let inserted = done.rows_affected() > 0;
+        if inserted {
+            push_outbox(&mut *tx, "blocks", ChangeOp::Upsert, &block).await?;
+        }
+        tx.commit().await.map_err(to_store_err)?;
+        Ok(inserted)
     }
 
     async fn involving(&self, who: UserId) -> Result<Vec<Block>, StoreError> {

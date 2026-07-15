@@ -1,12 +1,14 @@
 use app::{FriendStore, StoreError};
 use async_trait::async_trait;
 use domain::{Friendship, UserId};
+use federation::ChangeOp;
 
-use crate::{decode, to_json, to_store_err, PgStore};
+use crate::{decode, push_outbox, to_json, to_store_err, PgStore};
 
 #[async_trait]
 impl FriendStore for PgStore {
     async fn add(&self, friendship: Friendship) -> Result<bool, StoreError> {
+        let mut tx = self.pool().begin().await.map_err(to_store_err)?;
         let done = sqlx::query(
             "INSERT INTO friendships (requester_id, addressee_id, data) VALUES ($1, $2, $3) \
              ON CONFLICT (requester_id, addressee_id) DO NOTHING",
@@ -14,22 +16,30 @@ impl FriendStore for PgStore {
         .bind(friendship.requester.0 as i64)
         .bind(friendship.addressee.0 as i64)
         .bind(to_json(&friendship))
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await
         .map_err(to_store_err)?;
-        Ok(done.rows_affected() > 0)
+        let inserted = done.rows_affected() > 0;
+        if inserted {
+            push_outbox(&mut *tx, "friendships", ChangeOp::Upsert, &friendship).await?;
+        }
+        tx.commit().await.map_err(to_store_err)?;
+        Ok(inserted)
     }
 
     async fn update(&self, friendship: Friendship) -> Result<(), StoreError> {
+        let mut tx = self.pool().begin().await.map_err(to_store_err)?;
         sqlx::query(
             "UPDATE friendships SET data = $3 WHERE requester_id = $1 AND addressee_id = $2",
         )
         .bind(friendship.requester.0 as i64)
         .bind(friendship.addressee.0 as i64)
         .bind(to_json(&friendship))
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await
         .map_err(to_store_err)?;
+        push_outbox(&mut *tx, "friendships", ChangeOp::Upsert, &friendship).await?;
+        tx.commit().await.map_err(to_store_err)?;
         Ok(())
     }
 

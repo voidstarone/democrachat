@@ -1,8 +1,9 @@
 use app::{ChannelStore, StoreError};
 use async_trait::async_trait;
 use domain::{Channel, ChannelId, ServerId};
+use federation::ChangeOp;
 
-use crate::{decode, next_seq, to_json, to_store_err, PgStore};
+use crate::{decode, next_seq, push_outbox, to_json, to_store_err, PgStore};
 
 #[async_trait]
 impl ChannelStore for PgStore {
@@ -11,14 +12,17 @@ impl ChannelStore for PgStore {
     }
 
     async fn insert_channel(&self, channel: Channel) -> Result<(), StoreError> {
+        let mut tx = self.pool().begin().await.map_err(to_store_err)?;
         sqlx::query("INSERT INTO channels (id, server_id, name, data) VALUES ($1, $2, $3, $4)")
             .bind(channel.id.0 as i64)
             .bind(channel.server_id.0 as i64)
             .bind(&channel.name)
             .bind(to_json(&channel))
-            .execute(self.pool())
+            .execute(&mut *tx)
             .await
             .map_err(to_store_err)?;
+        push_outbox(&mut *tx, "channels", ChangeOp::Upsert, &channel).await?;
+        tx.commit().await.map_err(to_store_err)?;
         Ok(())
     }
 
@@ -51,11 +55,25 @@ impl ChannelStore for PgStore {
     }
 
     async fn remove_channel(&self, id: ChannelId) -> Result<bool, StoreError> {
-        let done = sqlx::query("DELETE FROM channels WHERE id = $1")
+        let mut tx = self.pool().begin().await.map_err(to_store_err)?;
+        // Fetch first so the outbox delete carries the whole row — the consumer
+        // identifies (and cascades) from the payload, exactly as the memory store does.
+        let row = sqlx::query("SELECT data FROM channels WHERE id = $1 FOR UPDATE")
             .bind(id.0 as i64)
-            .execute(self.pool())
+            .fetch_optional(&mut *tx)
             .await
             .map_err(to_store_err)?;
-        Ok(done.rows_affected() > 0)
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let channel: Channel = decode(&row)?;
+        sqlx::query("DELETE FROM channels WHERE id = $1")
+            .bind(id.0 as i64)
+            .execute(&mut *tx)
+            .await
+            .map_err(to_store_err)?;
+        push_outbox(&mut *tx, "channels", ChangeOp::Delete, &channel).await?;
+        tx.commit().await.map_err(to_store_err)?;
+        Ok(true)
     }
 }

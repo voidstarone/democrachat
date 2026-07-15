@@ -1,12 +1,14 @@
 use app::{ChannelKeyStore, StoreError};
 use async_trait::async_trait;
 use domain::{ChannelId, ChannelKeyGrant, UserId};
+use federation::ChangeOp;
 
-use crate::{decode, to_json, to_store_err, PgStore};
+use crate::{decode, push_outbox, to_json, to_store_err, PgStore};
 
 #[async_trait]
 impl ChannelKeyStore for PgStore {
     async fn put_grant(&self, grant: ChannelKeyGrant) -> Result<(), StoreError> {
+        let mut tx = self.pool().begin().await.map_err(to_store_err)?;
         sqlx::query(
             "INSERT INTO channel_key_grants (channel_id, member_id, epoch, data) VALUES ($1, $2, $3, $4) \
              ON CONFLICT (channel_id, member_id, epoch) DO UPDATE SET data = EXCLUDED.data",
@@ -15,9 +17,11 @@ impl ChannelKeyStore for PgStore {
         .bind(grant.member.0 as i64)
         .bind(grant.epoch as i64)
         .bind(to_json(&grant))
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await
         .map_err(to_store_err)?;
+        push_outbox(&mut *tx, "channel_grants", ChangeOp::Upsert, &grant).await?;
+        tx.commit().await.map_err(to_store_err)?;
         Ok(())
     }
 

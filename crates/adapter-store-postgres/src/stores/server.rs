@@ -1,8 +1,9 @@
 use app::{ServerStore, StoreError};
 use async_trait::async_trait;
 use domain::{Server, ServerId};
+use federation::ChangeOp;
 
-use crate::{decode, next_seq, to_json, to_store_err, PgStore};
+use crate::{decode, next_seq, push_outbox, to_json, to_store_err, PgStore};
 
 #[async_trait]
 impl ServerStore for PgStore {
@@ -11,13 +12,16 @@ impl ServerStore for PgStore {
     }
 
     async fn insert_server(&self, server: Server) -> Result<(), StoreError> {
+        let mut tx = self.pool().begin().await.map_err(to_store_err)?;
         sqlx::query("INSERT INTO servers (id, slug, data) VALUES ($1, $2, $3)")
             .bind(server.id.0 as i64)
             .bind(&server.slug)
             .bind(to_json(&server))
-            .execute(self.pool())
+            .execute(&mut *tx)
             .await
             .map_err(to_store_err)?;
+        push_outbox(&mut *tx, "servers", ChangeOp::Upsert, &server).await?;
+        tx.commit().await.map_err(to_store_err)?;
         Ok(())
     }
 
@@ -40,13 +44,16 @@ impl ServerStore for PgStore {
     }
 
     async fn update_server(&self, server: Server) -> Result<(), StoreError> {
+        let mut tx = self.pool().begin().await.map_err(to_store_err)?;
         sqlx::query("UPDATE servers SET slug = $2, data = $3 WHERE id = $1")
             .bind(server.id.0 as i64)
             .bind(&server.slug)
             .bind(to_json(&server))
-            .execute(self.pool())
+            .execute(&mut *tx)
             .await
             .map_err(to_store_err)?;
+        push_outbox(&mut *tx, "servers", ChangeOp::Upsert, &server).await?;
+        tx.commit().await.map_err(to_store_err)?;
         Ok(())
     }
 

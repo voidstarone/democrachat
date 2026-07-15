@@ -1,13 +1,15 @@
 use app::{ReactionStore, StoreError};
 use async_trait::async_trait;
 use domain::{MessageId, Reaction, UserId};
+use federation::ChangeOp;
 use sqlx::Row;
 
-use crate::{decode, to_json, to_store_err, PgStore};
+use crate::{decode, push_outbox, to_json, to_store_err, PgStore};
 
 #[async_trait]
 impl ReactionStore for PgStore {
     async fn add(&self, reaction: Reaction) -> Result<bool, StoreError> {
+        let mut tx = self.pool().begin().await.map_err(to_store_err)?;
         let done = sqlx::query(
             "INSERT INTO reactions (message_id, user_id, emoji, data) VALUES ($1, $2, $3, $4) \
              ON CONFLICT (message_id, user_id, emoji) DO NOTHING",
@@ -16,10 +18,15 @@ impl ReactionStore for PgStore {
         .bind(reaction.user.0 as i64)
         .bind(&reaction.emoji)
         .bind(to_json(&reaction))
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await
         .map_err(to_store_err)?;
-        Ok(done.rows_affected() > 0)
+        let inserted = done.rows_affected() > 0;
+        if inserted {
+            push_outbox(&mut *tx, "reactions", ChangeOp::Upsert, &reaction).await?;
+        }
+        tx.commit().await.map_err(to_store_err)?;
+        Ok(inserted)
     }
 
     async fn remove(&self, message: MessageId, user: UserId, emoji: &str) -> Result<bool, StoreError> {

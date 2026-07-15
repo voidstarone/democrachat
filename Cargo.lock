@@ -80,6 +80,7 @@ dependencies = [
  "app",
  "async-trait",
  "domain",
+ "federation",
  "serde",
  "serde_json",
  "sqlx",

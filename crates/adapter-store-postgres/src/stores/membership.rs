@@ -1,15 +1,17 @@
 use app::{CapAdmission, MembershipStore, StoreError};
 use async_trait::async_trait;
 use domain::{Membership, ServerId, Timestamp, UserId};
+use federation::ChangeOp;
 use sqlx::Row;
 
-use crate::{decode, to_json, to_store_err, PgStore};
+use crate::{decode, push_outbox, to_json, to_store_err, PgStore};
 
 #[async_trait]
 impl MembershipStore for PgStore {
     async fn upsert(&self, membership: Membership) -> Result<(), StoreError> {
         // `tier` and `enfranchised_at` are lifted into columns so `citizen_count`
         // and `admitted_since` are index scans, not full-table JSONB filters.
+        let mut tx = self.pool().begin().await.map_err(to_store_err)?;
         sqlx::query(
             "INSERT INTO memberships (user_id, server_id, tier, enfranchised_at, data) \
              VALUES ($1, $2, $3, $4, $5) \
@@ -21,9 +23,11 @@ impl MembershipStore for PgStore {
         .bind(format!("{:?}", membership.tier))
         .bind(membership.enfranchised_at.map(|t| t.0))
         .bind(to_json(&membership))
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await
         .map_err(to_store_err)?;
+        push_outbox(&mut *tx, "memberships", ChangeOp::Upsert, &membership).await?;
+        tx.commit().await.map_err(to_store_err)?;
         Ok(())
     }
 
@@ -133,6 +137,7 @@ impl MembershipStore for PgStore {
         .execute(&mut *tx)
         .await
         .map_err(to_store_err)?;
+        push_outbox(&mut *tx, "memberships", ChangeOp::Upsert, &admitted).await?;
 
         tx.commit().await.map_err(to_store_err)?;
         Ok(CapAdmission::Admitted)

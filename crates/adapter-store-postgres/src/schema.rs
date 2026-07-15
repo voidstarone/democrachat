@@ -173,4 +173,15 @@ CREATE TABLE IF NOT EXISTS invites (
   data JSONB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS invites_server ON invites (server_id);
+
+-- Federation change-capture outbox: every mutation is appended here in the SAME
+-- transaction as the row it changed, so the feed can never diverge from the data.
+-- `seq` (BIGSERIAL) is the peer's monotonic replay cursor; the scope is not stored
+-- (the consumer derives it from the payload, exactly as the producer does).
+CREATE TABLE IF NOT EXISTS outbox (
+  seq BIGSERIAL PRIMARY KEY,
+  entity TEXT NOT NULL,
+  op TEXT NOT NULL,
+  payload JSONB NOT NULL
+);
 "#;

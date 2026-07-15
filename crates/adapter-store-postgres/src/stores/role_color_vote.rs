@@ -1,12 +1,14 @@
 use app::{RoleColorVoteStore, StoreError};
 use async_trait::async_trait;
 use domain::{RoleColor, RoleColorVote, RoleId, ServerId, UserId};
+use federation::ChangeOp;
 
-use crate::{decode, to_json, to_store_err, PgStore};
+use crate::{decode, push_outbox, to_json, to_store_err, PgStore};
 
 #[async_trait]
 impl RoleColorVoteStore for PgStore {
     async fn upsert_role_color_vote(&self, vote: RoleColorVote) -> Result<(), StoreError> {
+        let mut tx = self.pool().begin().await.map_err(to_store_err)?;
         sqlx::query(
             "INSERT INTO role_color_votes (role_id, voter_id, server_id, data) VALUES ($1, $2, $3, $4) \
              ON CONFLICT (role_id, voter_id) DO UPDATE \
@@ -16,9 +18,11 @@ impl RoleColorVoteStore for PgStore {
         .bind(vote.voter.0 as i64)
         .bind(vote.server_id.0 as i64)
         .bind(to_json(&vote))
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await
         .map_err(to_store_err)?;
+        push_outbox(&mut *tx, "role_color_votes", ChangeOp::Upsert, &vote).await?;
+        tx.commit().await.map_err(to_store_err)?;
         Ok(())
     }
 

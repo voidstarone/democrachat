@@ -1,9 +1,10 @@
 use app::{DmStore, StoreError};
 use async_trait::async_trait;
 use domain::{DmId, DmMessage, UserId};
+use federation::ChangeOp;
 use sqlx::Row;
 
-use crate::{decode, next_seq, to_json, to_store_err, PgStore};
+use crate::{decode, next_seq, push_outbox, to_json, to_store_err, PgStore};
 
 #[async_trait]
 impl DmStore for PgStore {
@@ -12,14 +13,17 @@ impl DmStore for PgStore {
     }
 
     async fn insert_dm(&self, message: DmMessage) -> Result<(), StoreError> {
+        let mut tx = self.pool().begin().await.map_err(to_store_err)?;
         sqlx::query("INSERT INTO dms (id, sender_id, recipient_id, data) VALUES ($1, $2, $3, $4)")
             .bind(message.id.0 as i64)
             .bind(message.sender.0 as i64)
             .bind(message.recipient.0 as i64)
             .bind(to_json(&message))
-            .execute(self.pool())
+            .execute(&mut *tx)
             .await
             .map_err(to_store_err)?;
+        push_outbox(&mut *tx, "dms", ChangeOp::Upsert, &message).await?;
+        tx.commit().await.map_err(to_store_err)?;
         Ok(())
     }
 

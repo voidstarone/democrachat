@@ -1,8 +1,9 @@
 use app::{EmojiStore, StoreError};
 use async_trait::async_trait;
 use domain::{Emoji, EmojiId, ServerId};
+use federation::ChangeOp;
 
-use crate::{decode, next_seq, to_json, to_store_err, PgStore};
+use crate::{decode, next_seq, push_outbox, to_json, to_store_err, PgStore};
 
 #[async_trait]
 impl EmojiStore for PgStore {
@@ -11,14 +12,17 @@ impl EmojiStore for PgStore {
     }
 
     async fn insert_emoji(&self, emoji: Emoji) -> Result<(), StoreError> {
+        let mut tx = self.pool().begin().await.map_err(to_store_err)?;
         sqlx::query("INSERT INTO emojis (id, server_id, name, data) VALUES ($1, $2, $3, $4)")
             .bind(emoji.id.0 as i64)
             .bind(emoji.server_id.0 as i64)
             .bind(&emoji.name)
             .bind(to_json(&emoji))
-            .execute(self.pool())
+            .execute(&mut *tx)
             .await
             .map_err(to_store_err)?;
+        push_outbox(&mut *tx, "emojis", ChangeOp::Upsert, &emoji).await?;
+        tx.commit().await.map_err(to_store_err)?;
         Ok(())
     }
 

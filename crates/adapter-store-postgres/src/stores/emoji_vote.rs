@@ -1,12 +1,14 @@
 use app::{EmojiVoteStore, StoreError};
 use async_trait::async_trait;
 use domain::{EmojiId, EmojiVote, ServerId, UserId};
+use federation::ChangeOp;
 
-use crate::{decode, to_json, to_store_err, PgStore};
+use crate::{decode, push_outbox, to_json, to_store_err, PgStore};
 
 #[async_trait]
 impl EmojiVoteStore for PgStore {
     async fn upsert_emoji_vote(&self, vote: EmojiVote) -> Result<(), StoreError> {
+        let mut tx = self.pool().begin().await.map_err(to_store_err)?;
         sqlx::query(
             "INSERT INTO emoji_votes (emoji_id, voter_id, server_id, data) VALUES ($1, $2, $3, $4) \
              ON CONFLICT (emoji_id, voter_id) DO UPDATE \
@@ -16,9 +18,11 @@ impl EmojiVoteStore for PgStore {
         .bind(vote.voter.0 as i64)
         .bind(vote.server_id.0 as i64)
         .bind(to_json(&vote))
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await
         .map_err(to_store_err)?;
+        push_outbox(&mut *tx, "emoji_votes", ChangeOp::Upsert, &vote).await?;
+        tx.commit().await.map_err(to_store_err)?;
         Ok(())
     }
 

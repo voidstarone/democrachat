@@ -1,8 +1,9 @@
 use app::{ProposalStore, StoreError};
 use async_trait::async_trait;
 use domain::{Proposal, ProposalId, ServerId};
+use federation::ChangeOp;
 
-use crate::{decode, next_seq, to_json, to_store_err, PgStore};
+use crate::{decode, next_seq, push_outbox, to_json, to_store_err, PgStore};
 
 #[async_trait]
 impl ProposalStore for PgStore {
@@ -11,13 +12,16 @@ impl ProposalStore for PgStore {
     }
 
     async fn insert_proposal(&self, proposal: Proposal) -> Result<(), StoreError> {
+        let mut tx = self.pool().begin().await.map_err(to_store_err)?;
         sqlx::query("INSERT INTO proposals (id, server_id, data) VALUES ($1, $2, $3)")
             .bind(proposal.id.0 as i64)
             .bind(proposal.server_id.0 as i64)
             .bind(to_json(&proposal))
-            .execute(self.pool())
+            .execute(&mut *tx)
             .await
             .map_err(to_store_err)?;
+        push_outbox(&mut *tx, "proposals", ChangeOp::Upsert, &proposal).await?;
+        tx.commit().await.map_err(to_store_err)?;
         Ok(())
     }
 
@@ -31,13 +35,16 @@ impl ProposalStore for PgStore {
     }
 
     async fn update_proposal(&self, proposal: Proposal) -> Result<(), StoreError> {
+        let mut tx = self.pool().begin().await.map_err(to_store_err)?;
         sqlx::query("UPDATE proposals SET server_id = $2, data = $3 WHERE id = $1")
             .bind(proposal.id.0 as i64)
             .bind(proposal.server_id.0 as i64)
             .bind(to_json(&proposal))
-            .execute(self.pool())
+            .execute(&mut *tx)
             .await
             .map_err(to_store_err)?;
+        push_outbox(&mut *tx, "proposals", ChangeOp::Upsert, &proposal).await?;
+        tx.commit().await.map_err(to_store_err)?;
         Ok(())
     }
 
