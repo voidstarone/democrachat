@@ -38,9 +38,7 @@ fn seat_citizen(f: &Fixture, handle: &str, slug: &str, contribution: i64) {
 
 fn setup(f: &Fixture) {
     f.services.register_account("ada").unwrap();
-    f.services.found_server("ada", "Town Square").unwrap();
-    f.services.create_channel("ada", "town-square", "general", "").unwrap();
-    // Seat two more citizens so a 3-citizen electorate can pass a RuleChange
+    f.services.found_server("ada", "Town Square").unwrap();    // Seat two more citizens so a 3-citizen electorate can pass a RuleChange
     // (60% approval + 30% quorum).
     seat_citizen(f, "bob", "town-square", 5);
     seat_citizen(f, "cid", "town-square", 5);
@@ -158,9 +156,7 @@ fn only_a_citizen_may_open_or_vote() {
 fn citizens_can_vote_to_disable_server_rehoming() {
     let f = fixture(1_000 * DAY);
     f.services.register_account("ada").unwrap();
-    f.services.found_server("ada", "Town Square").unwrap();
-    f.services.create_channel("ada", "town-square", "general", "").unwrap();
-    // Seat 9 more citizens → 10 with the founder, reaching Chartering, where a
+    f.services.found_server("ada", "Town Square").unwrap();    // Seat 9 more citizens → 10 with the founder, reaching Chartering, where a
     // Constitutional ballot (rehoming policy) is permitted.
     let voters = ["bob", "cid", "dan", "eve", "fay", "gus", "hal", "ike", "jan"];
     for h in voters {
@@ -297,6 +293,102 @@ fn citizens_can_amend_who_may_vote() {
         f.store.find_by_slug("town-square").unwrap().criteria, proposed,
         "citizens' vote amended who may earn the franchise"
     );
+}
+
+#[test]
+fn an_amended_bundle_enacts_all_its_changes_together() {
+    let f = fixture(1_000 * DAY);
+    setup(&f);
+
+    // A proposal to add one rule, then amended to also create a channel: two
+    // changes riding one ballot.
+    let p = f
+        .services
+        .open_proposal("ada", "town-square", ProposalKind::AddRule { text: "Be excellent".into() })
+        .unwrap();
+    f.services
+        .amend_proposal("bob", p.id.0, ProposalKind::CreateChannel { name: "lounge".into(), topic: "".into() })
+        .unwrap();
+
+    // One vote decides the whole bundle.
+    f.services.cast_vote("ada", p.id.0, true).unwrap();
+    f.services.cast_vote("bob", p.id.0, true).unwrap();
+    f.services.cast_vote("cid", p.id.0, true).unwrap();
+
+    f.clock.set(Timestamp(1_000 * DAY + 4 * DAY));
+    f.services.resolve_due("town-square");
+
+    // Both the primary change and the amendment took effect.
+    assert_eq!(f.services.list_rules("town-square").len(), 1, "the rule was added");
+    let channels = f.services.list_channels("town-square").unwrap();
+    assert!(channels.iter().any(|c| c.name == "lounge"), "the amendment's channel was created");
+}
+
+#[test]
+fn a_defeated_bundle_enacts_none_of_its_changes() {
+    let f = fixture(1_000 * DAY);
+    setup(&f);
+    let p = f
+        .services
+        .open_proposal("ada", "town-square", ProposalKind::AddRule { text: "No fun".into() })
+        .unwrap();
+    f.services
+        .amend_proposal("ada", p.id.0, ProposalKind::CreateChannel { name: "lounge".into(), topic: "".into() })
+        .unwrap();
+    // The bundle fails its threshold.
+    f.services.cast_vote("ada", p.id.0, true).unwrap();
+    f.services.cast_vote("bob", p.id.0, false).unwrap();
+    f.services.cast_vote("cid", p.id.0, false).unwrap();
+
+    f.clock.set(Timestamp(1_000 * DAY + 4 * DAY));
+    f.services.resolve_due("town-square");
+
+    assert!(f.services.list_rules("town-square").is_empty(), "rule not added");
+    let channels = f.services.list_channels("town-square").unwrap();
+    assert!(!channels.iter().any(|c| c.name == "lounge"), "amendment's channel not created");
+    assert_eq!(f.store_proposals()[0].status, ProposalStatus::Failed);
+}
+
+#[test]
+fn a_closed_proposal_takes_no_amendments() {
+    let f = fixture(1_000 * DAY);
+    setup(&f);
+    let p = f
+        .services
+        .open_proposal("ada", "town-square", ProposalKind::AddRule { text: "Be excellent".into() })
+        .unwrap();
+    // Close the window.
+    f.clock.set(Timestamp(1_000 * DAY + 4 * DAY));
+    f.services.resolve_due("town-square");
+
+    let err = f
+        .services
+        .amend_proposal("bob", p.id.0, ProposalKind::AddRule { text: "too late".into() })
+        .unwrap_err();
+    assert_eq!(err, app::ProposeError::Closed);
+}
+
+#[test]
+fn only_a_citizen_may_join_the_debate() {
+    let f = fixture(1_000 * DAY);
+    setup(&f);
+    // A non-citizen member.
+    f.services.register_account("newbie").unwrap();
+    f.services.join_server("newbie", "town-square").unwrap();
+
+    let p = f
+        .services
+        .open_proposal("ada", "town-square", ProposalKind::AddRule { text: "Be excellent".into() })
+        .unwrap();
+
+    assert_eq!(
+        f.services.post_discussion("newbie", p.id.0, "aye!").unwrap_err(),
+        app::VoteError::NotACitizen
+    );
+    f.services.post_discussion("ada", p.id.0, "I think aye.").unwrap();
+    let thread = f.services.list_discussion(p.id.0);
+    assert_eq!(thread.len(), 1);
+    assert_eq!(thread[0].body, "I think aye.");
 }
 
 impl Fixture {

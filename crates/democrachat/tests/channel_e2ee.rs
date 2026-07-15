@@ -46,7 +46,11 @@ fn setup(founder: &str, members: &[&str], channel: &str) -> Services {
     for m in members {
         s.join_server(m, "town-square").unwrap();
     }
-    s.create_channel(founder, "town-square", channel, "").unwrap();
+    // #general is auto-provisioned when the server is founded; only create the
+    // requested channel when it's a different one.
+    if channel != "general" {
+        s.create_channel(founder, "town-square", channel, "").unwrap();
+    }
     s
 }
 

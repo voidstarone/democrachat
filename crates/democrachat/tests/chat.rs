@@ -28,6 +28,30 @@ fn contribution(f: &Fixture, handle: &str) -> i64 {
     f.store.get(user.id, server.id).unwrap().contribution
 }
 
+#[test]
+fn backfill_gives_channelless_servers_their_floor_channels() {
+    use app::ServerStore;
+    let store = Arc::new(MemoryStore::new());
+    let clock = Arc::new(FixedClock::new(Timestamp(1_000 * DAY)));
+    let services = Services::new(clock.clone(), store.as_stores());
+    // A server persisted the old way — inserted straight into the store with no
+    // channels (as older datasets hold).
+    let sid = store.next_server_id();
+    store.insert_server(domain::Server::new(sid, "old-town", "Old Town", domain::UserId(1), Timestamp(1_000 * DAY)));
+    let _ = &clock;
+    assert!(services.list_channels("old-town").unwrap().is_empty(), "starts channelless");
+
+    services.backfill_default_channels();
+    let names: Vec<String> =
+        services.list_channels("old-town").unwrap().into_iter().map(|c| c.name).collect();
+    assert!(names.contains(&"general".to_string()), "#general backfilled");
+    assert!(names.contains(&"appeals".to_string()), "#appeals backfilled");
+
+    // Idempotent: a second pass adds nothing.
+    services.backfill_default_channels();
+    assert_eq!(services.list_channels("old-town").unwrap().len(), 2);
+}
+
 /// A founder starts as a citizen (the bootstrap), so their reactions endorse.
 fn seed_server(f: &Fixture) {
     f.services.register_account("alice").unwrap();
@@ -35,7 +59,6 @@ fn seed_server(f: &Fixture) {
     let user = f.store.find_by_handle("alice").unwrap();
     let server = f.store.find_by_slug("gamers").unwrap();
     assert_eq!(f.store.get(user.id, server.id).unwrap().tier, Tier::Citizen);
-    f.services.create_channel("alice", "gamers", "general", "chat").unwrap();
 }
 
 #[test]
@@ -141,7 +164,6 @@ fn history_sharing_hides_a_members_past_messages_from_later_joiners() {
     let s = Services::new(clock.clone(), store.as_stores());
     s.register_account("alice").unwrap();
     s.found_server("alice", "Gamers").unwrap();
-    s.create_channel("alice", "gamers", "general", "chat").unwrap();
     s.register_account("bob").unwrap();
     s.join_server("bob", "gamers").unwrap();
     let early = s.post_message("bob", "gamers", "general", "early hello").unwrap();
@@ -174,7 +196,8 @@ fn store_media_validates_type_and_size() {
     let f = fixture(1_000 * DAY);
     seed_server(&f);
     // Accepts a supported type and classifies it.
-    let (key, kind) = f.services.store_media("image/png", b"\x89PNG fake bytes").unwrap();
+    let (key, stored_ct, kind) = f.services.store_media("image/png", b"\x89PNG fake bytes").unwrap();
+    assert_eq!(stored_ct, "image/png", "the test fixture's passthrough transcoder stores images verbatim");
     assert_eq!(kind, domain::MediaKind::Image);
     assert!(f.services.media_blob(&key).is_some(), "the blob is retrievable");
     assert_eq!(f.services.media_blob(&key).unwrap().0, "image/png");
@@ -188,8 +211,40 @@ fn store_media_validates_type_and_size() {
         f.services.store_media("image/svg+xml", b"<svg onload=alert(1)>").unwrap_err(),
         app::MediaError::UnsupportedType(_)
     ));
+    // Markup relabelled as an allowed image type is still rejected on its bytes —
+    // a script-bearing SVG cannot sneak through as `image/png` (leading BOM and
+    // whitespace are skipped before the sniff).
+    assert!(matches!(
+        f.services.store_media("image/png", b"\xEF\xBB\xBF  <svg onload=alert(1)></svg>").unwrap_err(),
+        app::MediaError::UnsupportedType(_)
+    ));
     let too_big = vec![0u8; 26 * 1024 * 1024];
     assert_eq!(f.services.store_media("video/mp4", &too_big).unwrap_err(), app::MediaError::TooLarge);
+}
+
+/// A message may carry only so many attachments — the cap bounds message size and
+/// the disk a single post can claim.
+#[test]
+fn caps_attachments_per_message() {
+    use domain::{Attachment, MediaKind};
+    let f = fixture(1_000 * DAY);
+    seed_server(&f);
+    let att = |i: usize| {
+        let (key, _, _) = f.services.store_media("image/png", format!("img{i}").as_bytes()).unwrap();
+        Attachment::new(key, "image/png", MediaKind::Image, "", false)
+    };
+    let eleven: Vec<_> = (0..11).map(att).collect();
+    assert!(matches!(
+        f.services
+            .post_message_with_attachments("alice", "gamers", "general", "", eleven)
+            .unwrap_err(),
+        app::MessageError::TooManyAttachments(10)
+    ));
+    let ten: Vec<_> = (0..10).map(att).collect();
+    assert!(f
+        .services
+        .post_message_with_attachments("alice", "gamers", "general", "", ten)
+        .is_ok());
 }
 
 /// Media lives and dies with its message: deleting a message deletes its blobs, and
@@ -200,7 +255,7 @@ fn deleting_a_message_deletes_its_media() {
     use domain::{Attachment, MediaKind};
     let f = fixture(1_000 * DAY);
     seed_server(&f);
-    let (key, _) = f.services.store_media("image/png", b"bytes").unwrap();
+    let (key, _, _) = f.services.store_media("image/png", b"bytes").unwrap();
     let att = Attachment::new(key.clone(), "image/png", MediaKind::Image, "", false);
 
     // A media-only message (empty body) is accepted.

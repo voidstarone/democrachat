@@ -39,9 +39,7 @@ fn seat_citizen(f: &Fixture, handle: &str, slug: &str) {
 
 fn setup(f: &Fixture) {
     f.services.register_account("ada").unwrap();
-    f.services.found_server("ada", "Town Square").unwrap();
-    f.services.create_channel("ada", "town-square", "general", "").unwrap();
-    seat_citizen(f, "bob", "town-square");
+    f.services.found_server("ada", "Town Square").unwrap();    seat_citizen(f, "bob", "town-square");
     seat_citizen(f, "cid", "town-square");
 }
 
@@ -146,6 +144,60 @@ fn deleting_a_role_removes_its_assignments() {
     pass(&f, ProposalKind::DeleteRole { role: role.id });
     assert!(f.services.list_roles("town-square").is_empty());
     assert!(f.services.role_holders("town-square", "temp").is_empty());
+}
+
+#[test]
+fn a_roles_colour_is_the_plurality_of_citizen_votes_and_shows_in_the_popover() {
+    let f = fixture(1_000 * DAY);
+    setup(&f);
+    pass(&f, ProposalKind::CreateRole { name: "crew".into() });
+    let role = f.services.list_roles("town-square")[0].clone();
+    let bob = f.store.find_by_handle("bob").unwrap();
+    pass(&f, ProposalKind::AssignRole { user: bob.id, role: role.id });
+
+    // No votes yet → no colour.
+    let (_, color) = f.services.roles_with_color("town-square")[0].clone();
+    assert_eq!(color, None);
+
+    // Two citizens pick red, one picks blue → red wins the plurality.
+    f.services.vote_role_color("ada", "town-square", role.id.0, "#ff0000").unwrap();
+    f.services.vote_role_color("bob", "town-square", role.id.0, "#FF0000").unwrap();
+    f.services.vote_role_color("cid", "town-square", role.id.0, "#0000ff").unwrap();
+
+    let (_, color) = f.services.roles_with_color("town-square")[0].clone();
+    assert_eq!(color.as_ref().map(|c| c.as_str()), Some("#ff0000"));
+
+    // The popover for bob (a holder) shows the winning colour and bob's own vote.
+    let ur = f.services.user_roles("town-square", "bob", "bob").unwrap();
+    assert_eq!(ur.tier, Tier::Citizen);
+    assert!(ur.standing.contains(&"citizens".to_string()));
+    assert_eq!(ur.roles.len(), 1);
+    assert_eq!(ur.roles[0].color.as_deref(), Some("#ff0000"));
+    assert_eq!(ur.roles[0].my_color.as_deref(), Some("#ff0000"));
+
+    // A re-vote replaces the prior one — cid switches to red, now unanimous.
+    f.services.vote_role_color("cid", "town-square", role.id.0, "#ff0000").unwrap();
+    let (_, color) = f.services.roles_with_color("town-square")[0].clone();
+    assert_eq!(color.as_ref().map(|c| c.as_str()), Some("#ff0000"));
+}
+
+#[test]
+fn only_franchised_citizens_may_vote_a_roles_colour() {
+    let f = fixture(1_000 * DAY);
+    setup(&f);
+    pass(&f, ProposalKind::CreateRole { name: "crew".into() });
+    let role = f.services.list_roles("town-square")[0].clone();
+
+    // A plain member (not enfranchised) can't vote a colour.
+    f.services.register_account("newbie").unwrap();
+    f.services.join_server("newbie", "town-square").unwrap();
+    assert!(f.services.vote_role_color("newbie", "town-square", role.id.0, "#123456").is_err());
+
+    // A bad hex value is rejected.
+    assert!(f.services.vote_role_color("ada", "town-square", role.id.0, "nope").is_err());
+
+    // A non-member target has no popover.
+    assert!(f.services.user_roles("town-square", "stranger", "ada").is_none());
 }
 
 #[test]
