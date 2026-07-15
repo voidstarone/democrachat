@@ -16,15 +16,14 @@ use std::collections::HashMap;
 
 use adapter_control_etcd::EtcdRegistry;
 use adapter_federation::{
-    spawn_puller, CommandClient, CommandExecutor, CommandState, FeedClient, FeedState, Peer,
-    ReplayGuard, Replicator, StoreResolver, WriteRouter,
+    spawn_puller, CommandClient, CommandExecutor, CommandState, FeedClient, FeedState, NonceLog,
+    Peer, ReplayGuard, Replicator, StoreResolver, WriteRouter,
 };
-use app::{ServerStore, Services, UserStore};
-use adapter_store_memory::MemoryStore;
+use app::{MessageStore, ProposalStore, ServerStore, Services, UserStore};
 use domain::{origin_node, NodeId};
 use federation::{
-    choose_new_standby, NodeLoad, NodeStatus, OwnedScope, OwnershipRegistry, RehomeOutcome,
-    RehomingController,
+    choose_new_standby, ChangeSink, ChangeSource, NodeLoad, NodeStatus, OwnedScope,
+    OwnershipRegistry, RehomeOutcome, RehomingController, ReplicationCursor,
 };
 use federation::NodeKeypair;
 
@@ -32,7 +31,6 @@ use crate::block_router::FederatedBlockRouter;
 use crate::command_executor::ServiceCommandExecutor;
 use crate::dm_router::FederatedDmRouter;
 use crate::friend_router::FederatedFriendRouter;
-use crate::nonce_log::StoreNonceLog;
 use crate::vote_router::FederatedVoteRouter;
 
 /// The write routers the web layer installs, all backed by the one `WriteRouter`.
@@ -116,12 +114,33 @@ fn fatal(msg: impl std::fmt::Display) -> ! {
 /// Returns the [`VoteRouter`](app::VoteRouter) the web layer installs so a vote
 /// reaches the proposal's server owner; `None` on the single-box deployment, where
 /// votes apply locally.
-pub async fn start(
-    store: Arc<MemoryStore>,
+///
+/// Generic over the store backend `S`: it must supply the change-feed producer
+/// (`ChangeSource`), consumer (`ChangeSink`), replay cursor (`ReplicationCursor`),
+/// the two parent-scope lookups (`ProposalStore`, `MessageStore`), and the scope
+/// enumeration (`ServerStore`, `UserStore`). Both the in-memory store and Postgres
+/// satisfy these, so the same wiring serves either. The anti-replay `nonce_log` is
+/// passed in because its persistence differs per backend (snapshot save-through for
+/// memory, a durable table for Postgres).
+pub async fn start<S>(
+    store: Arc<S>,
     services: Arc<Services>,
     save: Arc<dyn Fn() + Send + Sync>,
+    nonce_log: Arc<dyn NonceLog>,
     node: NodeId,
-) -> Routers {
+) -> Routers
+where
+    S: ServerStore
+        + UserStore
+        + ProposalStore
+        + MessageStore
+        + ChangeSource
+        + ChangeSink
+        + ReplicationCursor
+        + Send
+        + Sync
+        + 'static,
+{
     let Some(cfg) = FedConfig::from_env(node) else {
         return Routers::default(); // not configured — single-box, unchanged
     };
@@ -217,13 +236,14 @@ pub async fn start(
 
     // A durable, store-backed replay guard: a remembered nonce is persisted, so a
     // captured command can't be replayed against this owner after a restart.
-    let replay = Arc::new(ReplayGuard::new(Arc::new(StoreNonceLog::new(store.clone(), save))));
+    let replay = Arc::new(ReplayGuard::new(nonce_log));
 
     // The consumer side: a replicator over the local store, pulling from peers.
     let replicator = Arc::new(Replicator::new(
         store.clone(),
+        store.clone(),
         registry.clone(),
-        Arc::new(StoreResolver(store.clone())),
+        Arc::new(StoreResolver::new(store.clone(), store.clone())),
     ));
     let feed_peers: Vec<Peer> = cfg
         .peers
@@ -245,7 +265,7 @@ pub async fn start(
     let write_router = Arc::new(WriteRouter::new(
         cfg.node,
         registry.clone(),
-        Arc::new(StoreResolver(store.clone())),
+        Arc::new(StoreResolver::new(store.clone(), store.clone())),
         keypair.clone(),
         executor.clone(),
         command_peers,
@@ -257,13 +277,13 @@ pub async fn start(
         store: store.clone(),
         keypair,
         registry: registry.clone(),
-        resolver: Arc::new(StoreResolver(store.clone())),
+        resolver: Arc::new(StoreResolver::new(store.clone(), store.clone())),
         token: cfg.token.clone(),
     };
     let command_state = CommandState {
         node: cfg.node,
         registry,
-        resolver: Arc::new(StoreResolver(store)),
+        resolver: Arc::new(StoreResolver::new(store.clone(), store)),
         replay,
         executor,
         token: cfg.token,
@@ -288,7 +308,7 @@ pub async fn start(
 
 /// The scopes this node homes (the ones it minted the ids for): each minted server
 /// and each minted user.
-async fn owned_scopes(store: &MemoryStore, node: NodeId) -> Vec<OwnedScope> {
+async fn owned_scopes<S: ServerStore + UserStore>(store: &S, node: NodeId) -> Vec<OwnedScope> {
     let mut out: Vec<OwnedScope> = ServerStore::list_all(store).await.unwrap_or_default()
         .into_iter()
         .filter(|s| origin_node(s.id.0) == node)
@@ -314,7 +334,7 @@ fn scope_home(scope: OwnedScope) -> u16 {
 
 /// The scopes homed on OTHER nodes that this node has replicated — the failover
 /// candidates it may have to take over if a peer goes down.
-async fn foreign_scopes(store: &MemoryStore, node: NodeId) -> Vec<OwnedScope> {
+async fn foreign_scopes<S: ServerStore + UserStore>(store: &S, node: NodeId) -> Vec<OwnedScope> {
     let mut out: Vec<OwnedScope> = ServerStore::list_all(store).await.unwrap_or_default()
         .into_iter()
         .filter(|s| origin_node(s.id.0) != node)
@@ -340,8 +360,8 @@ async fn foreign_scopes(store: &MemoryStore, node: NodeId) -> Vec<OwnedScope> {
 /// its presence under `nodes/` (leased) is how peers know it is up and eligible to be
 /// promoted, and (b) designates a live peer as the **standby** for each owned scope,
 /// so failover has a known heir. Both underpin the rehoming loop above.
-async fn reconcile_claims(
-    store: &MemoryStore,
+async fn reconcile_claims<S: ServerStore + UserStore>(
+    store: &S,
     registry: &dyn OwnershipRegistry,
     node: NodeId,
 ) {

@@ -8,7 +8,7 @@ use crate::replicator::Replicator;
 /// `Err`; an authorization rejection is logged, not fatal (the feed is ordered, so
 /// the replicator decides retry-vs-skip).
 pub async fn poll_peer(replicator: &Replicator, peer: &Peer, limit: u64) -> Result<u64, String> {
-    let since = replicator.cursor(peer.node);
+    let since = replicator.cursor(peer.node).await;
     let events = peer.client.changes_since(since, limit).await?;
     if events.is_empty() {
         return Ok(0);

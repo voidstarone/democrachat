@@ -184,4 +184,20 @@ CREATE TABLE IF NOT EXISTS outbox (
   op TEXT NOT NULL,
   payload JSONB NOT NULL
 );
+
+-- Per-peer replication cursor: the highest feed seq applied from each peer, so a
+-- pull resumes where it left off (and survives a restart, unlike an in-RAM map).
+CREATE TABLE IF NOT EXISTS replication_cursors (
+  peer BIGINT PRIMARY KEY,
+  seq BIGINT NOT NULL
+);
+
+-- Durable anti-replay log for forwarded commands: a remembered (node, nonce) can't
+-- be replayed against this owner, even across a restart.
+CREATE TABLE IF NOT EXISTS fed_nonces (
+  node BIGINT NOT NULL,
+  nonce TEXT NOT NULL,
+  expiry_at BIGINT NOT NULL,
+  PRIMARY KEY (node, nonce)
+);
 "#;

@@ -308,3 +308,52 @@ impl ChangeSink for PgStore {
         Ok(())
     }
 }
+
+#[async_trait]
+impl federation::ReplicationCursor for PgStore {
+    async fn replication_cursor(&self, peer: domain::NodeId) -> u64 {
+        let seq: Option<i64> = sqlx::query("SELECT seq FROM replication_cursors WHERE peer = $1")
+            .bind(peer.0 as i64)
+            .fetch_optional(self.pool())
+            .await
+            .ok()
+            .flatten()
+            .and_then(|r| r.try_get("seq").ok());
+        seq.unwrap_or(0) as u64
+    }
+
+    async fn advance_cursor(&self, peer: domain::NodeId, seq: u64) {
+        // Monotonic: GREATEST keeps a reordered/duplicate pull from moving it back.
+        let _ = sqlx::query(
+            "INSERT INTO replication_cursors (peer, seq) VALUES ($1, $2) \
+             ON CONFLICT (peer) DO UPDATE SET seq = GREATEST(replication_cursors.seq, EXCLUDED.seq)",
+        )
+        .bind(peer.0 as i64)
+        .bind(seq as i64)
+        .execute(self.pool())
+        .await;
+    }
+}
+
+impl PgStore {
+    /// Record a forwarded command's `(node, nonce)`, returning `true` if it was
+    /// newly seen. Durable in `fed_nonces`, so a captured command can't be replayed
+    /// after a restart. Expired entries are swept on each call.
+    pub async fn remember_nonce(&self, node: u16, nonce: &str, now: i64, expiry_at: i64) -> bool {
+        let _ = sqlx::query("DELETE FROM fed_nonces WHERE expiry_at <= $1")
+            .bind(now)
+            .execute(self.pool())
+            .await;
+        sqlx::query(
+            "INSERT INTO fed_nonces (node, nonce, expiry_at) VALUES ($1, $2, $3) \
+             ON CONFLICT (node, nonce) DO NOTHING",
+        )
+        .bind(node as i64)
+        .bind(nonce)
+        .bind(expiry_at)
+        .execute(self.pool())
+        .await
+        .map(|r| r.rows_affected() > 0)
+        .unwrap_or(false)
+    }
+}

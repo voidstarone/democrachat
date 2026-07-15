@@ -22,7 +22,7 @@ use domain::{
     Timestamp, User, UserId, UserKeys,
     Vote,
 };
-use federation::{ChangeOp, ChangeRecord, ChangeSink, ChangeSource, SignedPart};
+use federation::{ChangeOp, ChangeRecord, ChangeSink, ChangeSource, ReplicationCursor, SignedPart};
 use serde::{Deserialize, Serialize};
 
 /// A clock fixed at a chosen instant — the controllable clock the time-based
@@ -1522,21 +1522,20 @@ impl RoleStore for MemoryStore {
     }
 }
 
-impl MemoryStore {
-    /// This node's replication cursor for `peer` — the highest feed `seq` it has
-    /// applied from that peer, where its next pull resumes.
-    pub fn replication_cursor(&self, peer: NodeId) -> u64 {
+#[async_trait]
+impl ReplicationCursor for MemoryStore {
+    async fn replication_cursor(&self, peer: NodeId) -> u64 {
         self.0.lock().unwrap().cursors.get(&peer).copied().unwrap_or(0)
     }
 
-    /// Advance the cursor for `peer` to `seq`. Monotonic — a lower `seq` (a
-    /// reordered or duplicate pull) never moves it backward.
-    pub fn advance_cursor(&self, peer: NodeId, seq: u64) {
+    async fn advance_cursor(&self, peer: NodeId, seq: u64) {
         let mut inner = self.0.lock().unwrap();
         let slot = inner.cursors.entry(peer).or_insert(0);
         *slot = (*slot).max(seq);
     }
+}
 
+impl MemoryStore {
     /// Apply one authorized peer change into the replica, without echoing it back
     /// into this node's outbox. The federation adapter's replicator calls this per
     /// event, then advances the peer's cursor over the applied prefix.

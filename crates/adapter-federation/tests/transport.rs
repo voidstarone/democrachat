@@ -42,7 +42,7 @@ async fn node_b_replicates_node_a_over_http() {
         store: store_a.clone(),
         keypair: Arc::new(node_a),
         registry: reg.clone(),
-        resolver: Arc::new(StoreResolver(store_a.clone())),
+        resolver: Arc::new(StoreResolver::new(store_a.clone(), store_a.clone())),
         token: Some("cluster-secret".into()),
     };
     let base_url = serve_a(feed_state).await;
@@ -51,8 +51,9 @@ async fn node_b_replicates_node_a_over_http() {
     let store_b = Arc::new(MemoryStore::new().with_node(NodeId(2)));
     let replicator = Replicator::new(
         store_b.clone(),
+        store_b.clone(),
         reg.clone(),
-        Arc::new(StoreResolver(store_b.clone())),
+        Arc::new(StoreResolver::new(store_b.clone(), store_b.clone())),
     );
     let peer = Peer {
         node: NodeId(1),
@@ -62,7 +63,7 @@ async fn node_b_replicates_node_a_over_http() {
     // One poll replicates both rows and advances B's cursor for A.
     let applied = adapter_federation::poll_peer(&replicator, &peer, 100).await.unwrap();
     assert_eq!(applied, 2);
-    assert_eq!(replicator.cursor(NodeId(1)), 2, "cursor advanced over the applied prefix");
+    assert_eq!(replicator.cursor(NodeId(1)).await, 2, "cursor advanced over the applied prefix");
     assert_eq!(ServerStore::get_server(&*store_b, sid).await.unwrap().map(|s| s.name), Some("Town".into()));
     assert_eq!(ChannelStore::get_channel(&*store_b, chan).await.unwrap().map(|c| c.name), Some("general".into()));
 
@@ -88,7 +89,7 @@ async fn a_bad_bearer_token_is_rejected() {
         store: store_a.clone(),
         keypair: Arc::new(node_a),
         registry: reg.clone(),
-        resolver: Arc::new(StoreResolver(store_a.clone())),
+        resolver: Arc::new(StoreResolver::new(store_a.clone(), store_a.clone())),
         token: Some("right".into()),
     };
     let base_url = serve_a(feed_state).await;

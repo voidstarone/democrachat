@@ -22,6 +22,7 @@ mod dm_router;
 mod federation;
 mod friend_router;
 mod nonce_log;
+mod pg_nonce_log;
 mod vote_router;
 
 /// The media storage directory (a separate concern from the shard snapshot).
@@ -261,8 +262,10 @@ fn run_serve(
         // Bring federation up (feed + command server + puller) if this node is
         // configured for it; a no-op on the default single-box deployment. Started
         // on this runtime so its background tasks run alongside the web server.
+        let nonce_log: Arc<dyn adapter_federation::NonceLog> =
+            Arc::new(nonce_log::StoreNonceLog::new(store.clone(), save_hook.clone()));
         let routers =
-            federation::start(store, services.clone(), save_hook.clone(), node).await;
+            federation::start(store, services.clone(), save_hook.clone(), nonce_log, node).await;
         let config = adapter_web::WebConfig {
             addr,
             is_dev,
@@ -294,6 +297,7 @@ fn serve_postgres(args: &[String], database_url: String) {
     }
 
     let is_dev = args.iter().any(|a| a == "--dev");
+    let node = node_id_from_env();
     let addr: SocketAddr = arg_value(args, "--addr")
         .unwrap_or_else(|| "127.0.0.1:3737".to_string())
         .parse()
@@ -355,19 +359,25 @@ fn serve_postgres(args: &[String], database_url: String) {
                 c.set(now.plus_days(days));
             })
         };
+        // Postgres is the source of truth — every write is already durable, so the
+        // save hook is a no-op (there is no snapshot to flush).
+        let save_hook: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
         let config = adapter_web::WebConfig {
             addr,
             is_dev,
             secure_cookies,
             signer,
             advance_days: advance,
-            // Postgres is the source of truth — every write is already durable, so
-            // there is nothing to snapshot.
-            save: Arc::new(|| {}),
+            save: save_hook.clone(),
         };
-        // Federation replicates the in-memory outbox; it is not yet wired onto
-        // Postgres, so the single-box router bundle (no forwarding) is used.
-        adapter_web::serve(services, config, adapter_web::Routers::default()).await
+        // Bring federation up over the Postgres store if this node is configured for
+        // it; a no-op on the default single-box deployment. The outbox producer +
+        // consumer, replay cursor, and nonce log are all Postgres-backed now.
+        let nonce_log: Arc<dyn adapter_federation::NonceLog> =
+            Arc::new(pg_nonce_log::PgNonceLog::new(store.clone()));
+        let routers =
+            federation::start(store, services.clone(), save_hook, nonce_log, node).await;
+        adapter_web::serve(services, config, routers).await
     });
     if let Err(e) = served {
         eprintln!("server error: {e}");
