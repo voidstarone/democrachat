@@ -32,18 +32,39 @@ Say the app host is `10.0.0.4` and the edge host is public.
 
 ### 1. App host (internal)
 
+Prepare the external drive first (durable state — the DB snapshot and the media
+blobs — lives on it, not the SD card). Assuming it is mounted at `/mnt/ssd`:
+
+```sh
+sudo mkdir -p /mnt/ssd/democrachat/data /mnt/ssd/democrachat/media
+sudo chown -R "$(id -u):$(id -g)" /mnt/ssd/democrachat   # PUID:PGID in .env
+```
+
+Then bring the app up:
+
 ```sh
 cd deploy/prod/app
 cp .env.example .env && $EDITOR .env
 #   DEMOCRACHAT_SESSION_SECRET=$(openssl rand -hex 32)
-#   APP_BIND=10.0.0.4:3000        # this host's PRIVATE address, never 0.0.0.0
-docker compose up -d --build
-curl -fsS http://10.0.0.4:3000/ >/dev/null && echo "app up"   # from the edge host or the LAN
+#   APP_BIND=192.168.1.5:3000     # this host's PRIVATE address, never 0.0.0.0
+#   DATA_DIR / MEDIA_DIR          # the two dirs you just created
+#   PUID / PGID                   # your `id -u` / `id -g`
+docker compose up -d --build      # builds arm64 on the Pi (first build is slow)
+curl -fsS http://192.168.1.5:3000/ >/dev/null && echo "app up"   # from the LAN
 ```
 
-The app publishes **only** on `APP_BIND` (a host-IP-scoped port), owns the `data`
-volume, and — because this is a non-loopback bind — refuses to boot without a
-real `DEMOCRACHAT_SESSION_SECRET` (fail-closed).
+The app publishes **only** on `APP_BIND` (a host-IP-scoped port), keeps the DB
+snapshot on `DATA_DIR` and all uploaded media on `MEDIA_DIR` (both on your drive),
+and — because this is a non-loopback bind — refuses to boot without a real
+`DEMOCRACHAT_SESSION_SECRET` (fail-closed). Every path, port, uid, and limit is an
+env var in `.env`.
+
+> **Drive must be mounted before Docker starts.** If `/mnt/ssd` is not mounted at
+> boot, Docker will bind the *empty* mount point on the SD card and the app will
+> silently start with no data. Give the drive a stable `/etc/fstab` entry (by
+> `UUID=…`, options `defaults,nofail`) and confirm `mountpoint -q /mnt/ssd` before
+> `docker compose up`. Format the drive **ext4** — exFAT/NTFS don't carry the Unix
+> ownership the `user:`/bind-mount model relies on.
 
 ### 2. Edge host (public)
 
@@ -57,6 +78,32 @@ docker compose up -d
 
 Caddy obtains a Let's Encrypt cert for `SITE_ADDRESS` automatically (80/443 must
 be reachable from the internet). Open `https://SITE_ADDRESS`.
+
+#### Already running Caddy on the edge host?
+
+If the edge Pi already runs Caddy (not this compose), don't run the edge project —
+just add one site block to your existing `Caddyfile`, pointing at the app host's
+`APP_BIND`, and reload (`caddy reload` / `systemctl reload caddy`, or
+`docker exec <caddy> caddy reload --config /etc/caddy/Caddyfile`):
+
+```caddy
+chat.example.com {
+	encode gzip zstd
+	# The /ws WebSocket upgrade proxies transparently — no extra config needed.
+	reverse_proxy 192.168.1.5:3000     # = the app host's APP_BIND
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+		-Server
+	}
+}
+```
+
+That block is the whole integration: everything else (TLS, media serving, the
+WebSocket) is handled by the app behind it. `deploy/prod/edge/Caddyfile` is the
+same block parameterised, if you'd rather copy from there.
 
 ## The LAN hop (read this)
 
@@ -79,8 +126,7 @@ single-node hop leans on a trusted/tunnelled private network instead).
 ## Scaling & upgrades
 
 - **More app nodes?** Not supported — the store is in-process. Scale vertically
-  (bump `mem_limit`/`cpus` in `app/docker-compose.yml`) and back up the `data`
-  volume.
+  (bump `APP_MEM`/`APP_CPUS` in the app `.env`) and back up `DATA_DIR` + `MEDIA_DIR`.
 - **Upgrade the app** without touching the edge: `docker compose up -d --build`
   in `app/` (brief blip while it restarts; the edge keeps serving once it's back).
 - **Replace the edge** freely — it is stateless apart from the `caddy_data`
@@ -90,7 +136,11 @@ single-node hop leans on a trusted/tunnelled private network instead).
 
 - [ ] `DEMOCRACHAT_SESSION_SECRET` is a fresh 32-byte value (app `.env`).
 - [ ] `APP_BIND` is a private address; `:3000` is firewalled to the edge host only.
-- [ ] `APP_UPSTREAM` (edge) equals `APP_BIND` (app).
+- [ ] The external drive is ext4, in `/etc/fstab` (`nofail`), and mounted **before**
+      Docker; `DATA_DIR`/`MEDIA_DIR` exist and are chowned to `PUID:PGID`.
+- [ ] Edge upstream (`APP_UPSTREAM`, or the `reverse_proxy` in your existing Caddy)
+      equals `APP_BIND`.
 - [ ] `SITE_ADDRESS` DNS points at the edge host; 80/443 forwarded to it only.
-- [ ] Back up the app host's `data` volume — it is the entire database.
+- [ ] Back up `DATA_DIR` (the whole database) and `MEDIA_DIR` (all uploads). If
+      `DEMOCRACHAT_DATA_KEK` is set, back the key up **separately**.
 - [ ] `deploy/test/posture.sh` (point it at `https://SITE_ADDRESS`) is green.
