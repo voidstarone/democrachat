@@ -86,6 +86,8 @@ pub struct ChannelDto {
     pub is_encrypted: bool,
     /// "open" or "ephemeral" — only meaningful when encrypted.
     pub history_mode: String,
+    /// "open" (every member) or "appeals" (the restricted mute-appeals room).
+    pub visibility: String,
 }
 
 /// Turn on encryption for a channel. `history_mode` is "open" or "ephemeral".
@@ -235,6 +237,35 @@ pub struct RoleDto {
     pub id: u64,
     pub name: String,
     pub holders: Vec<String>,
+    /// The role's voted-on colour (`#rrggbb`), or null if no one has voted.
+    pub color: Option<String>,
+}
+
+/// A member's roles for the identity popover: the standing roles their tier
+/// admits plus every custom role they hold (each with its voted colour and the
+/// viewer's own colour vote).
+#[derive(Serialize)]
+pub struct UserRolesDto {
+    pub handle: String,
+    /// "member" or "citizen".
+    pub tier: String,
+    pub standing: Vec<String>,
+    pub roles: Vec<UserRoleDto>,
+}
+
+/// One custom role a member holds, for the identity popover.
+#[derive(Serialize)]
+pub struct UserRoleDto {
+    pub id: u64,
+    pub name: String,
+    pub color: Option<String>,
+    pub my_color: Option<String>,
+}
+
+/// Cast (or change) a vote for a custom role's colour.
+#[derive(Deserialize)]
+pub struct VoteRoleColorReq {
+    pub color: String,
 }
 
 /// The names a client can `@mention` on a server, for autocomplete.
@@ -254,6 +285,14 @@ pub enum ProposeKindReq {
     DeleteChannel { name: String },
     /// Ban a member, addressed by handle (resolved to an id server-side).
     Ban { handle: String },
+    /// Mute a member by ballot, addressed by handle.
+    Mute { handle: String },
+    /// Lift a member's mute by ballot, addressed by handle.
+    LiftMute { handle: String },
+    /// Appoint a member as a police officer (instant-mute power), by handle.
+    AppointPolice { handle: String },
+    /// Dismiss a police officer, by handle.
+    DismissPolice { handle: String },
     /// Create a custom mention role.
     CreateRole { name: String },
     /// Delete a custom role by name (resolved to an id server-side).
@@ -295,10 +334,27 @@ pub struct VoteReq {
     pub is_aye: bool,
 }
 
+/// A post in a proposal's deliberation thread.
+#[derive(Deserialize)]
+pub struct DiscussReq {
+    pub body: String,
+}
+
+/// One deliberation post, for display.
+#[derive(Serialize)]
+pub struct DiscussionDto {
+    pub author: String,
+    pub body: String,
+}
+
 #[derive(Serialize)]
 pub struct ProposalDto {
     pub id: u64,
+    /// Human summary of the primary change.
     pub summary: String,
+    /// Human summaries of any amendments folded into the bundle, in apply order.
+    /// The whole bundle (primary + amendments) is decided by one aye/nay.
+    pub amendments: Vec<String>,
     pub proposer: String,
     /// "open", "passed", or "failed".
     pub status: String,
@@ -452,6 +508,29 @@ pub struct MeDto {
     /// `null` for a non-member (the setting only exists for members).
     #[serde(default)]
     pub shares_history: Option<bool>,
+    /// Whether the caller holds the police (instant-mute) power on this server.
+    #[serde(default)]
+    pub is_police: bool,
+    /// Whether the caller is currently muted on this server.
+    #[serde(default)]
+    pub is_muted: bool,
+}
+
+/// A server member, for the ban picker and police moderation panel.
+#[derive(Serialize)]
+pub struct MemberDto {
+    pub handle: String,
+    /// "member" or "citizen" (guests aren't members).
+    pub tier: String,
+    pub is_sanctioned: bool,
+    pub is_muted: bool,
+    pub is_police: bool,
+}
+
+/// Address a member by handle — used by the instant mute/unmute endpoints.
+#[derive(Deserialize)]
+pub struct MuteReq {
+    pub handle: String,
 }
 
 /// Toggle the caller's personal history-sharing preference for a server.

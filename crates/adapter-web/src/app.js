@@ -1,6 +1,7 @@
 const S = { me:null, mode:'chat',
-            server:null, channel:null, reply:null, isDev:false, tier:null, serverDetail:null,
-            peer:null, social:null, friendTab:'all', mentionable:{users:[],roles:[]}, emojiMap:{},
+            server:null, channel:null, prop:null, proposals:[], reply:null, isDev:false, tier:null, serverDetail:null,
+            isPolice:false, isMuted:false,
+            peer:null, social:null, friendTab:'all', mentionable:{users:[],roles:[]}, emojiMap:{}, roleColors:{},
             ident:null, channels:[], chanKeys:{} };
 const $ = id => document.getElementById(id);
 
@@ -328,13 +329,15 @@ function setMode(m){
 /* ── Servers / channels (chat) ──────────────────────────────────── */
 async function loadServers() {
   const gs = await api('/api/servers');
-  $('serverList').innerHTML = '';
+  const rail = $('railList'); rail.innerHTML = '';
   gs.forEach(g => {
-    const d = document.createElement('div');
-    d.className = 'item' + (g.slug===S.server ? ' sel':'');
-    d.innerHTML = `${avatar(g.name)}<div class="t grow"><div class="nm">${esc(g.name)}</div><div class="sub">${g.phase} · ${t('app.server.citizens',{n:g.citizens})}</div></div>`;
-    d.onclick = () => selectServer(g.slug);
-    $('serverList').appendChild(d);
+    const b = document.createElement('button');
+    b.className = 'railbtn server' + (g.slug===S.server ? ' on':'');
+    b.title = `${g.name} · ${g.phase} · ${t('app.server.citizens',{n:g.citizens})}`;
+    b.setAttribute('aria-label', g.name);
+    b.innerHTML = avatar(g.name);
+    b.onclick = () => selectServer(g.slug);
+    rail.appendChild(b);
   });
   if (!S.server && gs.length) selectServer(gs[0].slug);
   else if (!gs.length) showServerHome();
@@ -342,10 +345,13 @@ async function loadServers() {
 
 /* The "no server yet" home: a new member's three ways in. */
 function showServerHome(){
-  S.server = null;
+  S.server = null; S.prop = null;
   $('channelsHeading').textContent = t('app.channels.heading');
   $('channelList').innerHTML = '';
   $('addChannelBtn').style.display = 'none';
+  $('demHeadingRow').style.display = 'none';
+  $('demList').innerHTML = '';
+  $('messages').className = '';
   $('messages').innerHTML = `<div class="empty home">
       <div class="big">${icon('vote',40)}</div>
       <h3>${t('app.home.welcome')}</h3>
@@ -374,8 +380,9 @@ const newServer = guard(async () => {
 /* Browse the public directory and join any listed server. */
 const browseServers = guard(async () => {
   const gs = await api('/api/servers/public');
-  S.server = null;
+  S.server = null; S.prop = null;
   $('channelsHeading').textContent = t('app.channels.heading'); $('channelList').innerHTML=''; $('addChannelBtn').style.display='none';
+  $('demHeadingRow').style.display='none'; $('demList').innerHTML=''; $('messages').className='';
   const rows = gs.length ? gs.map(g=>`
       <div class="browserow">
         <div class="grow"><div class="nm">${esc(g.name)}</div>
@@ -408,9 +415,11 @@ const inviteToServer = guard(async () => {
     fields:[{name:'code',label:t('app.invite.code_label'),value:r.code}], submitText:t('app.btn.done')});
 });
 async function selectServer(slug) {
-  S.server = slug; S.channel = null; S.reply = null;
+  S.server = slug; S.channel = null; S.prop = null; S.reply = null;
+  $('messages').className = '';
   const d = await api('/api/servers/'+slug); S.serverDetail = d;
   $('channelsHeading').textContent = d.name + (d.is_private ? ' ·' : '');
+  $('demHeadingRow').style.display = 'flex';
   $('addChannelBtn').style.display = (d.phase==='Seed' && d.founder===S.me) ? 'block':'none';
   $('inviteBtn').style.display = d.are_invites_open ? 'block' : 'none';
   $('serverSettingsBtn').style.display = 'block';
@@ -420,12 +429,13 @@ async function selectServer(slug) {
     const el = document.createElement('div');
     el.className='item'+(c.name===S.channel?' sel':'');
     const lock = c.is_encrypted ? ` <span class="clock lockic" title="${t('app.e2ee.tooltip')}">${icon('lock',12)}</span>` : '';
-    el.innerHTML = `<div class="t grow"><div class="nm"># ${esc(c.name)}${lock}</div></div>`;
+    const appeals = c.visibility==='appeals' ? `<span class="st open" title="${t('app.chan.appeals_hint')}">${t('app.chan.appeals_tag')}</span>` : '';
+    el.innerHTML = `<div class="t grow"><div class="nm"># ${esc(c.name)}${lock}</div></div>${appeals}`;
     el.onclick = () => selectChannel(c.name);
     $('channelList').appendChild(el);
   });
   $('surface').innerHTML = d.surface.map(s=>`<span>${esc(s)}</span>`).join('');
-  loadServers(); loadMe(); loadProposals(); loadRoles(); loadMentionable(); loadEmojis();
+  loadServers(); loadMe(); loadProposals(); loadDemocracy(); loadRoles(); loadMentionable(); loadEmojis();
   if (d.channels.length) selectChannel(d.channels[0].name);
   else $('messages').innerHTML = `<div class="empty"><div class="big">#</div><div>${t('app.channels.none')}</div></div>`;
 }
@@ -448,8 +458,9 @@ async function loadChannelKeys(name){
   grants.forEach(g=>{ try { S.chanKeys[name][g.epoch] = E.open(S.ident.secret, g.sealed_key); } catch {} });
 }
 
-async function selectChannel(name){ S.channel=name; S.reply=null; setReplyBar();
+async function selectChannel(name){ S.channel=name; S.prop=null; S.reply=null; setReplyBar();
   document.body.classList.remove('nav-open'); // close the mobile drawer on pick
+  document.querySelectorAll('#demList .demitem').forEach(el=>el.classList.remove('sel'));
   document.querySelectorAll('#channelList .item .nm').forEach(el=>el.parentElement.parentElement.classList.toggle('sel', el.textContent.startsWith('# '+name)));
   await loadChannelKeys(name);
   const ch=(S.channels||[]).find(c=>c.name===name);
@@ -523,8 +534,12 @@ function renderText(body, m){
   s = mdInline(s)
     .replace(/@([A-Za-z0-9_-]+)/g, (full, tok)=>{
       const k = kinds[tok.toLowerCase()]; if(!k) return full;
-      const cls = k==='user' ? 'm-user' : 'm-role';
-      return `<span class="mention ${cls}">@${esc(tok)}</span>`;
+      if(k==='user'){
+        // Clickable: opens the member's role popover.
+        return `<span class="mention m-user" data-act="showUserRoles" data-handle="${esc(tok)}">@${esc(tok)}</span>`;
+      }
+      const rc = (S.roleColors||{})[tok.toLowerCase()];
+      return `<span class="mention m-role"${rc?` style="color:${esc(rc)}"`:''}>@${esc(tok)}</span>`;
     })
     .replace(EMO, (full, name)=>{
       const url = map[name.toLowerCase()]; if(url===undefined) return full;
@@ -543,17 +558,31 @@ function mdInline(s){
     .replace(/~([^~\n]+)~/g, '<del>$1</del>');
 }
 
-/* Render a message's media attachments (images/video/audio) beneath its body.
-   Spoilered media is blurred behind a click-to-reveal overlay. */
+/* Render a message's media attachments beneath its body. Images are laid out in
+   a Discord-style grid (its column count keyed off how many there are); video and
+   audio stack below as their own blocks. Spoilered media is blurred behind a
+   click-to-reveal overlay; non-spoiler images open full-size in a new tab. */
 function renderAttachments(m){
   const list = m.attachments || []; if(!list.length) return '';
-  const items = list.map(a=>{
+  const images = list.filter(a=>a.kind==='image');
+  const others = list.filter(a=>a.kind!=='image');
+  let html = '';
+  if(images.length){
+    const cells = images.map(a=>{
+      const img = `<img loading="lazy" src="${esc(a.url)}" alt="${esc(a.caption||'')}">`;
+      if(a.is_spoiler){
+        return `<div class="att-cell spoiler-media" data-act="revealMedia"><span class="sm-label">${t('app.spoiler.reveal')}</span>${img}</div>`;
+      }
+      return `<div class="att-cell" data-act="openMedia" data-url="${esc(a.url)}">${img}</div>`;
+    }).join('');
+    // n1 keeps the image at its natural size; 2+ crop-fit into a uniform grid.
+    const cls = images.length===1 ? 'n1' : 'multi n'+Math.min(images.length,4);
+    html += `<div class="att-grid ${cls}">${cells}</div>`;
+  }
+  html += others.map(a=>{
     const cap = a.caption ? `<div class="att-cap">${esc(a.caption)}</div>` : '';
     let inner;
-    if(a.kind==='image'){
-      const open = a.is_spoiler ? '' : ` data-act="openMedia" data-url="${esc(a.url)}"`;
-      inner = `<img loading="lazy" src="${esc(a.url)}" alt="${esc(a.caption||'')}"${open}>`;
-    } else if(a.kind==='video'){
+    if(a.kind==='video'){
       inner = `<video controls preload="metadata" src="${esc(a.url)}"></video>`;
     } else if(a.kind==='audio'){
       inner = `<audio controls preload="metadata" src="${esc(a.url)}"></audio>`;
@@ -565,13 +594,30 @@ function renderAttachments(m){
     }
     return `<div class="att">${cap}${inner}</div>`;
   }).join('');
-  return `<div class="attachments">${items}</div>`;
+  return `<div class="attachments">${html}</div>`;
+}
+
+/* Pin a scrollable message box to the bottom, then re-pin as its lazily-loaded
+   media reports its real dimensions — otherwise the newest message is left pushed
+   above the fold once an image or video grows the list after the initial scroll.
+   Re-pins only while the viewer is already near the bottom, so it never yanks
+   someone who has scrolled up to read history. */
+function scrollToBottom(box){
+  if(!box) return;
+  const pin = () => { box.scrollTop = box.scrollHeight; };
+  pin();
+  box.querySelectorAll('img,video').forEach(el=>{
+    if(el.dataset.pinned) return; el.dataset.pinned='1';
+    el.addEventListener(el.tagName==='VIDEO'?'loadedmetadata':'load', () => {
+      if(box.scrollHeight - box.scrollTop - box.clientHeight < 260) pin();
+    }, {once:true});
+  });
 }
 
 async function loadMessages() {
   if (!S.server || !S.channel) return;
   const msgs = await api(`/api/servers/${S.server}/channels/${S.channel}/messages`);
-  const box = $('messages'); box.innerHTML='';
+  const box = $('messages'); box.className=''; box.innerHTML='';
   const ch=(S.channels||[]).find(c=>c.name===S.channel);
   const head = document.createElement('div'); head.id='channelTitle'; head.className='chan-head';
   // Encryption control: citizens can turn on E2EE for a plaintext channel, or
@@ -600,7 +646,7 @@ async function loadMessages() {
         <div class="bubblewrap">
           <span class="when compact-date">${fmtDate(m.ts)}</span>
           <div class="hdr">
-            <span class="who">${esc(m.author)}</span>
+            <span class="who" data-act="showUserRoles" data-handle="${esc(m.author)}">${esc(m.author)}</span>
             <span class="when time">${fmtTime(m.ts)}</span>
             ${m.edited?`<span class="when">${t('app.msg.edited')}</span>`:''}
             <span class="tools">
@@ -615,7 +661,7 @@ async function loadMessages() {
       </div>`;
     list.appendChild(el);
   });
-  box.scrollTop = box.scrollHeight;
+  scrollToBottom(box);
 }
 
 /* A tiny date+time line for compact mode, e.g. "Jul 14, 12:34 PM". */
@@ -648,12 +694,13 @@ async function loadRoles(){
   if(!S.server) return;
   const roles = await api(`/api/servers/${S.server}/roles`);
   S.customRoles = roles.map(r=>r.name);
+  S.roleColors = {}; roles.forEach(r=>{ if(r.color) S.roleColors[r.name.toLowerCase()] = r.color; });
   const box=$('roles');
   const builtin = `<div class="card sub"><b>${t('app.roles.builtin')}</b> @everyone · @members · @citizens</div>`;
   if(!roles.length){ box.innerHTML = builtin + `<div class="sub" style="margin-bottom:.6rem">${t('app.roles.none')}</div>`; return; }
   box.innerHTML = builtin + roles.map(r=>`
     <div class="card" style="padding:.55rem .7rem">
-      <div><span class="mention m-role">@${esc(r.name)}</span></div>
+      <div><span class="mention m-role"${r.color?` style="color:${esc(r.color)}"`:''}>@${esc(r.name)}</span></div>
       <div class="sub" style="margin-top:.3rem">${r.holders.length ? r.holders.map(h=>'@'+esc(h)).join(', ') : t('app.roles.no_members')}</div>
     </div>`).join('');
 }
@@ -662,6 +709,58 @@ async function loadMentionable(){
   if(!S.server){ S.mentionable={users:[],roles:[]}; return; }
   try { S.mentionable = await api(`/api/servers/${S.server}/mentionable`); } catch { S.mentionable={users:[],roles:[]}; }
 }
+
+/* Identity popover: shown when a username (author line or @mention) is clicked.
+   Lists the member's standing + custom roles; each custom role shows its voted-on
+   colour, and franchised citizens can (re)vote a colour inline — a continuous
+   plurality vote, like emoji. Built as a bare scrim so it can refill in place. */
+const showUserRoles = guard(async (handle) => {
+  if(!handle || !S.server) return;
+  const scrim = document.createElement('div'); scrim.id='scrim';
+  scrim.innerHTML = `<div class="modal">
+    <h3 class="rc-head"></h3>
+    <div class="sub rc-standing" style="margin:-.2rem 0 .55rem"></div>
+    <div class="rc-list"><div class="sub">…</div></div>
+    <div class="actions"><button class="ghost" data-cancel>${t('app.btn.close')}</button></div>
+  </div>`;
+  document.body.appendChild(scrim);
+  requestAnimationFrame(()=>scrim.classList.add('show'));
+  const close = ()=>{ scrim.classList.remove('show'); setTimeout(()=>scrim.remove(),160); };
+  scrim.querySelector('[data-cancel]').onclick = close;
+  scrim.onclick = e => { if(e.target===scrim) close(); };
+  const canVote = S.tier==='citizen';
+  const fill = async () => {
+    let ur;
+    try { ur = await api(`/api/servers/${S.server}/members/${encodeURIComponent(handle)}/roles`); }
+    catch { scrim.querySelector('.rc-list').innerHTML = `<div class="sub">${t('app.roles.user_none')}</div>`; return; }
+    scrim.querySelector('.rc-head').innerHTML = `${avatar(ur.handle,'sm')} <span>@${esc(ur.handle)}</span>`;
+    const standing = (ur.standing||[]).map(n=>`<span class="mention m-role">@${esc(n)}</span>`).join(' ');
+    scrim.querySelector('.rc-standing').innerHTML = `${t('app.roles.standing')}: ${standing||'—'}`;
+    scrim.querySelector('.rc-list').innerHTML = (ur.roles||[]).length
+      ? ur.roles.map(r=>{
+          const sw = `<span class="rc-sw" style="background:${r.color?esc(r.color):'transparent'}"></span>`;
+          const chip = `<span class="mention m-role"${r.color?` style="color:${esc(r.color)}"`:''}>@${esc(r.name)}</span>`;
+          const vote = canVote
+            ? `<span class="rc-vote">
+                 <input type="color" class="rc-in" value="${esc(r.my_color||r.color||'#3b82f6')}">
+                 <button class="sm ghost" data-act="voteRoleColor" data-id="${r.id}">${t('app.roles.set_color')}</button>
+               </span>`
+            : '';
+          return `<div class="rc-row">${sw}<div class="grow">${chip}</div>${vote}</div>`;
+        }).join('')
+      : `<div class="sub">${t('app.roles.user_none')}</div>`;
+  };
+  scrim._fill = fill;   // let voteRoleColor refresh the open popover after a vote
+  fill();
+});
+
+const voteRoleColor = guard(async (id, color) => {
+  if(!color) return;
+  await api(`/api/servers/${S.server}/roles/${id}/color`,'POST',{color});
+  toast(t('app.roles.color_voted'),'ok');
+  loadRoles();                                    // refresh coloured chips elsewhere
+  const scrim=$('scrim'); if(scrim && scrim._fill) scrim._fill();
+});
 function setReply(id, who){ S.reply={id,who}; setReplyBar(); $('msgInput').focus(); }
 function setReplyBar(){ const b=$('replybar'); if(S.reply){ b.style.display='block';
   b.innerHTML = `${t('app.reply.to')} <b>${esc(S.reply.who)}</b> · <a href="#" data-act="cancelReply">${t('app.reply.cancel')}</a>`; }
@@ -671,26 +770,50 @@ const AC = { open:false, items:[], idx:0, start:0 };
 function acClose(){ AC.open=false; $('acPopup').style.display='none'; }
 function acRender(){
   const p=$('acPopup');
-  p.innerHTML = AC.items.map((it,i)=>`<div class="ac ${i===AC.idx?'on':''}" data-i="${i}">
-     <span>@${esc(it.name)}</span><span class="k">${it.role?t('app.ac.role'):t('app.ac.user')}</span></div>`).join('');
+  p.innerHTML = AC.items.map((it,i)=>{
+    if(it.emoji) return `<div class="ac ${i===AC.idx?'on':''}" data-i="${i}">
+       <img class="cemoji" src="${esc(it.url)}" alt=""><span>:${esc(it.name)}:</span></div>`;
+    return `<div class="ac ${i===AC.idx?'on':''}" data-i="${i}">
+       <span>@${esc(it.name)}</span><span class="k">${it.role?t('app.ac.role'):t('app.ac.user')}</span></div>`;
+  }).join('');
   p.style.display = AC.items.length ? 'block' : 'none';
 }
 function acOnInput(){
   const inp=$('msgInput'); const pos=inp.selectionStart;
-  const m = inp.value.slice(0,pos).match(/@([A-Za-z0-9_-]*)$/);
-  if(!m){ acClose(); return; }
-  AC.start = pos - m[0].length;
-  const q = m[1].toLowerCase();
-  const roles = (S.mentionable.roles||[]).filter(r=>r.toLowerCase().startsWith(q)).map(name=>({name,role:true}));
-  const users = (S.mentionable.users||[]).filter(u=>u.toLowerCase().startsWith(q) && u!==S.me).map(name=>({name,role:false}));
-  AC.items = [...roles, ...users].slice(0,8); AC.idx=0; AC.open=AC.items.length>0; acRender();
+  const before = inp.value.slice(0,pos);
+  // @-mention: members and roles.
+  let m = before.match(/@([A-Za-z0-9_-]*)$/);
+  if(m){
+    AC.start = pos - m[0].length;
+    const q = m[1].toLowerCase();
+    const roles = (S.mentionable.roles||[]).filter(r=>r.toLowerCase().startsWith(q)).map(name=>({name,role:true}));
+    const users = (S.mentionable.users||[]).filter(u=>u.toLowerCase().startsWith(q) && u!==S.me).map(name=>({name,role:false}));
+    AC.items = [...roles, ...users].slice(0,8); AC.idx=0; AC.open=AC.items.length>0; acRender(); return;
+  }
+  // :emoji: — suggest this server's custom emoji once at least one character is
+  // typed (so a lone ":" or a time like 12:30 never triggers it).
+  m = before.match(/:([A-Za-z0-9_-]+)$/);
+  if(m){
+    AC.start = pos - m[0].length;
+    const q = m[1].toLowerCase();
+    const items = Object.keys(S.emojiMap||{})
+      .filter(n=>n.toLowerCase().includes(q))
+      .sort((a,b)=>{ // names that *start* with the query rank first
+        const as=a.toLowerCase().startsWith(q), bs=b.toLowerCase().startsWith(q);
+        return as===bs ? a.localeCompare(b) : (as?-1:1);
+      })
+      .slice(0,8).map(name=>({name, emoji:true, url:S.emojiMap[name]}));
+    AC.items = items; AC.idx=0; AC.open=items.length>0; acRender(); return;
+  }
+  acClose();
 }
 function acPick(i){
   const it=AC.items[i]; if(!it) return;
   const inp=$('msgInput'); const pos=inp.selectionStart;
   const before=inp.value.slice(0,AC.start), after=inp.value.slice(pos);
-  inp.value = before+'@'+it.name+' '+after;
-  const caret=(before+'@'+it.name+' ').length; inp.setSelectionRange(caret,caret);
+  const insert = it.emoji ? ':'+it.name+': ' : '@'+it.name+' ';
+  inp.value = before+insert+after;
+  const caret=(before+insert).length; inp.setSelectionRange(caret,caret);
   acClose(); inp.focus();
 }
 /* Returns true if the key was consumed by the popup. */
@@ -710,6 +833,9 @@ $('acPopup').addEventListener('mousedown', e=>{ const el=e.target.closest('.ac')
    Files the user has picked but not yet sent. Each: {file, kind, url, is_spoiler}
    where `url` is an object-URL preview for images (revoked on removal/send). */
 let PENDING = [];
+/* Cap on files attached to one message — mirrors the server's own limit so the
+   composer refuses extras up front instead of failing the post. */
+const MAX_ATTACHMENTS = 10;
 
 function pendingKind(type){
   return type.startsWith('image/') ? 'image'
@@ -717,6 +843,7 @@ function pendingKind(type){
        : type.startsWith('audio/') ? 'audio' : 'file';
 }
 function addPending(file){
+  if(PENDING.length >= MAX_ATTACHMENTS){ toast(t('app.attach.too_many',{n:MAX_ATTACHMENTS}),'err'); return; }
   const kind = pendingKind(file.type||'');
   const url = kind==='image' ? URL.createObjectURL(file) : null;
   PENDING.push({file, kind, url, is_spoiler:false});
@@ -756,7 +883,15 @@ if(fileInput) fileInput.addEventListener('change', e=>{
 });
 
 const sendMessage = guard(async () => {
-  const input=$('msgInput'); const body=input.value.trim();
+  const input=$('msgInput');
+  // In a proposal's discussion channel the composer posts to the debate, not a chat channel.
+  if(S.prop){
+    const body=input.value.trim(); if(!body) return;
+    await api(`/api/proposals/${S.prop}/discussion`,'POST',{body});
+    input.value=''; acClose(); loadDiscussion();
+    return;
+  }
+  const body=input.value.trim();
   const ch=(S.channels||[]).find(c=>c.name===S.channel);
   if(ch&&ch.is_encrypted){
     if(!body) return;
@@ -859,7 +994,107 @@ async function loadProposals(){
     box.appendChild(el);
   });
 }
-const vote = guard(async (id,isAye) => { await api('/api/proposals/'+id+'/vote','POST',{is_aye:isAye}); loadProposals(); });
+const vote = guard(async (id,isAye) => { await api('/api/proposals/'+id+'/vote','POST',{is_aye:isAye}); loadProposals(); refreshDemocracy(); });
+
+/* ── Democracy: proposals as discussion channels ────────────────────
+   The left rail's Democracy section lists proposals; selecting one opens it in
+   the main pane as a discussion "channel" with a pinned aye/nay at the top. */
+async function loadDemocracy(){
+  if(!S.server){ S.proposals=[]; $('demList').innerHTML=''; return; }
+  const ps = await api(`/api/servers/${S.server}/proposals`);
+  S.proposals = ps;
+  const box = $('demList'); box.innerHTML='';
+  if(!ps.length){ box.innerHTML=`<div class="sub" style="padding:.2rem .55rem">${t('app.dem.none')}</div>`; return; }
+  // Show open proposals; if none are open, fall back to the most recent decided ones.
+  const open = ps.filter(p=>p.status==='open');
+  const shown = (open.length ? open : ps.slice(-4));
+  shown.slice().reverse().forEach(p=>{
+    const el = document.createElement('div');
+    el.className = 'item demitem'+(p.id===S.prop?' sel':'');
+    el.dataset.id = p.id;
+    const amc = p.amendments.length ? `<span class="amc">+${p.amendments.length}</span>` : '';
+    el.innerHTML = `<div class="t grow"><div class="nm">${esc(p.summary)}</div></div>${amc}<span class="st ${p.status}">${t('app.props.'+p.status)}</span>`;
+    el.onclick = () => selectProposal(p.id);
+    box.appendChild(el);
+  });
+}
+
+function selectProposal(id){
+  S.prop = id; S.channel = null; S.reply = null; setReplyBar();
+  document.body.classList.remove('nav-open');
+  document.querySelectorAll('#channelList .item').forEach(el=>el.classList.remove('sel'));
+  document.querySelectorAll('#demList .demitem').forEach(el=>el.classList.toggle('sel', +el.dataset.id===id));
+  renderProposalView();
+  loadDiscussion();
+}
+
+/* Re-fetch the proposal list and, if one is open in the main pane, re-render it. */
+async function refreshDemocracy(){
+  await loadDemocracy();
+  if(S.prop){ renderProposalView(); loadDiscussion(); }
+}
+
+/* The pinned aye/nay card at the top of a proposal's discussion channel. */
+function renderPinned(p){
+  const open = p.status==='open';
+  const canVote = open && S.tier==='citizen';
+  let statusText;
+  if(open){ const d=Math.max(0,Math.round((p.closes_in||0)/86400)); statusText=`<span class="st-open">${t('app.props.open')}</span> · ${t('app.props.closes_in',{d})}`; }
+  else if(p.status==='passed'){ statusText=`<span class="st-passed">${t('app.props.passed')}</span>${p.is_applied?' · '+t('app.props.applied'):' · '+t('app.props.applying')}`; }
+  else statusText=`<span class="st-failed">${t('app.props.failed')}</span>`;
+
+  // The bundle: primary change plus any amendments, all decided by this one ballot.
+  const changes = [p.summary, ...p.amendments];
+  const bundle = p.amendments.length
+    ? `<div class="bundle"><div class="bh">${t('app.dem.bundle',{n:changes.length})}</div>
+        <ol>${changes.map((c,i)=>`<li class="${i===0?'primary':''}">${esc(c)}</li>`).join('')}</ol></div>`
+    : '';
+
+  const votebtn = (cls,aye,n) => canVote
+    ? `<button class="bigvote ${cls} ${p.my_vote===aye?'on':''}" data-act="vote" data-id="${p.id}" data-aye="${aye?1:0}">${t(cls==='aye'?'app.props.aye':'app.props.nay')} <span class="n">${n}</span></button>`
+    : `<span class="bigvote ${cls}">${t(cls==='aye'?'app.props.aye':'app.props.nay')} <span class="n">${n}</span></span>`;
+  const votebar = `<div class="votebar">${votebtn('aye',true,p.aye)}${votebtn('nay',false,p.nay)}</div>`;
+
+  const total = p.aye + p.nay;
+  const ayePct = total ? Math.round(100*p.aye/total) : 0;
+  const tally = total ? `<div class="tallybar"><span class="a" style="width:${ayePct}%"></span><span class="n" style="width:${100-ayePct}%"></span></div>` : '';
+
+  const note = !open ? `<div class="closednote">${t('app.dem.closed_note')}</div>`
+    : (S.tier!=='citizen' ? `<div class="closednote">${t('app.dem.citizens_only')}</div>` : '');
+  const amendBtn = canVote
+    ? `<div class="prop-actions"><button class="ghost sm" data-act="amendProp" data-id="${p.id}" title="${t('app.dem.amend_hint')}">${t('app.dem.amend')}</button></div>` : '';
+
+  return `<div class="prop-pinned">
+    <div class="eyebrow">${t('app.dem.pinned')}</div>
+    <h3>${esc(p.summary)}</h3>
+    <div class="meta">${t('app.props.by')} @${esc(p.proposer)} · ${statusText}</div>
+    ${bundle}${votebar}${tally}${note}${amendBtn}
+  </div>`;
+}
+
+function renderProposalView(){
+  const box = $('messages'); box.className = 'propmode';
+  const p = (S.proposals||[]).find(x=>x.id===S.prop);
+  if(!p){ box.className=''; box.innerHTML = `<div class="empty"><div class="big">${icon('vote',40)}</div><div>${t('app.dem.select')}</div></div>`; return; }
+  box.innerHTML = renderPinned(p) + `<div id="discList"></div>`;
+  // Route the shared composer to this proposal's debate.
+  const open = p.status==='open', canPost = open && S.tier==='citizen';
+  const inp = $('msgInput');
+  inp.disabled = !canPost;
+  inp.placeholder = canPost ? t('app.dem.discuss_ph') : (open ? t('app.dem.citizens_only') : t('app.dem.closed_note'));
+  $('attachBtn').style.display = 'none'; // no attachments in a debate
+}
+
+async function loadDiscussion(){
+  if(!S.prop) return;
+  let posts=[]; try { posts = await api(`/api/proposals/${S.prop}/discussion`); } catch {}
+  const box = $('discList'); if(!box) return;
+  if(!posts.length){ box.innerHTML = `<div class="sub">${t('app.dem.no_discussion')}</div>`; }
+  else box.innerHTML = posts.map(d=>`<div class="discpost">${avatar(d.author,'sm')}
+      <div class="bubblewrap"><div class="hdr"><span class="who" data-act="showUserRoles" data-handle="${esc(d.author)}">${esc(d.author)}</span></div>
+      <div class="body">${renderText(d.body,{mentions:[]})}</div></div></div>`).join('');
+  const m=$('messages'); m.scrollTop = m.scrollHeight;
+}
 
 /* ── Custom emoji (server settings) ─────────────────────────────── */
 async function loadEmojis(){
@@ -891,34 +1126,98 @@ const voteEmoji = guard(async (id,isUp) => { await api(`/api/servers/${S.server}
 const addEmoji = guard(async () => {
   const v = await modal({title:t('app.addemoji.title'), message:t('app.addemoji.message'), fields:[
     {name:'name',label:t('app.addemoji.name_label')},
-    {name:'image',label:t('app.addemoji.image_label'),type:'file',accept:'image/png,image/gif'},
+    {name:'image',label:t('app.addemoji.image_label'),type:'file',accept:'image/png,image/gif,image/jpeg'},
     {name:'url',label:t('app.addemoji.url_label')}], submitText:t('app.btn.add')});
   if(!v||!v.name) return;
   if(!v.image && !v.url){ toast(t('app.toast.emoji_need_image'),'err'); return; }
   await api(`/api/servers/${S.server}/emojis`,'POST',{name:v.name, url:v.url||'', image:v.image||null});
   toast(t('app.toast.emoji_added'),'ok'); loadEmojis();
 });
-const newProposal = guard(async () => {
+/* A searchable member picker: fetch the server roster, keep those matching
+   `filter`, and let the user search a box and click one. Resolves to a handle, or
+   null if cancelled. Used by the Ban / Mute / police ballots and instant mute. */
+async function pickMember({title, filter, empty}){
+  let members = [];
+  try { members = await api(`/api/servers/${S.server}/members`); } catch {}
+  const pool = members.filter(m => (filter?filter(m):true) && m.handle!==S.me);
+  return new Promise(resolve=>{
+    const scrim=document.createElement('div'); scrim.id='scrim';
+    scrim.innerHTML = `<form class="modal">
+      <h3>${esc(title)}</h3>
+      <input id="mpSearch" placeholder="${t('app.pick.search_ph')}" autocomplete="off" />
+      <div id="mpList" class="picklist"></div>
+      <div class="actions"><button type="button" class="ghost" data-cancel>${t('app.btn.cancel')}</button></div>
+    </form>`;
+    document.body.appendChild(scrim);
+    requestAnimationFrame(()=>scrim.classList.add('show'));
+    const close = val => { scrim.classList.remove('show'); setTimeout(()=>scrim.remove(),160); resolve(val); };
+    scrim.querySelector('[data-cancel]').onclick=()=>close(null);
+    scrim.onclick=e=>{ if(e.target===scrim) close(null); };
+    const listEl = scrim.querySelector('#mpList');
+    const render = q => {
+      const ql=(q||'').trim().toLowerCase();
+      const rows = pool.filter(m=>m.handle.toLowerCase().includes(ql));
+      if(!rows.length){ listEl.innerHTML=`<div class="sub" style="padding:.5rem">${esc(empty||t('app.pick.none'))}</div>`; return; }
+      listEl.innerHTML = rows.map(m=>{
+        const tags=[m.is_police?t('app.pick.tag_police'):'', m.is_muted?t('app.pick.tag_muted'):'',
+                    m.is_sanctioned?t('app.pick.tag_banned'):''].filter(Boolean).join(' · ');
+        return `<div class="pickrow" data-h="${esc(m.handle)}">${avatar(m.handle,'sm')}
+          <div class="grow"><div class="nm">${esc(m.handle)}</div>${tags?`<div class="sub">${tags}</div>`:''}</div></div>`;
+      }).join('');
+    };
+    render('');
+    const search = scrim.querySelector('#mpSearch');
+    search.oninput = ()=>render(search.value);
+    listEl.onclick = e=>{ const row=e.target.closest('.pickrow'); if(row) close(row.dataset.h); };
+    search.focus();
+  });
+}
+
+/* Two-step ballot builder shared by "raise a proposal" and "propose amendment":
+   pick a kind, then fill its fields. Resolves to a tagged body object ready to
+   POST, or null if cancelled. */
+async function collectBallot(){
   const pick = await modal({title:t('app.newprop.title'), message:t('app.newprop.message'), fields:[
     {name:'kind',label:t('app.newprop.ballot_label'),type:'select',options:[
       {value:'AddRule',label:t('app.ballot.add_rule')},{value:'CreateChannel',label:t('app.ballot.create_channel')},
       {value:'DeleteChannel',label:t('app.ballot.delete_channel')},{value:'Ban',label:t('app.ballot.ban')},
+      {value:'Mute',label:t('app.ballot.mute')},{value:'LiftMute',label:t('app.ballot.lift_mute')},
+      {value:'AppointPolice',label:t('app.ballot.appoint_police')},{value:'DismissPolice',label:t('app.ballot.dismiss_police')},
       {value:'CreateRole',label:t('app.ballot.create_role')},{value:'DeleteRole',label:t('app.ballot.delete_role')},
       {value:'AssignRole',label:t('app.ballot.assign_role')},{value:'UnassignRole',label:t('app.ballot.unassign_role')},
       {value:'SetRehomingPolicy',label:t('app.ballot.rehoming_fed')}]}], submitText:t('app.btn.next')});
-  if(!pick) return;
+  if(!pick) return null;
   const K = pick.kind; let body={kind:K}; let v;
-  if(['DeleteRole','AssignRole','UnassignRole'].includes(K) && !roleOptions().length){ toast(t('app.toast.no_roles_first'),'err'); return; }
-  if(K==='AddRule'){ v=await modal({title:t('app.ballot.add_rule'),fields:[{name:'text',label:t('app.rule.text_label'),type:'textarea'}],submitText:t('app.btn.propose')}); if(!v||!v.text) return; body.text=v.text; }
-  else if(K==='CreateChannel'){ v=await modal({title:t('app.ballot.create_channel'),fields:[{name:'name',label:t('app.field.name')},{name:'topic',label:t('app.field.topic_optional')}],submitText:t('app.btn.propose')}); if(!v||!v.name) return; body.name=v.name; body.topic=v.topic||''; }
-  else if(K==='DeleteChannel'){ v=await modal({title:t('app.ballot.delete_channel'),fields:[{name:'name',label:t('app.field.channel_name')}],submitText:t('app.btn.propose')}); if(!v||!v.name) return; body.name=v.name; }
-  else if(K==='Ban'){ v=await modal({title:t('app.ballot.ban'),fields:[{name:'handle',label:t('app.ban.handle_label')}],submitText:t('app.btn.propose')}); if(!v||!v.handle) return; body.handle=v.handle; }
-  else if(K==='CreateRole'){ v=await modal({title:t('app.ballot.create_role'),message:t('app.role.create_msg'),fields:[{name:'name',label:t('app.role.name_label')}],submitText:t('app.btn.propose')}); if(!v||!v.name) return; body.name=v.name; }
-  else if(K==='DeleteRole'){ v=await modal({title:t('app.ballot.delete_role'),fields:[{name:'role',label:t('app.field.role'),type:'select',options:roleOptions()}],submitText:t('app.btn.propose')}); if(!v||!v.role) return; body.role=v.role; }
-  else if(K==='AssignRole'){ v=await modal({title:t('app.ballot.assign_role'),fields:[{name:'handle',label:t('app.field.member_handle')},{name:'role',label:t('app.field.role'),type:'select',options:roleOptions()}],submitText:t('app.btn.propose')}); if(!v||!v.handle||!v.role) return; body.handle=v.handle; body.role=v.role; }
-  else if(K==='UnassignRole'){ v=await modal({title:t('app.ballot.unassign_role'),fields:[{name:'handle',label:t('app.field.member_handle')},{name:'role',label:t('app.field.role'),type:'select',options:roleOptions()}],submitText:t('app.btn.propose')}); if(!v||!v.handle||!v.role) return; body.handle=v.handle; body.role=v.role; }
-  else if(K==='SetRehomingPolicy'){ v=await modal({title:t('app.rehoming.title'), message:t('app.rehoming.message'), fields:[{name:'mode',label:t('app.rehoming.label'),type:'select',options:[{value:'disable',label:t('app.rehoming.disable')},{value:'enable',label:t('app.rehoming.enable')}]}],submitText:t('app.btn.propose')}); if(!v||!v.mode) return; body.is_disabled = v.mode==='disable'; }
-  await api('/api/servers/'+S.server+'/proposals','POST',body); loadProposals(); toast(t('app.toast.proposal_opened'),'ok');
+  if(['DeleteRole','AssignRole','UnassignRole'].includes(K) && !roleOptions().length){ toast(t('app.toast.no_roles_first'),'err'); return null; }
+  if(K==='AddRule'){ v=await modal({title:t('app.ballot.add_rule'),fields:[{name:'text',label:t('app.rule.text_label'),type:'textarea'}],submitText:t('app.btn.propose')}); if(!v||!v.text) return null; body.text=v.text; }
+  else if(K==='CreateChannel'){ v=await modal({title:t('app.ballot.create_channel'),fields:[{name:'name',label:t('app.field.name')},{name:'topic',label:t('app.field.topic_optional')}],submitText:t('app.btn.propose')}); if(!v||!v.name) return null; body.name=v.name; body.topic=v.topic||''; }
+  else if(K==='DeleteChannel'){ v=await modal({title:t('app.ballot.delete_channel'),fields:[{name:'name',label:t('app.field.channel_name')}],submitText:t('app.btn.propose')}); if(!v||!v.name) return null; body.name=v.name; }
+  else if(K==='Ban'){ const h=await pickMember({title:t('app.ballot.ban'), filter:m=>!m.is_sanctioned}); if(!h) return null; body.handle=h; }
+  else if(K==='Mute'){ const h=await pickMember({title:t('app.ballot.mute'), filter:m=>!m.is_police&&!m.is_muted}); if(!h) return null; body.handle=h; }
+  else if(K==='LiftMute'){ const h=await pickMember({title:t('app.ballot.lift_mute'), filter:m=>m.is_muted, empty:t('app.police.none_muted')}); if(!h) return null; body.handle=h; }
+  else if(K==='AppointPolice'){ const h=await pickMember({title:t('app.ballot.appoint_police'), filter:m=>!m.is_police}); if(!h) return null; body.handle=h; }
+  else if(K==='DismissPolice'){ const h=await pickMember({title:t('app.ballot.dismiss_police'), filter:m=>m.is_police, empty:t('app.police.none')}); if(!h) return null; body.handle=h; }
+  else if(K==='CreateRole'){ v=await modal({title:t('app.ballot.create_role'),message:t('app.role.create_msg'),fields:[{name:'name',label:t('app.role.name_label')}],submitText:t('app.btn.propose')}); if(!v||!v.name) return null; body.name=v.name; }
+  else if(K==='DeleteRole'){ v=await modal({title:t('app.ballot.delete_role'),fields:[{name:'role',label:t('app.field.role'),type:'select',options:roleOptions()}],submitText:t('app.btn.propose')}); if(!v||!v.role) return null; body.role=v.role; }
+  else if(K==='AssignRole'){ v=await modal({title:t('app.ballot.assign_role'),fields:[{name:'handle',label:t('app.field.member_handle')},{name:'role',label:t('app.field.role'),type:'select',options:roleOptions()}],submitText:t('app.btn.propose')}); if(!v||!v.handle||!v.role) return null; body.handle=v.handle; body.role=v.role; }
+  else if(K==='UnassignRole'){ v=await modal({title:t('app.ballot.unassign_role'),fields:[{name:'handle',label:t('app.field.member_handle')},{name:'role',label:t('app.field.role'),type:'select',options:roleOptions()}],submitText:t('app.btn.propose')}); if(!v||!v.handle||!v.role) return null; body.handle=v.handle; body.role=v.role; }
+  else if(K==='SetRehomingPolicy'){ v=await modal({title:t('app.rehoming.title'), message:t('app.rehoming.message'), fields:[{name:'mode',label:t('app.rehoming.label'),type:'select',options:[{value:'disable',label:t('app.rehoming.disable')},{value:'enable',label:t('app.rehoming.enable')}]}],submitText:t('app.btn.propose')}); if(!v||!v.mode) return null; body.is_disabled = v.mode==='disable'; }
+  return body;
+}
+const newProposal = guard(async () => {
+  if(!S.server) return;
+  const body = await collectBallot(); if(!body) return;
+  const r = await api('/api/servers/'+S.server+'/proposals','POST',body);
+  toast(t('app.toast.proposal_opened'),'ok');
+  await loadDemocracy(); loadProposals();
+  if(r && r.id!=null) selectProposal(r.id); // open the new debate channel
+});
+/* Fold another change into an open proposal's bundle — enacted or retracted with it. */
+const amendProposal = guard(async (id) => {
+  const body = await collectBallot(); if(!body) return;
+  await api('/api/proposals/'+id+'/amend','POST',body);
+  toast(t('app.toast.amended'),'ok');
+  loadProposals(); refreshDemocracy();
 });
 
 /* ── Server settings (governance config: voting aspects + trials) ──── */
@@ -932,6 +1231,9 @@ const SURFACE_CATALOG = [
   {k:'RemoveContent',   label:'app.ballot.remove_content'},
   {k:'Ban',             label:'app.ballot.ban'},
   {k:'Timeout',         label:'app.ballot.timeout'},
+  {k:'Mute',            label:'app.ballot.mute'},
+  {k:'LiftMute',        label:'app.ballot.lift_mute'},
+  {k:'Policing',        label:'app.ballot.policing'},
   {k:'Recall',          label:'app.ballot.recall'},
   {k:'CreateChannel',   label:'app.ballot.create_channel'},
   {k:'DeleteChannel',   label:'app.ballot.delete_channel'},
@@ -989,15 +1291,25 @@ const openServerSettings = guard(async () => {
          <span style="display:flex"><input type="checkbox" id="histShare" ${shares?'checked':''}><span class="track"></span></span>
        </label>`
     : `<div class="sub" style="margin-top:.6rem">${t('app.settings.personal_guest')}</div>`;
+  // Emoji tab — the server's custom-emoji ranking, continuously voted. Open to all
+  // members; the ▲/▼ and Add controls appear only for franchised citizens (voters).
+  const emojiPane = `<span class="msg">${t('app.settings.emoji_msg')}</span>
+    <div class="setrow" style="border-top:0;padding-top:.2rem">
+      <div class="grow"><div class="setname">${t('ui.gov.custom_emoji')}</div></div>
+      ${can?`<button class="ghost sm" data-act="addEmoji">＋ ${t('app.settings.add_emoji')}</button>`:''}
+    </div>
+    <div id="emojiList"><span class="sub">${t('app.emoji.none')}</span></div>`;
   const scrim=document.createElement('div'); scrim.id='scrim';
   scrim.innerHTML = `<div class="modal wide">
     <h3>${esc(d.name)} — ${t('app.settings.settings_word')}</h3>
     <div class="tabbar">
       <button type="button" class="tab on" data-tab="gov">${t('app.settings.tab_governance')}</button>
       <button type="button" class="tab" data-tab="personal">${t('app.settings.tab_personal')}</button>
+      <button type="button" class="tab" data-tab="emoji">${t('app.settings.tab_emoji')}</button>
     </div>
     <div data-pane="gov">${govPane}</div>
     <div data-pane="personal" class="hidden">${personalPane}</div>
+    <div data-pane="emoji" class="hidden">${emojiPane}</div>
     <div class="actions"><button class="ghost" data-close>${t('app.btn.close')}</button></div>
   </div>`;
   document.body.appendChild(scrim);
@@ -1017,6 +1329,7 @@ const openServerSettings = guard(async () => {
     await api('/api/servers/'+S.server+'/history-sharing','POST',{shares:hs.checked});
     toast(t(hs.checked?'app.toast.history_shared':'app.toast.history_hidden'),'ok');
   });
+  loadEmojis(); // fill the Emoji tab's ranked vote list (now inside this modal)
 });
 
 async function submitProposal(body){
@@ -1086,11 +1399,14 @@ const proposeSurface = guard(async () => {
 async function loadMe(){
   if(!S.server) return;
   const me = await api(`/api/servers/${S.server}/me`);
-  S.tier = me.tier;
+  S.tier = me.tier; S.isPolice = !!me.is_police; S.isMuted = !!me.is_muted;
   $('newProposalBtn').style.display = me.tier==='citizen' ? 'block' : 'none';
-  $('addEmojiBtn').style.display = me.tier==='citizen' ? 'block' : 'none';
+  $('demNewBtn').style.display = me.tier==='citizen' ? 'block' : 'none';
   const d = S.serverDetail;
-  let html = `<span class="pill ${me.tier}">${me.tier}</span> `;
+  let html = `<span class="pill ${me.tier}">${me.tier}</span>`;
+  if (me.is_police) html += ` <span class="pill police">${t('app.me.police_badge')}</span>`;
+  html += ' ';
+  if (me.is_muted) html += `<div class="mutednote">${t('app.me.muted')}</div>`;
   if (me.tier==='guest') {
     html += `<div style="margin-top:.6rem">${t('app.me.not_member')}</div><button class="full" style="margin-top:.6rem" data-act="join">${t('app.me.join_server',{name:esc(d.name)})}</button>`;
   } else if (me.tier==='citizen') {
@@ -1107,7 +1423,38 @@ async function loadMe(){
   }
   $('govBody').innerHTML = html;
   loadEmojis(); // re-render the vote list now that tier is known
+  loadPolicing();
 }
+
+/* The police moderation panel (visible only to officers): a button to mute a
+   member and a list of currently-muted members, each with an instant Unmute. */
+async function loadPolicing(){
+  const box=$('policing'), row=$('policingRow');
+  if(!box||!row) return;
+  if(!S.isPolice){ row.style.display='none'; box.style.display='none'; box.innerHTML=''; return; }
+  row.style.display='flex'; box.style.display='block';
+  let members=[]; try { members=await api(`/api/servers/${S.server}/members`); } catch {}
+  const muted=members.filter(m=>m.is_muted);
+  let html=`<button class="ghost sm full" data-act="policeMute">${t('app.police.mute_btn')}</button>`;
+  if(muted.length){
+    html+=`<div class="sub" style="margin:.55rem 0 .3rem">${t('app.police.muted_list')}</div>`;
+    html+=muted.map(m=>`<div class="emoji-row"><div class="grow"><div class="en">@${esc(m.handle)}</div></div>
+      <button class="vbtn" data-act="policeUnmute" data-h="${esc(m.handle)}">${t('app.police.unmute')}</button></div>`).join('');
+  } else {
+    html+=`<div class="sub" style="margin-top:.5rem">${t('app.police.none_muted')}</div>`;
+  }
+  box.innerHTML=html;
+}
+const policeMute = guard(async () => {
+  const h=await pickMember({title:t('app.police.mute_title'), filter:m=>!m.is_police&&!m.is_muted});
+  if(!h) return;
+  await api(`/api/servers/${S.server}/mute`,'POST',{handle:h});
+  toast(t('app.police.muted_toast',{h}),'ok'); loadPolicing();
+});
+const policeUnmute = guard(async (h) => {
+  await api(`/api/servers/${S.server}/unmute`,'POST',{handle:h});
+  toast(t('app.police.unmuted_toast',{h}),'ok'); loadPolicing();
+});
 const join = guard(async () => { await api('/api/servers/'+S.server+'/join','POST',{}); selectServer(S.server); });
 const becomeCitizen = guard(async () => { const r=await api('/api/servers/'+S.server+'/enfranchise','POST',{}); toast(r.message, r.is_admitted?'ok':''); selectServer(S.server); });
 const devEndorse = guard(async () => { await api('/api/servers/'+S.server+'/dev/endorse','POST',{}); loadMe(); });
@@ -1256,7 +1603,7 @@ async function loadConversation(){
     row.innerHTML = `${m.is_mine?'':avatar(m.sender,'sm')}${bubble}`;
     box.appendChild(row);
   });
-  box.scrollTop = box.scrollHeight;
+  scrollToBottom(box);
 
   // Compose availability: E2EE needs this device's keys; blocks/friends-only still
   // gate as before.
@@ -1333,7 +1680,14 @@ function connectWS(){
     if ((m.type==='message'||m.type==='reaction') && m.server===S.server && m.channel===S.channel) loadMessages();
     if (m.type==='server') { loadServers(); loadMe(); loadProposals(); }
     if (m.type==='channel' && m.server===S.server) selectServer(S.server);
-    if (m.type==='proposal') { loadProposals(); if(!m.server||m.server===S.server) selectServer(S.server); }
+    if (m.type==='proposal') {
+      loadProposals();
+      // Preserve an open debate view; otherwise resync the server (a passed
+      // channel ballot may have changed the channel list).
+      if (S.prop) refreshDemocracy();
+      else { loadDemocracy(); if(!m.server||m.server===S.server) selectServer(S.server); }
+    }
+    if (m.type==='mute' && m.server===S.server) { loadMe(); loadPolicing(); if(!S.prop) selectServer(S.server); }
     if (m.type==='emoji' && m.server===S.server) { loadEmojis(); loadMessages(); }
     if (m.type==='clock') loadMe();
     if (m.type==='social' && (m.a===S.me || m.b===S.me)) {
@@ -1383,6 +1737,9 @@ const ACTIONS = {
   revealMedia:   el => el.classList.add('revealed'),
   openMedia:   el => window.open(el.dataset.url, '_blank', 'noopener'),
   newProposal:    () => newProposal(),
+  amendProp:   el => amendProposal(+el.dataset.id),
+  policeMute:     () => policeMute(),
+  policeUnmute: el => policeUnmute(el.dataset.h),
   advance15:      () => advance(15),
   startDm:        () => startDm(),
   sendDm:         () => sendDm(),
@@ -1399,6 +1756,8 @@ const ACTIONS = {
   voteEmoji:   el => voteEmoji(+el.dataset.id, el.dataset.up==='1'),
   encryptChannel: () => encryptChannel(),
   shareKeys:      () => shareKeys(),
+  showUserRoles: el => showUserRoles(el.dataset.handle),
+  voteRoleColor: el => { const row=el.closest('.rc-row'); const inp=row&&row.querySelector('.rc-in'); voteRoleColor(el.dataset.id, inp?inp.value:null); },
   acceptFriend:  el => acceptFriend(el.dataset.handle),
   requestFriend: el => requestFriend(el.dataset.handle),
   blockUser:     el => blockUser(el.dataset.handle),
@@ -1415,5 +1774,17 @@ document.addEventListener('click', ev => {
 document.addEventListener('change', ev => {
   const el = ev.target.closest('[data-change]'); if(!el) return;
   const fn = CHANGES[el.dataset.change]; if(fn) fn(el, ev);
+});
+/* Esc closes the topmost open modal. Every modal is an overlay with id="scrim"
+   carrying its own cancel/close control; triggering that control runs the modal's
+   own teardown (so a promise-based modal resolves as a cancellation). Nested
+   modals close one layer at a time, innermost first. */
+document.addEventListener('keydown', ev => {
+  if(ev.key!=='Escape') return;
+  const scrims = document.querySelectorAll('#scrim');
+  const top = scrims[scrims.length-1]; if(!top) return;
+  ev.preventDefault();
+  const btn = top.querySelector('[data-cancel],[data-close]');
+  if(btn) btn.click(); else top.remove();
 });
 boot();

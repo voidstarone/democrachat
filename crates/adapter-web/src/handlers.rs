@@ -177,7 +177,11 @@ pub async fn accept_invite(
     Ok(Json(json!({ "slug": slug })))
 }
 
-pub async fn server_detail(State(st): State<AppState>, Path(slug): Path<String>) -> Res<ServerDetail> {
+pub async fn server_detail(
+    State(st): State<AppState>,
+    Path(slug): Path<String>,
+    headers: HeaderMap,
+) -> Res<ServerDetail> {
     let (g, phase, citizens) = st.services.server_snapshot(&slug).ok_or_else(|| not_found("err.no_such_server"))?;
     let founder = st.services.user_handle(g.founder_id).unwrap_or_default();
     let mut surface: Vec<String> = g.enabled_ballots.iter().map(|b| format!("{b:?}")).collect();
@@ -189,9 +193,12 @@ pub async fn server_detail(State(st): State<AppState>, Path(slug): Path<String>)
         domain::JurySizing::Proportion { post_bp, comment_bp } => ("Proportion", post_bp, comment_bp),
         domain::JurySizing::Fixed { post, comment } => ("Fixed", post, comment),
     };
+    // Filter channels for the requester: the restricted #appeals channel is hidden
+    // from anyone who is not a voter, police officer, or the muted appellant.
+    let viewer = crate::auth::current_actor(&st, &headers).unwrap_or_default();
     let channels = st
         .services
-        .list_channels(&slug)
+        .visible_channels(&viewer, &slug)
         .unwrap_or_default()
         .into_iter()
         .map(channel_dto)
@@ -258,6 +265,11 @@ fn channel_dto(c: domain::Channel) -> ChannelDto {
             domain::HistoryMode::Ephemeral => "ephemeral",
         }
         .into(),
+        visibility: match c.visibility {
+            domain::ChannelVisibility::Open => "open",
+            domain::ChannelVisibility::Appeals => "appeals",
+        }
+        .into(),
     }
 }
 
@@ -296,6 +308,8 @@ pub async fn my_status(
             unmet: vec!["sign in to participate".into()],
             contribution: 0,
             shares_history: None,
+            is_police: false,
+            is_muted: false,
         }));
     };
     match st.services.member_tier(&me, &slug) {
@@ -305,9 +319,13 @@ pub async fn my_status(
             unmet: vec!["not a member — join to start".into()],
             contribution: 0,
             shares_history: None,
+            is_police: false,
+            is_muted: false,
         })),
         Some(tier) => {
             let elig = st.services.eligibility(&me, &slug).map_err(bad)?;
+            let (is_police, is_muted) =
+                st.services.police_and_mute_status(&me, &slug).unwrap_or((false, false));
             Ok(Json(MeDto {
                 tier: match tier {
                     Tier::Guest => "guest",
@@ -319,6 +337,8 @@ pub async fn my_status(
                 unmet: elig.unmet.iter().map(describe_unmet).collect(),
                 contribution: st.services.member_contribution(&me, &slug).unwrap_or(0),
                 shares_history: st.services.history_sharing(&me, &slug),
+                is_police,
+                is_muted,
             }))
         }
     }
@@ -480,9 +500,11 @@ pub async fn upload_media(
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/octet-stream");
-    let (key, kind) = st.services.store_media(content_type, &body).map_err(bad)?;
-    let base = content_type.split(';').next().unwrap_or(content_type).trim();
-    Ok(Json(json!({ "key": key, "content_type": base, "kind": kind.as_str() })))
+    // The stored type is authoritative — an image is re-encoded (HEIC/HEIF → JPEG),
+    // so it may differ from the declared `Content-Type`. Report what was stored so
+    // the client records the true type on the message.
+    let (key, stored_type, kind) = st.services.store_media(content_type, &body).map_err(bad)?;
+    Ok(Json(json!({ "key": key, "content_type": stored_type, "kind": kind.as_str() })))
 }
 
 /// Serve a stored media blob by key. Public (keys are opaque and unguessable), with
@@ -505,6 +527,18 @@ pub async fn serve_media(
                     (
                         header::X_CONTENT_TYPE_OPTIONS,
                         axum::http::HeaderValue::from_static("nosniff"),
+                    ),
+                    // Render inline (never a drive-by download prompt) and, if a
+                    // blob is ever navigated to directly, sandbox it into a unique
+                    // opaque origin: no scripts, no access to the app origin or its
+                    // cookies. Defence in depth behind `nosniff` + the type allowlist.
+                    (
+                        header::CONTENT_DISPOSITION,
+                        axum::http::HeaderValue::from_static("inline"),
+                    ),
+                    (
+                        header::CONTENT_SECURITY_POLICY,
+                        axum::http::HeaderValue::from_static("sandbox; default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'"),
                     ),
                 ],
                 bytes,
@@ -623,6 +657,7 @@ pub async fn list_proposals(
             ProposalDto {
                 id: p.id.0,
                 summary: summarize_kind(&st, &p.kind),
+                amendments: p.amendments.iter().map(|k| summarize_kind(&st, k)).collect(),
                 proposer: st.services.user_handle(p.proposer).unwrap_or_default(),
                 status: status.into(),
                 aye,
@@ -671,6 +706,55 @@ pub async fn vote(
     }
     st.persist();
     // A proposal doesn't carry its server slug here; broadcast a generic nudge.
+    st.publish(json!({ "type": "proposal" }).to_string());
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// Fold an amendment into an open proposal's bundle. Gated exactly like opening a
+/// proposal (citizen, governed kind, permitted in phase).
+pub async fn amend(
+    State(st): State<AppState>,
+    Path(id): Path<u64>,
+    headers: HeaderMap,
+    Json(req): Json<ProposeReq>,
+) -> Res<serde_json::Value> {
+    let me = require_actor(&st, &headers)?;
+    // Resolve handles/roles in the amendment against the proposal's own server.
+    let slug = st
+        .services
+        .proposal_server_slug(id)
+        .ok_or_else(|| bad("err.no_such_proposal"))?;
+    let kind = to_proposal_kind(&st, &slug, &req.kind).map_err(bad)?;
+    st.services.amend_proposal(&me, id, kind).map_err(bad)?;
+    st.persist();
+    st.publish(json!({ "type": "proposal", "server": slug }).to_string());
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// A proposal's deliberation thread, in post order.
+pub async fn list_discussion(State(st): State<AppState>, Path(id): Path<u64>) -> Res<Vec<DiscussionDto>> {
+    let dtos = st
+        .services
+        .list_discussion(id)
+        .into_iter()
+        .map(|d| DiscussionDto {
+            author: st.services.user_handle(d.author).unwrap_or_default(),
+            body: d.body,
+        })
+        .collect();
+    Ok(Json(dtos))
+}
+
+/// Post to a proposal's deliberation thread (franchised citizens only).
+pub async fn post_discussion(
+    State(st): State<AppState>,
+    Path(id): Path<u64>,
+    headers: HeaderMap,
+    Json(req): Json<DiscussReq>,
+) -> Res<serde_json::Value> {
+    let me = require_actor(&st, &headers)?;
+    st.services.post_discussion(&me, id, &req.body).map_err(bad)?;
+    st.persist();
     st.publish(json!({ "type": "proposal" }).to_string());
     Ok(Json(json!({ "ok": true })))
 }
@@ -831,6 +915,14 @@ fn to_proposal_kind(
             let u = st.services.find_user(handle).ok_or_else(|| format!("no such user: {handle}"))?;
             K::Ban { user: u.id }
         }
+        ProposeKindReq::Mute { handle } => K::Mute { user: resolve_member(st, slug, handle)? },
+        ProposeKindReq::LiftMute { handle } => K::LiftMute { user: resolve_member(st, slug, handle)? },
+        ProposeKindReq::AppointPolice { handle } => {
+            K::AppointPolice { user: resolve_member(st, slug, handle)? }
+        }
+        ProposeKindReq::DismissPolice { handle } => {
+            K::DismissPolice { user: resolve_member(st, slug, handle)? }
+        }
         ProposeKindReq::CreateRole { name } => K::CreateRole { name: name.clone() },
         ProposeKindReq::DeleteRole { role } => K::DeleteRole { role: resolve_role(st, slug, role)? },
         ProposeKindReq::AssignRole { handle, role } => K::AssignRole {
@@ -913,6 +1005,14 @@ fn summarize_kind(st: &AppState, kind: &domain::ProposalKind) -> String {
         K::DeleteChannel { name } => format!("Delete channel #{name}"),
         K::Ban { user } => format!("Ban @{}", st.services.user_handle(*user).unwrap_or_default()),
         K::Timeout { user, .. } => format!("Time out @{}", st.services.user_handle(*user).unwrap_or_default()),
+        K::Mute { user } => format!("Mute @{}", st.services.user_handle(*user).unwrap_or_default()),
+        K::LiftMute { user } => format!("Lift mute on @{}", st.services.user_handle(*user).unwrap_or_default()),
+        K::AppointPolice { user } => {
+            format!("Appoint @{} as police", st.services.user_handle(*user).unwrap_or_default())
+        }
+        K::DismissPolice { user } => {
+            format!("Dismiss police @{}", st.services.user_handle(*user).unwrap_or_default())
+        }
         K::Recall { leader } => format!("Recall @{}", st.services.user_handle(*leader).unwrap_or_default()),
         K::AmendCriteria { .. } => "Amend franchise criteria".into(),
         K::SetJurySizing { .. } => "Change jury sizing".into(),
@@ -952,15 +1052,60 @@ fn summarize_kind(st: &AppState, kind: &domain::ProposalKind) -> String {
 pub async fn list_roles(State(st): State<AppState>, Path(slug): Path<String>) -> Res<Vec<RoleDto>> {
     let dtos = st
         .services
-        .list_roles(&slug)
+        .roles_with_color(&slug)
         .into_iter()
-        .map(|r| RoleDto {
+        .map(|(r, color)| RoleDto {
             id: r.id.0,
             holders: st.services.role_holders(&slug, &r.name),
+            color: color.map(|c| c.as_str().to_string()),
             name: r.name,
         })
         .collect();
     Ok(Json(dtos))
+}
+
+/// The roles a member holds on a server, for the identity popover shown when a
+/// username is clicked. Includes each custom role's voted colour and the viewer's
+/// own colour vote.
+pub async fn user_roles(
+    State(st): State<AppState>,
+    Path((slug, handle)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Res<UserRolesDto> {
+    let me = crate::auth::current_actor(&st, &headers).unwrap_or_default();
+    let ur = st
+        .services
+        .user_roles(&slug, &handle, &me)
+        .ok_or_else(|| not_found("err.no_such_user"))?;
+    Ok(Json(UserRolesDto {
+        handle: ur.handle,
+        tier: match ur.tier {
+            domain::Tier::Guest => "guest",
+            domain::Tier::Member => "member",
+            domain::Tier::Citizen => "citizen",
+        }
+        .into(),
+        standing: ur.standing,
+        roles: ur
+            .roles
+            .into_iter()
+            .map(|r| UserRoleDto { id: r.id, name: r.name, color: r.color, my_color: r.my_color })
+            .collect(),
+    }))
+}
+
+/// Cast (or change) a citizen's vote for a custom role's colour.
+pub async fn vote_role_color(
+    State(st): State<AppState>,
+    Path((slug, id)): Path<(String, u64)>,
+    headers: HeaderMap,
+    Json(req): Json<VoteRoleColorReq>,
+) -> Res<serde_json::Value> {
+    let me = require_actor(&st, &headers)?;
+    st.services.vote_role_color(&me, &slug, id, &req.color).map_err(bad)?;
+    st.persist();
+    st.publish(json!({ "type": "role", "server": slug }).to_string());
+    Ok(Json(json!({ "ok": true })))
 }
 
 /// The names a client may `@mention` on a server: members and roles. Powers the
@@ -970,6 +1115,56 @@ pub async fn mentionable(State(st): State<AppState>, Path(slug): Path<String>) -
         users: st.services.member_handles(&slug),
         roles: st.services.mentionable_role_names(&slug),
     }))
+}
+
+/// A server's members with the flags a ban picker / police panel needs.
+pub async fn list_members(State(st): State<AppState>, Path(slug): Path<String>) -> Res<Vec<MemberDto>> {
+    let dtos = st
+        .services
+        .list_members(&slug)
+        .into_iter()
+        .map(|m| MemberDto {
+            handle: m.handle,
+            tier: match m.tier {
+                domain::Tier::Guest => "guest",
+                domain::Tier::Member => "member",
+                domain::Tier::Citizen => "citizen",
+            }
+            .into(),
+            is_sanctioned: m.is_sanctioned,
+            is_muted: m.is_muted,
+            is_police: m.is_police,
+        })
+        .collect();
+    Ok(Json(dtos))
+}
+
+/// Instantly mute a member (police only).
+pub async fn mute(
+    State(st): State<AppState>,
+    Path(slug): Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<MuteReq>,
+) -> Res<serde_json::Value> {
+    let me = require_actor(&st, &headers)?;
+    st.services.mute_member(&me, &slug, &req.handle).map_err(bad)?;
+    st.persist();
+    st.publish(json!({ "type": "mute", "server": slug }).to_string());
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// Instantly lift a member's mute (police only).
+pub async fn unmute(
+    State(st): State<AppState>,
+    Path(slug): Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<MuteReq>,
+) -> Res<serde_json::Value> {
+    let me = require_actor(&st, &headers)?;
+    st.services.unmute_member(&me, &slug, &req.handle).map_err(bad)?;
+    st.persist();
+    st.publish(json!({ "type": "mute", "server": slug }).to_string());
+    Ok(Json(json!({ "ok": true })))
 }
 
 /// Dev-only: simulate enough citizen endorsements to clear the contribution bar,

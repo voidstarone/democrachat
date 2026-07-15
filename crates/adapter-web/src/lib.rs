@@ -172,12 +172,22 @@ pub async fn serve(
         )
         .route("/api/messages/:id/react", post(handlers::react))
         .route("/api/servers/:slug/roles", get(handlers::list_roles))
+        .route("/api/servers/:slug/roles/:id/color", post(handlers::vote_role_color))
+        .route("/api/servers/:slug/members/:handle/roles", get(handlers::user_roles))
+        .route("/api/servers/:slug/members", get(handlers::list_members))
+        .route("/api/servers/:slug/mute", post(handlers::mute))
+        .route("/api/servers/:slug/unmute", post(handlers::unmute))
         .route("/api/servers/:slug/mentionable", get(handlers::mentionable))
         .route(
             "/api/servers/:slug/proposals",
             get(handlers::list_proposals).post(handlers::propose),
         )
         .route("/api/proposals/:id/vote", post(handlers::vote))
+        .route("/api/proposals/:id/amend", post(handlers::amend))
+        .route(
+            "/api/proposals/:id/discussion",
+            get(handlers::list_discussion).post(handlers::post_discussion),
+        )
         // Custom emoji: the ranked vote list lives in server settings; the name→url
         // map lets the client render `:name:` shortcodes in any message.
         .route(
