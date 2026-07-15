@@ -16,10 +16,15 @@ pub enum MessageError {
     NotAMember(String),
     #[error("'{0}' is banned from this server")]
     Sanctioned(String),
+    /// The author is currently muted; they may only post in the appeals channel.
+    #[error("'{0}' is muted and can only post in #appeals")]
+    Muted(String),
     #[error("only the author may edit or delete their message")]
     NotTheAuthor,
     #[error("message body must not be empty")]
     EmptyBody,
+    #[error("a message may carry at most {0} attachments")]
+    TooManyAttachments(usize),
     #[error("cannot reply to a message in a different channel")]
     CrossChannelReply,
     /// A plaintext post was attempted in an encrypted channel — the client must

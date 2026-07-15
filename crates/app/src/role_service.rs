@@ -7,12 +7,16 @@
 //! lives here is read-side: listing roles for a picker, and turning the tokens in
 //! a message into the members they address.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
-use domain::{parse_mentions, Role, ServerId, StandingRole};
+use domain::{
+    parse_mentions, winning_color, Role, RoleColor, RoleColorVote, RoleId, ServerId, StandingRole,
+    UserId,
+};
 
 use crate::mention::{MentionKind, ResolvedMention};
-use crate::Services;
+use crate::role_view::{RoleColorView, UserRoles};
+use crate::{RoleError, Services};
 
 impl Services {
     /// Read-only: the handles of a server's members (any tier), for `@mention`
@@ -51,6 +55,120 @@ impl Services {
             .into_iter()
             .filter_map(|id| self.users.get_user(id))
             .map(|u| u.handle)
+            .collect()
+    }
+
+    /// Read-only: a server's custom roles, each with its current (plurality)
+    /// colour among franchised citizens. Powers the coloured role chips.
+    pub fn roles_with_color(&self, server_slug: &str) -> Vec<(Role, Option<RoleColor>)> {
+        let Some(server) = self.servers.find_by_slug(server_slug.trim()) else {
+            return Vec::new();
+        };
+        let franchised = self.franchised_set(server.id);
+        let votes = self.role_color_votes.role_color_votes_for_server(server.id);
+        self.roles
+            .list_for_server(server.id)
+            .into_iter()
+            .map(|r| {
+                let color = winning_color(
+                    votes
+                        .iter()
+                        .filter(|v| v.role_id == r.id && franchised.contains(&v.voter))
+                        .map(|v| &v.color),
+                );
+                (r, color)
+            })
+            .collect()
+    }
+
+    /// Read-only: the roles a member holds on a server, for the identity popover —
+    /// the standing roles their tier admits plus every custom role assigned to
+    /// them, each with its voted colour and the viewer's own colour vote. `None`
+    /// if the target isn't a member here.
+    pub fn user_roles(&self, server_slug: &str, handle: &str, viewer_handle: &str) -> Option<UserRoles> {
+        let server = self.servers.find_by_slug(server_slug.trim())?;
+        let user = self.users.find_by_handle(handle.trim())?;
+        let membership = self.memberships.get(user.id, server.id)?;
+
+        let standing = StandingRole::all()
+            .into_iter()
+            .filter(|s| s.admits(membership.tier))
+            .map(|s| s.name().to_string())
+            .collect();
+
+        let franchised = self.franchised_set(server.id);
+        let votes = self.role_color_votes.role_color_votes_for_server(server.id);
+        let viewer = self.users.find_by_handle(viewer_handle.trim()).map(|u| u.id);
+
+        let roles = self
+            .roles
+            .list_for_server(server.id)
+            .into_iter()
+            .filter(|r| self.roles.holders(r.id).contains(&user.id))
+            .map(|r| {
+                let color = winning_color(
+                    votes
+                        .iter()
+                        .filter(|v| v.role_id == r.id && franchised.contains(&v.voter))
+                        .map(|v| &v.color),
+                );
+                let my_color = viewer
+                    .and_then(|vid| self.role_color_votes.my_role_color_vote(r.id, vid))
+                    .map(|c| c.as_str().to_string());
+                RoleColorView {
+                    id: r.id.0,
+                    name: r.name,
+                    color: color.map(|c| c.as_str().to_string()),
+                    my_color,
+                }
+            })
+            .collect();
+
+        Some(UserRoles { handle: user.handle, tier: membership.tier, standing, roles })
+    }
+
+    /// Cast (or change) a citizen's vote for a custom role's colour. A continuous
+    /// plurality vote (like emoji), not a ballot: only franchised citizens count,
+    /// and the winning colour is recomputed live from every current vote.
+    pub fn vote_role_color(
+        &self,
+        voter_handle: &str,
+        server_slug: &str,
+        role_id: u64,
+        color: &str,
+    ) -> Result<(), RoleError> {
+        let server = self
+            .servers
+            .find_by_slug(server_slug.trim())
+            .ok_or_else(|| RoleError::NoSuchServer(server_slug.to_string()))?;
+        let user = self
+            .users
+            .find_by_handle(voter_handle.trim())
+            .ok_or_else(|| RoleError::NoSuchUser(voter_handle.to_string()))?;
+        self.memberships
+            .get(user.id, server.id)
+            .filter(|m| m.is_franchised())
+            .ok_or(RoleError::NotACitizen)?;
+
+        let color = RoleColor::parse(color).ok_or(RoleError::BadColor)?;
+        let role = self
+            .roles
+            .get_role(RoleId(role_id))
+            .filter(|r| r.server_id == server.id)
+            .ok_or(RoleError::NoSuchRole(role_id))?;
+        self.role_color_votes
+            .upsert_role_color_vote(RoleColorVote::new(server.id, role.id, user.id, color));
+        Ok(())
+    }
+
+    /// The user ids of a server's currently-franchised citizens — the electorate
+    /// whose votes are tallied.
+    fn franchised_set(&self, server: ServerId) -> HashSet<UserId> {
+        self.memberships
+            .list_for_server(server)
+            .into_iter()
+            .filter(|m| m.is_franchised())
+            .map(|m| m.user_id)
             .collect()
     }
 

@@ -15,6 +15,36 @@ use crate::{ChannelError, MessageError, ReactionError, Services};
 /// Per-file upload cap for a media attachment (25 MiB).
 const MAX_MEDIA_BYTES: usize = 25 * 1024 * 1024;
 
+/// Cap on how many attachments a single message may carry — a bound on both the
+/// message size and the disk a post can claim.
+const MAX_ATTACHMENTS: usize = 10;
+
+/// Reject uploads whose leading bytes look like HTML/XML/SVG markup, regardless
+/// of the declared MIME type. Served same-origin, such a blob is an XSS vector,
+/// so a script-bearing SVG relabelled `image/png` must not slip past the
+/// top-level type allowlist. (`nosniff` already stops the browser rendering a
+/// blob as markup; this closes the vector at the source, as defence in depth.)
+fn looks_like_markup(bytes: &[u8]) -> bool {
+    let mut b = bytes;
+    // Step over a UTF-8 or UTF-16 byte-order mark, then leading whitespace.
+    for bom in [&[0xEF, 0xBB, 0xBF][..], &[0xFF, 0xFE][..], &[0xFE, 0xFF][..]] {
+        if b.starts_with(bom) {
+            b = &b[bom.len()..];
+            break;
+        }
+    }
+    let head: Vec<u8> = b
+        .iter()
+        .skip_while(|c| c.is_ascii_whitespace())
+        .take(64)
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    const OPENERS: [&[u8]; 7] = [
+        b"<?xml", b"<svg", b"<!doctype", b"<html", b"<head", b"<body", b"<script",
+    ];
+    OPENERS.iter().any(|o| head.starts_with(o))
+}
+
 impl Services {
     /// Create a channel. Allowed only while the server is in **Seed** and only by
     /// its founder (provisioning) — a larger server governs its channels by ballot.
@@ -63,6 +93,25 @@ impl Services {
     pub fn list_channels(&self, server_slug: &str) -> Option<Vec<Channel>> {
         let server = self.servers.find_by_slug(server_slug.trim())?;
         Some(self.channels.list_for_server(server.id))
+    }
+
+    /// A server's channels as `viewer_handle` may see them — the restricted
+    /// `#appeals` channel is hidden from anyone who is not a voter, police officer,
+    /// or the muted appellant. `None` if no such server.
+    pub fn visible_channels(&self, viewer_handle: &str, server_slug: &str) -> Option<Vec<Channel>> {
+        let server = self.servers.find_by_slug(server_slug.trim())?;
+        let sees_appeals = self
+            .users
+            .find_by_handle(viewer_handle.trim())
+            .and_then(|u| self.memberships.get(u.id, server.id))
+            .is_some_and(|m| crate::mute_service::membership_sees_appeals(&m));
+        Some(
+            self.channels
+                .list_for_server(server.id)
+                .into_iter()
+                .filter(|c| sees_appeals || !c.visibility.is_appeals())
+                .collect(),
+        )
     }
 
     /// Read-only: a user's handle by id (for rendering authorship).
@@ -115,20 +164,27 @@ impl Services {
         body: &str,
         attachments: Vec<domain::Attachment>,
     ) -> Result<Message, MessageError> {
+        if attachments.len() > MAX_ATTACHMENTS {
+            return Err(MessageError::TooManyAttachments(MAX_ATTACHMENTS));
+        }
         let (_user, _server, channel, author_id) =
             self.resolve_poster(handle, server_slug, channel_name)?;
         self.insert_message(author_id, &channel, body, None, attachments)
     }
 
-    /// Validate and store an uploaded media blob, returning its storage key and
-    /// derived [`MediaKind`]. Rejects empty uploads, oversized files, and any MIME
-    /// type that is not image/video/audio. The bytes go to the media store (a
-    /// separate storage tier), keyed opaquely.
+    /// Validate and store an uploaded media blob, returning its storage key, the
+    /// **actual stored content type**, and derived [`MediaKind`]. Rejects empty
+    /// uploads, oversized files, and any MIME type that is not image/video/audio.
+    /// The bytes go to the media store (a separate storage tier), keyed opaquely.
+    ///
+    /// The returned content type is what was *stored*, which for an image may
+    /// differ from the declared one (an image is re-encoded — HEIC/HEIF → JPEG —
+    /// so the caller records the true type on the message).
     pub fn store_media(
         &self,
         content_type: &str,
         bytes: &[u8],
-    ) -> Result<(String, domain::MediaKind), crate::MediaError> {
+    ) -> Result<(String, String, domain::MediaKind), crate::MediaError> {
         if bytes.is_empty() {
             return Err(crate::MediaError::Empty);
         }
@@ -139,13 +195,24 @@ impl Services {
         let base = content_type.split(';').next().unwrap_or(content_type).trim().to_ascii_lowercase();
         // SVG is nominally an image but can carry scripts; served same-origin it is an
         // XSS vector, so it is not an accepted upload type.
-        if base == "image/svg+xml" {
+        if base == "image/svg+xml" || looks_like_markup(bytes) {
             return Err(crate::MediaError::UnsupportedType(base));
         }
         let kind = domain::MediaKind::from_content_type(&base)
             .ok_or_else(|| crate::MediaError::UnsupportedType(base.clone()))?;
-        let key = self.media.put(&base, bytes)?;
-        Ok((key, kind))
+        // Images are re-encoded before storage: strips EXIF and any hostile
+        // payload, and turns HEIC/HEIF (which browsers can't show) into JPEG. The
+        // transcoder may change the content type (e.g. `image/heic` → `image/jpeg`),
+        // so store — and report — whatever it returns. Video/audio are stored
+        // verbatim.
+        if kind == domain::MediaKind::Image {
+            let (ct, data) = self.image.normalize(&base, bytes)?;
+            let key = self.media.put(&ct, &data)?;
+            Ok((key, ct, kind))
+        } else {
+            let key = self.media.put(&base, bytes)?;
+            Ok((key, base, kind))
+        }
     }
 
     /// Fetch a stored media blob and its content type for serving.
@@ -304,6 +371,19 @@ impl Services {
             .find_by_slug(server_slug.trim())
             .ok_or_else(|| MessageError::NoSuchServer(server_slug.to_string()))?;
         let viewer_id = self.users.find_by_handle(viewer_handle.trim()).map(|u| u.id);
+        // Gate the restricted appeals channel: to anyone who is not a voter, police
+        // officer, or the muted appellant, it reads as nonexistent.
+        let cname = domain::normalize_channel_name(channel_name);
+        if let Some(ch) = self.channels.find_by_name(server.id, &cname) {
+            if ch.visibility.is_appeals() {
+                let can = viewer_id
+                    .and_then(|id| self.memberships.get(id, server.id))
+                    .is_some_and(|m| crate::mute_service::membership_sees_appeals(&m));
+                if !can {
+                    return Err(MessageError::NoSuchChannel(channel_name.to_string()));
+                }
+            }
+        }
         let viewer_joined = viewer_id
             .and_then(|id| self.memberships.get(id, server.id))
             .map(|m| m.joined_at)
@@ -447,16 +527,27 @@ impl Services {
             .servers
             .find_by_slug(server_slug.trim())
             .ok_or_else(|| MessageError::NoSuchServer(server_slug.to_string()))?;
-        match self.memberships.get(user.id, server.id) {
+        let membership = match self.memberships.get(user.id, server.id) {
             None => return Err(MessageError::NotAMember(handle.to_string())),
             Some(m) if m.is_sanctioned => return Err(MessageError::Sanctioned(handle.to_string())),
-            Some(_) => {}
-        }
+            Some(m) => m,
+        };
         let name = domain::normalize_channel_name(channel_name);
         let channel = self
             .channels
             .find_by_name(server.id, &name)
             .ok_or_else(|| MessageError::NoSuchChannel(channel_name.to_string()))?;
+        if channel.visibility.is_appeals() {
+            // The appeals room: only voters, police, and muted appellants may post —
+            // and a muted appellant *may* post here, that being the whole point. To
+            // anyone else the channel does not exist.
+            if !crate::mute_service::membership_sees_appeals(&membership) {
+                return Err(MessageError::NoSuchChannel(channel_name.to_string()));
+            }
+        } else if membership.is_muted {
+            // Muted everywhere else.
+            return Err(MessageError::Muted(handle.to_string()));
+        }
         let uid = user.id;
         Ok((user, server, channel, uid))
     }

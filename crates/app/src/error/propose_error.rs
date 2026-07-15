@@ -8,6 +8,12 @@ pub enum ProposeError {
     NoSuchUser(String),
     #[error("no such server: '{0}'")]
     NoSuchServer(String),
+    /// The proposal being amended does not exist.
+    #[error("no such proposal: {0}")]
+    NoSuchProposal(u64),
+    /// A closed proposal can no longer take amendments.
+    #[error("this proposal is closed")]
+    Closed,
     /// Only an enfranchised citizen may open a proposal.
     #[error("only a citizen may open a proposal here")]
     NotACitizen,

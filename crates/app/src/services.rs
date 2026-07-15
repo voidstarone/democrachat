@@ -13,10 +13,10 @@ use domain::{
 use crate::outcome::EnfranchiseOutcome;
 use crate::{
     BlockStore, ChannelKeyStore, ChannelStore, Clock, DmStore, EnfranchiseError, EmojiStore,
-    EmojiVoteStore, FoundError, FriendStore, InviteError, InviteStore, JoinError, KeyDirectoryStore,
-    MembershipStore,
-    MediaStore, MessageStore, ProposalStore, ReactionStore, RegisterError, RoleStore, RuleStore,
-    ServerStore, UserStore, VoteStore,
+    EmojiVoteStore, FoundError, FriendStore, ImageTranscoder, InviteError, InviteStore, JoinError,
+    KeyDirectoryStore, MembershipStore,
+    MediaStore, MessageStore, ProposalStore, ReactionStore, RegisterError, RoleColorVoteStore,
+    RoleStore, RuleStore, ServerStore, UserStore, VoteStore,
 };
 
 /// The trailing window the enfranchisement rate cap measures admissions over.
@@ -42,10 +42,15 @@ pub struct Stores {
     pub blocks: Arc<dyn BlockStore>,
     pub friends: Arc<dyn FriendStore>,
     pub roles: Arc<dyn RoleStore>,
+    pub role_color_votes: Arc<dyn RoleColorVoteStore>,
     pub keys: Arc<dyn KeyDirectoryStore>,
     pub channel_keys: Arc<dyn ChannelKeyStore>,
     pub invites: Arc<dyn InviteStore>,
     pub media: Arc<dyn MediaStore>,
+    /// Normalizes uploaded images (re-encode, HEIC→JPEG). Not a persistence port —
+    /// a stateless transform — but wired the same way so the codec stays out of
+    /// the app core.
+    pub image: Arc<dyn ImageTranscoder>,
 }
 
 #[derive(Clone)]
@@ -66,10 +71,12 @@ pub struct Services {
     pub(crate) blocks: Arc<dyn BlockStore>,
     pub(crate) friends: Arc<dyn FriendStore>,
     pub(crate) roles: Arc<dyn RoleStore>,
+    pub(crate) role_color_votes: Arc<dyn RoleColorVoteStore>,
     pub(crate) keys: Arc<dyn KeyDirectoryStore>,
     pub(crate) channel_keys: Arc<dyn ChannelKeyStore>,
     pub(crate) invites: Arc<dyn InviteStore>,
     pub(crate) media: Arc<dyn MediaStore>,
+    pub(crate) image: Arc<dyn ImageTranscoder>,
 }
 
 impl Services {
@@ -91,10 +98,12 @@ impl Services {
             blocks: stores.blocks,
             friends: stores.friends,
             roles: stores.roles,
+            role_color_votes: stores.role_color_votes,
             keys: stores.keys,
             channel_keys: stores.channel_keys,
             invites: stores.invites,
             media: stores.media,
+            image: stores.image,
         }
     }
 
@@ -228,7 +237,51 @@ impl Services {
         m.enfranchised_at = Some(now);
         self.memberships.upsert(m);
 
+        // Every server starts with #general (somewhere to post from the first
+        // moment) and the restricted #appeals room. Past Seed, further channels are
+        // governed by ballot; these two are the provisioning floor no server is
+        // ever without.
+        self.ensure_default_channels(server.id, now);
+
         Ok(server)
+    }
+
+    /// Ensure a server has its floor channels — a plaintext `#general` and the
+    /// restricted `#appeals` — creating whichever is missing. Idempotent: a server
+    /// that already has them is untouched. Used at founding and by
+    /// [`backfill_default_channels`](Self::backfill_default_channels).
+    fn ensure_default_channels(&self, sid: domain::ServerId, now: Timestamp) {
+        let general = domain::normalize_channel_name("general");
+        if self.channels.find_by_name(sid, &general).is_none() {
+            self.channels.insert_channel(domain::Channel::new(
+                self.channels.next_channel_id(),
+                sid,
+                general,
+                "",
+                now,
+            ));
+        }
+        let appeals = domain::normalize_channel_name("appeals");
+        if self.channels.find_by_name(sid, &appeals).is_none() {
+            self.channels.insert_channel(domain::Channel::appeals(
+                self.channels.next_channel_id(),
+                sid,
+                appeals,
+                "Appeal a mute here — visible to voters and police.",
+                now,
+            ));
+        }
+    }
+
+    /// Backfill the floor channels for **every** server. Older datasets hold
+    /// servers founded before channels were auto-provisioned (and before #appeals
+    /// existed at all); running this once at boot gives each of them a #general and
+    /// #appeals. Idempotent — safe to run on every start.
+    pub fn backfill_default_channels(&self) {
+        let now = self.clock.now();
+        for server in self.servers.list_all() {
+            self.ensure_default_channels(server.id, now);
+        }
     }
 
     /// Mint an invite code for a server, returning the **raw** code to share (only

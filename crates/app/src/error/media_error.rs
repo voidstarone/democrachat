@@ -13,6 +13,10 @@ pub enum MediaError {
     /// The MIME type is not a supported image/video/audio type.
     #[error("unsupported media type: '{0}'")]
     UnsupportedType(String),
+    /// The bytes were declared an image but could not be decoded as one (corrupt,
+    /// hostile, or larger than the decode-bomb guard allows).
+    #[error("image could not be processed")]
+    Undecodable,
     /// The media store failed to read or write the blob.
     #[error("media storage error")]
     Io,

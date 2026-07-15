@@ -8,8 +8,8 @@
 //! No effect is applied until a proposal has passed and matured.
 
 use domain::{
-    Channel, Emoji, Phase, Proposal, ProposalId, ProposalKind, ProposalStatus, Role,
-    RoleAssignment, Rule, Server, Tally, Timestamp, Vote,
+    Channel, DiscussionPost, Emoji, Phase, Proposal, ProposalId, ProposalKind, ProposalStatus, Role,
+    RoleAssignment, Rule, Server, ServerId, Tally, Timestamp, Vote,
 };
 
 use crate::{ProposeError, Services, VoteError};
@@ -44,17 +44,9 @@ impl Services {
             .ok_or(ProposeError::NotACitizen)?;
         let _ = membership;
 
-        // Surface check — the server must put this kind of thing to a vote.
-        if !server.governs(kind.ballot_kind()) {
-            return Err(ProposeError::NotGoverned);
-        }
-
-        // Phase check — e.g. constitutional amendments are forbidden in Seed.
-        let citizens = self.memberships.citizen_count(server.id);
-        let phase = Phase::from_citizen_count(citizens);
-        if domain::threshold_for(kind.decision_class(), phase).is_none() {
-            return Err(ProposeError::NotAllowedInPhase);
-        }
+        // Surface + phase gates: the server must govern this kind, and its
+        // decision class must be permitted in the current phase.
+        self.ensure_ballot_admissible(&server, &kind)?;
 
         let now = self.clock.now();
         let proposal = Proposal::new(
@@ -109,6 +101,101 @@ impl Services {
 
         self.votes.upsert_vote(Vote::new(proposal.id, voter_id, is_aye));
         Ok(())
+    }
+
+    /// The surface + phase gates shared by opening a proposal and amending one: the
+    /// server must govern this ballot kind, and its decision class must be
+    /// permitted in the server's current phase (e.g. no constitutional change in Seed).
+    fn ensure_ballot_admissible(&self, server: &Server, kind: &ProposalKind) -> Result<(), ProposeError> {
+        if !server.governs(kind.ballot_kind()) {
+            return Err(ProposeError::NotGoverned);
+        }
+        let citizens = self.memberships.citizen_count(server.id);
+        let phase = Phase::from_citizen_count(citizens);
+        if domain::threshold_for(kind.decision_class(), phase).is_none() {
+            return Err(ProposeError::NotAllowedInPhase);
+        }
+        Ok(())
+    }
+
+    /// Fold another change into an **open** proposal's bundle. The amendment shares
+    /// the parent's single ballot: if it passes, every change — original and
+    /// amendments — enacts together; if it fails, none do. Gated exactly like
+    /// opening a proposal (franchised citizen, governed kind, permitted in phase),
+    /// so an amendment can never smuggle in something the server doesn't vote on.
+    pub fn amend_proposal(
+        &self,
+        proposer_handle: &str,
+        proposal_id: u64,
+        kind: ProposalKind,
+    ) -> Result<Proposal, ProposeError> {
+        let user = self
+            .users
+            .find_by_handle(proposer_handle.trim())
+            .ok_or_else(|| ProposeError::NoSuchUser(proposer_handle.to_string()))?;
+        let mut proposal = self
+            .proposals
+            .get_proposal(ProposalId(proposal_id))
+            .ok_or(ProposeError::NoSuchProposal(proposal_id))?;
+        if proposal.status != ProposalStatus::Open {
+            return Err(ProposeError::Closed);
+        }
+        let server = self
+            .servers
+            .get_server(proposal.server_id)
+            .ok_or_else(|| ProposeError::NoSuchServer(proposal.server_id.0.to_string()))?;
+        self.memberships
+            .get(user.id, server.id)
+            .filter(|m| m.is_franchised())
+            .ok_or(ProposeError::NotACitizen)?;
+        self.ensure_ballot_admissible(&server, &kind)?;
+
+        proposal.amend(kind);
+        self.proposals.update_proposal(proposal.clone());
+        Ok(proposal)
+    }
+
+    /// Add a citizen's post to a proposal's deliberation thread ("aye or nay?").
+    /// Only a franchised citizen of the proposal's server may speak, and only while
+    /// the ballot is still open. An empty body is a no-op.
+    pub fn post_discussion(&self, handle: &str, proposal_id: u64, body: &str) -> Result<(), VoteError> {
+        let user = self
+            .users
+            .find_by_handle(handle.trim())
+            .ok_or_else(|| VoteError::NoSuchUser(handle.to_string()))?;
+        let mut proposal = self
+            .proposals
+            .get_proposal(ProposalId(proposal_id))
+            .ok_or(VoteError::NoSuchProposal(proposal_id))?;
+        if proposal.status != ProposalStatus::Open {
+            return Err(VoteError::Closed);
+        }
+        self.memberships
+            .get(user.id, proposal.server_id)
+            .filter(|m| m.is_franchised())
+            .ok_or(VoteError::NotACitizen)?;
+        let body = body.trim();
+        if body.is_empty() {
+            return Ok(());
+        }
+        proposal.discussion.push(DiscussionPost::new(user.id, body, self.clock.now()));
+        self.proposals.update_proposal(proposal);
+        Ok(())
+    }
+
+    /// Read-only: a proposal's deliberation thread, in post order.
+    pub fn list_discussion(&self, proposal_id: u64) -> Vec<DiscussionPost> {
+        self.proposals
+            .get_proposal(ProposalId(proposal_id))
+            .map(|p| p.discussion)
+            .unwrap_or_default()
+    }
+
+    /// Read-only: the slug of the server a proposal belongs to (so a driving
+    /// adapter can resolve handles/roles against the right server when amending).
+    pub fn proposal_server_slug(&self, proposal_id: u64) -> Option<String> {
+        let p = self.proposals.get_proposal(ProposalId(proposal_id))?;
+        self.servers.get_server(p.server_id).map(|s| s.slug)
     }
 
     /// Resolve every proposal in a server whose window has closed: tally the
@@ -166,11 +253,21 @@ impl Services {
         tally
     }
 
-    /// Apply a passed proposal's effect to the server's stores. Each arm is the
-    /// concrete meaning of a ballot kind.
+    /// Apply a passed proposal's effect to the server's stores. A bundle applies
+    /// as a unit — the primary change first, then each amendment in the order it
+    /// was folded in — so an amended proposal enacts every one of its changes
+    /// together (or, having failed, none at all).
     fn apply_effect(&self, proposal: &Proposal, now: Timestamp) {
         let sid = proposal.server_id;
-        match &proposal.kind {
+        for kind in proposal.changes() {
+            self.apply_kind(kind, sid, now);
+        }
+    }
+
+    /// Apply a single change to the server's stores. Each arm is the concrete
+    /// meaning of a ballot kind.
+    fn apply_kind(&self, kind: &ProposalKind, sid: ServerId, now: Timestamp) {
+        match kind {
             ProposalKind::CreateChannel { name, topic } => {
                 let name = domain::normalize_channel_name(name);
                 if !name.is_empty() && self.channels.find_by_name(sid, &name).is_none() {
@@ -208,6 +305,34 @@ impl Services {
                 // Modelled as a sanction for now (duration handling is future work).
                 if let Some(mut m) = self.memberships.get(*user, sid) {
                     m.is_sanctioned = true;
+                    self.memberships.upsert(m);
+                }
+            }
+            ProposalKind::Mute { user } => {
+                // A vote-imposed mute has no officer of record (`by: None`), so a
+                // later lift bars no one.
+                if let Some(mut m) = self.memberships.get(*user, sid) {
+                    m.mute(None);
+                    self.memberships.upsert(m);
+                }
+            }
+            ProposalKind::LiftMute { user } => {
+                // The electorate overrules the mute. If a police officer imposed it,
+                // that officer is barred from re-muting this member for 24 hours.
+                if let Some(mut m) = self.memberships.get(*user, sid) {
+                    m.unmute(true, now.plus_days(1));
+                    self.memberships.upsert(m);
+                }
+            }
+            ProposalKind::AppointPolice { user } => {
+                if let Some(mut m) = self.memberships.get(*user, sid) {
+                    m.is_police = true;
+                    self.memberships.upsert(m);
+                }
+            }
+            ProposalKind::DismissPolice { user } => {
+                if let Some(mut m) = self.memberships.get(*user, sid) {
+                    m.is_police = false;
                     self.memberships.upsert(m);
                 }
             }
