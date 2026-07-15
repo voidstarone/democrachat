@@ -43,13 +43,31 @@ fn db_lock() -> &'static tokio::sync::Mutex<()> {
 /// the DDL). Returns `None` when `DATABASE_URL` is unset — the caller then skips.
 async fn fresh_store(max_connections: u32) -> Option<std::sync::Arc<PgStore>> {
     let url = std::env::var("DATABASE_URL").ok()?;
-    let reset = sqlx::postgres::PgPool::connect(&url).await.expect("connect for reset");
+    Some(fresh_store_at(&url, max_connections).await)
+}
+
+/// Reset and connect a store at an explicit URL — used to stand up a second
+/// (peer) node for the replication test.
+async fn fresh_store_at(url: &str, max_connections: u32) -> std::sync::Arc<PgStore> {
+    let reset = sqlx::postgres::PgPool::connect(url).await.expect("connect for reset");
     sqlx::raw_sql("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
         .execute(&reset)
         .await
         .expect("reset schema");
     reset.close().await;
-    Some(PgStore::connect(&url, max_connections).await.expect("connect PgStore"))
+    PgStore::connect(url, max_connections).await.expect("connect PgStore")
+}
+
+/// A resolver for tests whose rows carry their scope directly (no parent lookup).
+struct NoParents;
+#[async_trait::async_trait]
+impl federation::ScopeResolver for NoParents {
+    async fn proposal_server(&self, _: u64) -> Option<u64> {
+        None
+    }
+    async fn message_server(&self, _: u64) -> Option<u64> {
+        None
+    }
 }
 
 #[tokio::test]
@@ -311,19 +329,8 @@ async fn concurrent_admissions_never_overrun_the_rate_cap() {
 async fn writes_land_in_the_transactional_outbox_and_sign() {
     use federation::{
         sign_feed, ChangeOp, ChangeSource, InMemoryRegistry, NodeKeypair, OwnedScope,
-        OwnershipRegistry, ScopeResolver,
+        OwnershipRegistry,
     };
-
-    struct NoParents;
-    #[async_trait::async_trait]
-    impl ScopeResolver for NoParents {
-        async fn proposal_server(&self, _: u64) -> Option<u64> {
-            None
-        }
-        async fn message_server(&self, _: u64) -> Option<u64> {
-            None
-        }
-    }
 
     let _guard = db_lock().lock().await;
     let Some(store) = fresh_store(5).await else {
@@ -363,4 +370,75 @@ async fn writes_land_in_the_transactional_outbox_and_sign() {
     let signed = sign_feed(s, &node_a, &reg, &NoParents, 0, 100).await;
     assert_eq!(signed.len(), 4, "all four owned rows signed");
     assert!(signed.iter().all(|e| e.verify(&node_a.public()).is_ok()), "A signs its own feed");
+}
+
+/// The consumer half end-to-end across two live Postgres nodes: node A produces a
+/// signed feed from its transactional outbox, node B ingests it through the same
+/// authorize→apply gate a real peer uses. B must hold A's rows verbatim and — the
+/// key property — applying a peer's feed must NOT echo into B's own outbox, or the
+/// change would loop the network forever.
+#[tokio::test]
+async fn a_peer_pg_node_applies_the_feed_without_echoing_it() {
+    use federation::{
+        ingest, sign_feed, ChangeSource, InMemoryRegistry, NodeKeypair, OwnedScope,
+        OwnershipRegistry,
+    };
+
+    let _guard = db_lock().lock().await;
+    let Some(url) = std::env::var("DATABASE_URL").ok() else {
+        eprintln!("DATABASE_URL unset — skipping the live Postgres peer-apply test");
+        return;
+    };
+    let (base, _db) = url.rsplit_once('/').expect("url has a database segment");
+    let url_b = format!("{base}/democrachat2");
+
+    let store_a = fresh_store_at(&url, 5).await;
+    let store_b = fresh_store_at(&url_b, 5).await;
+    let a = &*store_a;
+    let b = &*store_b;
+
+    // Node A authors a server, a channel, and a message.
+    let founder = UserStore::next_user_id(a).await.unwrap();
+    UserStore::insert_user(a, User::new(founder, "ada", T)).await.unwrap();
+    let sid = domain::ServerId(7);
+    ServerStore::insert_server(a, Server::new(sid, "town", "Town", founder, T)).await.unwrap();
+    let cid = ChannelStore::next_channel_id(a).await.unwrap();
+    ChannelStore::insert_channel(a, Channel::new(cid, sid, "general", "", T)).await.unwrap();
+    let mid = MessageStore::next_message_id(a).await.unwrap();
+    MessageStore::insert_message(a, Message::new(mid, cid, sid, founder, "hi", None, T)).await.unwrap();
+
+    // Shared control plane: A owns Server(7) and its own user's home; both nodes
+    // know A's key.
+    let node_a = NodeKeypair::generate(domain::NodeId(1));
+    let reg = InMemoryRegistry::new();
+    reg.publish_key(domain::NodeId(1), &node_a.public().to_hex()).await.unwrap();
+    reg.claim(OwnedScope::Server(7), domain::NodeId(1)).await.unwrap();
+    reg.claim(OwnedScope::UserHome(founder.0), domain::NodeId(1)).await.unwrap();
+
+    let feed = sign_feed(a, &node_a, &reg, &NoParents, 0, 100).await;
+    assert_eq!(feed.len(), 4);
+
+    let res = ingest(&reg, &NoParents, b, &feed).await;
+    assert_eq!(res.applied, 4, "B applied every event");
+    assert!(res.rejected.is_empty(), "nothing rejected");
+
+    // B's replica holds A's rows verbatim.
+    assert_eq!(
+        ServerStore::get_server(b, sid).await.unwrap().map(|s| s.name),
+        Some("Town".to_string()),
+    );
+    assert_eq!(
+        ChannelStore::get_channel(b, cid).await.unwrap().map(|c| c.name),
+        Some("general".to_string()),
+    );
+    assert_eq!(
+        MessageStore::get_message(b, mid).await.unwrap().map(|m| m.body),
+        Some("hi".to_string()),
+    );
+
+    // The critical no-loop property: applying a peer's feed left B's own outbox empty.
+    assert!(
+        ChangeSource::changes_since(b, 0, 100).await.is_empty(),
+        "an ingested row must not echo into the peer's outbox",
+    );
 }
