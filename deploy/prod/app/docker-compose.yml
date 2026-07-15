@@ -1,20 +1,20 @@
 # ============================================================================
-# APP HOST — the stateful democrachat node.
+# APP HOST — the stateful democrachat node (e.g. a Raspberry Pi 5 on Ubuntu).
 #
 # democrachat is a single process with an in-memory model persisted to one JSON
 # snapshot. It is NOT sharded or replicated (there is no federation like the
 # democratos sibling), so exactly ONE app host runs, and it owns the durable
-# `/data` volume. This host is the source of truth; the edge host in ../edge is
-# a stateless proxy in front of it.
+# data + media. This host is the source of truth; the edge host in ../edge (or an
+# existing Caddy elsewhere, e.g. a separate Pi 4) is a stateless proxy in front.
 #
 #   edge host (public 80/443)  ──LAN──▶  this host  ${APP_BIND}  ──▶  app:3000
 #
-# The app binds a LAN address (${APP_BIND}, e.g. 10.0.0.4:3000) so the edge host
-# can reach it. That hop is plain HTTP on your private network — keep it on a
-# trusted/firewalled LAN (or a WireGuard/tailnet address); see README "the LAN
-# hop". Only the edge host is ever internet-exposed.
+# Everything is env-driven — copy .env.example to .env and edit. Durable state
+# lives on host paths you choose (${DATA_DIR}, ${MEDIA_DIR}), so it belongs on an
+# external drive rather than the SD card (which wears out under the DB's per-write
+# saves). Media in particular is placed on ${MEDIA_DIR}.
 #
-#   cp .env.example .env && $EDITOR .env       # set the session secret + APP_BIND
+#   cp .env.example .env && $EDITOR .env
 #   docker compose up -d --build
 # ============================================================================
 
@@ -23,40 +23,53 @@ services:
     build:
       context: ../../..
       dockerfile: Dockerfile
-    image: democrachat:latest
+    image: ${IMAGE:-democrachat:latest}
     restart: unless-stopped
+    # Run as the host user that owns ${DATA_DIR}/${MEDIA_DIR}, so the bind mounts
+    # are writable (the image's built-in `app` user won't match host ownership on
+    # an external drive). Default 1000:1000 — the first Ubuntu login user.
+    user: "${PUID:-1000}:${PGID:-1000}"
     # Publish on the LAN interface only (host-IP-scoped), never 0.0.0.0. The edge
     # host reverse-proxies to ${APP_BIND}. Compose refuses to start if APP_BIND is
     # unset, so the app is never accidentally bound to every interface.
     ports:
-      - "${APP_BIND:?set APP_BIND to this host's LAN ip:port, e.g. 10.0.0.4:3000}:3000"
+      - "${APP_BIND:?set APP_BIND to this host's LAN ip:port, e.g. 192.168.1.5:3000}:3000"
     environment:
       # REQUIRED. A non-loopback bind makes the app fail-closed without a real
-      # secret. Must be IDENTICAL to any future app host and stable across
-      # restarts (else every live session cookie is invalidated).
+      # secret. Keep it stable across restarts (else every live session cookie is
+      # invalidated) — generate once with: openssl rand -hex 32
       DEMOCRACHAT_SESSION_SECRET: ${DEMOCRACHAT_SESSION_SECRET:?set a strong random DEMOCRACHAT_SESSION_SECRET in .env}
       # Cookies carry Secure because the public origin (at the edge) is HTTPS.
       DEMOCRACHAT_SECURE_COOKIES: "1"
+      # The JSON snapshot (the whole database) and the media blob tier live on the
+      # host paths bind-mounted below.
       DEMOCRACHAT_DATA: /data/democrachat.json
+      DEMOCRACHAT_MEDIA_DIR: /media
+      # Optional at-rest encryption of the snapshot: 64 hex chars, else empty (the
+      # app treats empty as "plaintext"). Generate with: openssl rand -hex 32
+      DEMOCRACHAT_DATA_KEK: ${DEMOCRACHAT_DATA_KEK:-}
+      # Node identity — leave 0 (single box). A federated node would set 1–65535.
+      DEMOCRACHAT_NODE_ID: ${DEMOCRACHAT_NODE_ID:-0}
     volumes:
-      - data:/data
+      # Durable state on host paths you choose (an external drive, ext4). The DB
+      # snapshot and the media blobs are separate tiers; media is the large one.
+      - "${DATA_DIR:?set DATA_DIR to a host path on your durable drive, e.g. /mnt/ssd/democrachat/data}:/data"
+      - "${MEDIA_DIR:?set MEDIA_DIR to a host path on your external drive, e.g. /mnt/ssd/democrachat/media}:/media"
     # ---- kernel-level hardening (identical to the single-box compose) ----
-    read_only: true
+    read_only: true                 # root FS immutable; the two binds above stay writable
     tmpfs:
       - /tmp:size=32m
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
-    mem_limit: 256m
-    cpus: "1.0"
-    pids_limit: 256
+    # ---- resource guards (configurable; defaults sized for a Pi 5) ----
+    mem_limit: ${APP_MEM:-512m}
+    cpus: "${APP_CPUS:-2.0}"
+    pids_limit: ${APP_PIDS:-256}
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/"]
       interval: 30s
       timeout: 3s
-      start_period: 10s
+      start_period: 20s
       retries: 3
-
-volumes:
-  data:   # the durable JSON snapshot — this is the whole database
