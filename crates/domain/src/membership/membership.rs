@@ -20,6 +20,21 @@ pub struct Membership {
     /// When this member was admitted to the franchise, if ever. Used by the
     /// enfranchisement rate cap (Layer 2) to measure recent admissions.
     pub enfranchised_at: Option<Timestamp>,
+    /// The deadline by which a vote currently held **on trust** must be backed by a
+    /// confirmed email address. Set when a founding member is seated during
+    /// [`Phase::Seed`](crate::Phase) without having confirmed one (see
+    /// [`UNCONFIRMED_FRANCHISE_GRACE_DAYS`](crate::UNCONFIRMED_FRANCHISE_GRACE_DAYS)):
+    /// they vote from day one, but the clock is running. Past the deadline
+    /// [`is_franchised`](Self::is_franchised) refuses, so the vote lapses everywhere
+    /// at once rather than waiting on a housekeeping sweep.
+    ///
+    /// Cleared only when the address is actually confirmed. That asymmetry is
+    /// load-bearing: a *lapsed* member keeps a stale deadline, and
+    /// [`evaluate_eligibility`](crate::evaluate_eligibility) only extends trust to
+    /// someone who has none recorded — so a lapse cannot be traded in for a fresh
+    /// grace by leaving and rejoining the franchise.
+    #[serde(default)]
+    pub unconfirmed_franchise_until: Option<Timestamp>,
     /// Per-member voting weight granted by the server (see
     /// [`crate::ProposalKind::GrantVoteWeight`]). Only consulted under the
     /// [`crate::VoteWeighting::ByRole`] scheme; `1` means an ordinary citizen.
@@ -87,6 +102,7 @@ impl Membership {
             is_sanctioned: false,
             contribution: 0,
             enfranchised_at: None,
+            unconfirmed_franchise_until: None,
             granted_weight: 1,
             shares_history_with_newcomers: true,
             is_police: false,
@@ -140,13 +156,43 @@ impl Membership {
     }
 
     /// Whether this member may currently exercise the franchise: an enfranchised
-    /// citizen who is **not** under an active sanction. A sanction disqualifies
-    /// from the franchise, so every governance action — casting a ballot, being
-    /// empanelled on a jury, voting a verdict — must gate on this, not on the bare
-    /// [`is_citizen`](Self::is_citizen) tier (which a convicted member retains
-    /// until they re-qualify).
-    pub fn is_franchised(&self) -> bool {
-        self.is_citizen() && !self.is_sanctioned
+    /// citizen who is **not** under an active sanction and whose vote, if held on
+    /// trust, has not run out of time. A sanction disqualifies from the franchise,
+    /// so every governance action — casting a ballot, being empanelled on a jury,
+    /// voting a verdict, counting toward an electorate — must gate on this, not on
+    /// the bare [`is_citizen`](Self::is_citizen) tier (which a convicted member
+    /// retains until they re-qualify).
+    ///
+    /// Taking `now` is what makes the confirmation deadline real: the vote stops
+    /// counting the instant it expires, in every path at once, with no sweep to run
+    /// first. A member who has since confirmed still reads as lapsed until the
+    /// deadline is cleared (see [`unconfirmed_franchise_until`](Self::unconfirmed_franchise_until)),
+    /// which errs toward withholding a vote rather than granting one.
+    pub fn is_franchised(&self, now: Timestamp) -> bool {
+        self.is_citizen() && !self.is_sanctioned && !self.trusted_franchise_lapsed(now)
+    }
+
+    /// Whether this member is voting **on trust** — seated as a founding member
+    /// without a confirmed email address, with the deadline still ahead of them.
+    pub fn holds_franchise_on_trust(&self, now: Timestamp) -> bool {
+        matches!(self.unconfirmed_franchise_until, Some(deadline) if now.0 < deadline.0)
+    }
+
+    /// Whether a vote held on trust has run out of time (and so no longer counts).
+    pub fn trusted_franchise_lapsed(&self, now: Timestamp) -> bool {
+        matches!(self.unconfirmed_franchise_until, Some(deadline) if now.0 >= deadline.0)
+    }
+
+    /// Whole days left to confirm before the vote lapses, for the countdown the UI
+    /// shows. `None` when no deadline is pending. Rounds up, so the last partial day
+    /// still reads as "1 day left" rather than "0".
+    pub fn days_to_confirm(&self, now: Timestamp) -> Option<i64> {
+        let deadline = self.unconfirmed_franchise_until?;
+        let remaining = deadline.0 - now.0;
+        if remaining <= 0 {
+            return None;
+        }
+        Some((remaining + Timestamp::SECONDS_PER_DAY - 1) / Timestamp::SECONDS_PER_DAY)
     }
 
     /// Whole days this user has been a member of the server.
@@ -159,6 +205,10 @@ impl Membership {
 mod tests {
     use super::*;
 
+    const DAY: i64 = Timestamp::SECONDS_PER_DAY;
+    /// Any "now" will do for the tests that aren't about the confirmation deadline.
+    const NOW: Timestamp = Timestamp(500 * 86_400);
+
     fn citizen() -> Membership {
         let mut m = Membership::joined(UserId(1), ServerId(1), Timestamp(0));
         m.tier = Tier::Citizen;
@@ -167,7 +217,7 @@ mod tests {
 
     #[test]
     fn a_clean_citizen_is_franchised() {
-        assert!(citizen().is_franchised());
+        assert!(citizen().is_franchised(NOW));
     }
 
     #[test]
@@ -175,7 +225,7 @@ mod tests {
         let mut m = citizen();
         m.is_sanctioned = true;
         assert!(m.is_citizen(), "the Citizen tier is retained until re-qualification");
-        assert!(!m.is_franchised(), "but a sanction disqualifies from the franchise");
+        assert!(!m.is_franchised(NOW), "but a sanction disqualifies from the franchise");
     }
 
     #[test]
@@ -196,8 +246,41 @@ mod tests {
     fn a_non_citizen_is_never_franchised() {
         let mut m = Membership::joined(UserId(1), ServerId(1), Timestamp(0));
         assert_eq!(m.tier, Tier::Member);
-        assert!(!m.is_franchised());
+        assert!(!m.is_franchised(NOW));
         m.tier = Tier::Guest;
-        assert!(!m.is_franchised());
+        assert!(!m.is_franchised(NOW));
+    }
+
+    /// A founding member's vote counts for the whole grace and stops counting the
+    /// moment it runs out — no sweep in between.
+    #[test]
+    fn a_vote_held_on_trust_lapses_exactly_at_the_deadline() {
+        let mut m = citizen();
+        let deadline = Timestamp(NOW.0 + 3 * DAY);
+        m.unconfirmed_franchise_until = Some(deadline);
+
+        assert!(m.is_franchised(NOW), "trusted while the deadline is ahead");
+        assert!(m.holds_franchise_on_trust(NOW));
+        assert!(m.is_franchised(Timestamp(deadline.0 - 1)), "still counts a second before");
+        assert!(!m.is_franchised(deadline), "lapses on the deadline itself");
+        assert!(m.trusted_franchise_lapsed(deadline));
+        assert!(
+            m.is_citizen(),
+            "the tier is untouched — the vote lapses, the membership does not"
+        );
+    }
+
+    /// The countdown the banner shows: whole days, rounded up so the final hours
+    /// still read as a day rather than zero.
+    #[test]
+    fn the_countdown_rounds_up_and_stops_at_the_deadline() {
+        let mut m = citizen();
+        assert_eq!(m.days_to_confirm(NOW), None, "no deadline, no countdown");
+
+        m.unconfirmed_franchise_until = Some(Timestamp(NOW.0 + 28 * DAY));
+        assert_eq!(m.days_to_confirm(NOW), Some(28));
+        assert_eq!(m.days_to_confirm(Timestamp(NOW.0 + 27 * DAY)), Some(1));
+        assert_eq!(m.days_to_confirm(Timestamp(NOW.0 + 28 * DAY - 1)), Some(1), "the last hour is still a day");
+        assert_eq!(m.days_to_confirm(Timestamp(NOW.0 + 28 * DAY)), None, "expired, not '0 days'");
     }
 }

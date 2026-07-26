@@ -619,7 +619,7 @@ impl ChatService {
         // Endorsement: a franchised citizen reacting (for the first time) to
         // someone else's message raises that author's contribution by one.
         let first_reaction = !self.reactions.user_has_any(message.id, user.id).await?;
-        let endorses = first_reaction && reactor.is_franchised() && user.id != message.author;
+        let endorses = first_reaction && reactor.is_franchised(self.clock.now()) && user.id != message.author;
 
         let added = self.reactions.add(Reaction::new(message.id, user.id, emoji)).await?;
         if added && endorses {
@@ -650,7 +650,7 @@ impl ChatService {
         if removed {
             let still_reacting = self.reactions.user_has_any(message.id, user.id).await?;
             if let Some(reactor) = self.memberships.get(user.id, message.server_id).await? {
-                if !still_reacting && reactor.is_franchised() && user.id != message.author {
+                if !still_reacting && reactor.is_franchised(self.clock.now()) && user.id != message.author {
                     self.adjust_contribution(message.author, message.server_id, -1).await;
                 }
             }

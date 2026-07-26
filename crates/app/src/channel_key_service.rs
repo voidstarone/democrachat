@@ -11,7 +11,7 @@ use std::sync::Arc;
 use domain::{ChannelKeyGrant, HistoryMode};
 
 use crate::error::channel_key_error::ChannelKeyError;
-use crate::{ChannelKeyStore, ChannelStore, MembershipStore, ServerStore, UserStore};
+use crate::{ChannelKeyStore, ChannelStore, Clock, MembershipStore, ServerStore, UserStore};
 
 /// Encrypted-channel use-cases held on their own handle, reached via
 /// [`Services::channel_keys`].
@@ -19,6 +19,9 @@ use crate::{ChannelKeyStore, ChannelStore, MembershipStore, ServerStore, UserSto
 pub struct ChannelKeyService {
     pub(crate) channel_keys: Arc<dyn ChannelKeyStore>,
     pub(crate) channels: Arc<dyn ChannelStore>,
+    /// Needed to judge the franchise: a vote held on trust expires, so "is this
+    /// member a citizen right now" is a question about the current time.
+    pub(crate) clock: Arc<dyn Clock>,
     pub(crate) memberships: Arc<dyn MembershipStore>,
     pub(crate) servers: Arc<dyn ServerStore>,
     pub(crate) users: Arc<dyn UserStore>,
@@ -45,7 +48,7 @@ impl ChannelKeyService {
             .ok_or_else(|| ChannelKeyError::NoSuchServer(server_slug.to_string()))?;
         self.memberships
             .get(user.id, server.id).await?
-            .filter(|m| m.is_franchised())
+            .filter(|m| m.is_franchised(self.clock.now()))
             .ok_or(ChannelKeyError::NotACitizen)?;
 
         let name = domain::normalize_channel_name(channel_name);

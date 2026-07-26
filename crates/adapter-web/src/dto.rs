@@ -569,6 +569,24 @@ pub struct MeDto {
     pub is_eligible: bool,
     /// Human-readable unmet requirements.
     pub unmet: Vec<String>,
+    /// True when an unconfirmed email address is the **only** thing between this
+    /// member and the franchise — they have served the time and done the work, and
+    /// one click would enfranchise them. The SPA banners exactly this case; it is
+    /// computed here rather than sniffed out of `unmet`, whose entries are prose.
+    #[serde(default)]
+    pub email_blocks_franchise: bool,
+    /// Whole days this member has left to confirm their address before the vote they
+    /// currently hold **on trust** lapses (see `UNCONFIRMED_FRANCHISE_GRACE_DAYS`).
+    /// `null` unless a deadline is actually pending — a founding member voting today
+    /// on an address they have not confirmed.
+    #[serde(default)]
+    pub confirm_days_left: Option<i64>,
+    /// True when this member *had* the vote on trust and let the deadline pass: they
+    /// have lost voting access until they confirm. Distinct from
+    /// `email_blocks_franchise` (never had it) because the message owed to someone
+    /// who lost something is not the message owed to someone offered something.
+    #[serde(default)]
+    pub franchise_lapsed: bool,
     pub contribution: i64,
     /// The caller's personal per-server choice of whether members who join later
     /// may read the messages they have already posted (`true` = share; the default).

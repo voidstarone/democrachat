@@ -49,7 +49,12 @@ A flood must beat **all four**, and each costs weeks.
 
 1. **Earned franchise** (`evaluate_eligibility`) — by default, server dwell ≥ 28d and
    no active sanction. A server's electorate can vote to add stricter gates (a minimum
-   account age, a minimum of endorsement-weighted contribution) on top.
+   account age, a minimum of endorsement-weighted contribution) on top. The one
+   exception is a server's **founding cohort**: while it is still in Seed, whoever
+   joins is enfranchised on arrival, because a brand-new community that cannot vote
+   for a month is not a community. That waiver covers the *wait* only — never a
+   sanction, a franchise bar, or a contribution bar — and shuts by itself at five
+   citizens, so it can seat the founder plus four.
 2. **Enfranchisement rate cap** (`enfranchisement_slots`) — the citizen roll grows
    by at most +10% / 30 days (floor +5). Qualified newcomers beyond the cap queue by
    qualification date; nobody is denied, only delayed.
@@ -66,7 +71,7 @@ server runs on training wheels, derived purely from its citizen count:
 
 | Phase | Citizens | Governance |
 |---|---|---|
-| **Seed** | 1–4 | Founder is Citizen #1 and may **provisionally** set the server up (rules, emojis, channels). No constitutional amendments. |
+| **Seed** | 1–4 | Founder is Citizen #1 and may **provisionally** set the server up (rules, emojis, channels). No constitutional amendments. Whoever joins is enfranchised at once — the founding cohort. |
 | **Chartering** | 5–24 | Amendments may be proposed under **stricter** thresholds; provisioning becomes ballots. |
 | **Sovereign** | 25+ | Full self-governance; percentage math works naturally. |
 

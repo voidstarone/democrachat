@@ -335,7 +335,10 @@ const submitAuth = guard(async () => {
       showVerifyPane(handle, email, true);
       return;
     }
-    await completeLogin(r.handle, password); // verification off — logged straight in
+    // Soft mode logs in straight away; say why the email is arriving, since it
+    // isn't blocking anything today — it's the vote it unlocks later.
+    if (r && r.verify_pending) toast(t('app.toast.soft_signup'));
+    await completeLogin(r.handle, password);
     return;
   }
   try {
@@ -359,10 +362,10 @@ const submitAuth = guard(async () => {
    to, spells out the three steps that follow, and keeps the two ways forward
    (send it again, or go back and sign in) in reach. */
 const RESEND_COOLDOWN = 45; // seconds — a just-sent mail is still in flight
-let RESEND_TICK = null;
 // `email` is what we typed into the form; on the unverified-login path we don't
 // know it, so the copy falls back to the handle. `justSent` starts the cooldown.
 function showVerifyPane(handle, email, justSent){
+  setVoteBanner(null); // signed out — the franchise banner has no subject
   if (S.pendingVerifyHandle !== handle) S.pendingVerifyEmail = ''; // don't carry one account's address onto another
   S.pendingVerifyHandle = handle;
   if (email) S.pendingVerifyEmail = email;
@@ -378,26 +381,29 @@ function showVerifyPane(handle, email, justSent){
   startResendCooldown(justSent ? RESEND_COOLDOWN : 0);
 }
 function hideVerifyPane(){
-  clearInterval(RESEND_TICK); RESEND_TICK = null;
+  const btn = $('resendBtn');
+  clearInterval(btn._resendTick); btn._resendTick = null;
   $('verifyPane').style.display = 'none';
   $('authPane').style.display = '';
 }
-// Count the resend button down instead of letting it be tapped into a mail storm.
-function startResendCooldown(secs){
-  const btn = $('resendBtn');
-  clearInterval(RESEND_TICK); RESEND_TICK = null;
+// Count a resend button down instead of letting it be tapped into a mail storm.
+// The countdown is per-button (the modal's and the banner's are different
+// elements, live at different times), so the timer hangs off the element itself.
+function startResendCooldown(secs, btn){
+  const b = btn || $('resendBtn');
+  clearInterval(b._resendTick); b._resendTick = null;
   let left = secs;
   const paint = () => {
     if (left <= 0) {
-      clearInterval(RESEND_TICK); RESEND_TICK = null;
-      btn.disabled = false; btn.textContent = t('ui.verify.resend_btn');
+      clearInterval(b._resendTick); b._resendTick = null;
+      b.disabled = false; b.textContent = t('ui.verify.resend_btn');
       return;
     }
-    btn.disabled = true; btn.textContent = t('ui.verify.resend_in', { s: left });
+    b.disabled = true; b.textContent = t('ui.verify.resend_in', { s: left });
     left--;
   };
   paint();
-  if (secs > 0) RESEND_TICK = setInterval(paint, 1000);
+  if (secs > 0) b._resendTick = setInterval(paint, 1000);
 }
 // Back to the sign-in form, with the handle we were waiting on already filled.
 function backToSignIn(){
@@ -406,18 +412,80 @@ function backToSignIn(){
   $('handleInput').value = S.pendingVerifyHandle || $('handleInput').value;
   $('passwordInput').focus();
 }
-// Re-send the verification email for the account this pane is about (falling back
-// to the handle in the form). Always an opaque success.
-const resendVerify = guard(async () => {
-  const handle = S.pendingVerifyHandle || $('handleInput').value.trim();
+// Re-send the verification email — from the signed-out pane (the handle we just
+// signed up / tried to log in with) or from the signed-in banner (whoever we are).
+// `btn` is the control that asked, so its own countdown runs. Always an opaque
+// success.
+const resendVerify = guard(async (btn) => {
+  const target = btn && btn.tagName === 'BUTTON' ? btn : $('resendBtn');
+  const handle = S.me || S.pendingVerifyHandle || $('handleInput').value.trim();
   if (!handle) { toast(t('app.toast.enter_handle_pw'),'err'); return; }
-  const btn = $('resendBtn');
-  btn.disabled = true; // no double-taps while the request is in flight
+  target.disabled = true; // no double-taps while the request is in flight
   try { await api('/api/resend','POST',{handle, lang: LANG}); }
-  catch(e) { btn.disabled = false; throw e; }
+  catch(e) { target.disabled = false; throw e; }
   toast(t('app.toast.resent'));
-  startResendCooldown(RESEND_COOLDOWN);
+  startResendCooldown(RESEND_COOLDOWN, target);
 });
+
+/* ── The email-confirmation banner ───────────────────────────────────
+   Under soft verification an account is fully usable but the franchise is priced in
+   a confirmed address. A founding member is trusted with the vote from day one and
+   has 28 days to make good on it, so there are three things worth saying, and the
+   server tells us which applies:
+
+     · `confirm_days_left` — voting on trust, N days to confirm. A deadline nobody
+       warned them about would be indefensible, so this one counts down, keeps its
+       dismissal to a single reload, and turns urgent in the last week.
+     · `franchise_lapsed`  — the deadline passed and the vote is gone until they
+       confirm. Not dismissible at all: it is the only notice they get that
+       something they had has been taken away.
+     · `email_blocks_franchise` — they never held it, but confirming would hand it
+       over right now. An offer, so it reads as one, and it stays dismissed.
+
+   Anything else (nothing outstanding, or a bar confirming wouldn't lift) shows no
+   banner — the standing panel already lists what is missing. */
+const VB_DISMISSED = 'dc_votebanner_dismissed';
+function setVoteBanner(me){
+  const bar = $('voteBanner');
+  const days = me && me.confirm_days_left;
+  const lapsed = !!(me && me.franchise_lapsed);
+  const offered = !!(me && me.email_blocks_franchise);
+
+  let state = null;
+  if (lapsed) state = 'lapsed';
+  else if (days != null) state = 'grace';
+  else if (offered) state = 'offer';
+  if (!state) { document.body.classList.remove('banner-open'); return; }
+
+  // A lost vote is never dismissible. A running deadline can be waved away, but
+  // only until the next load — dismissing it must not be how someone misses it.
+  let dismissed = false;
+  if (state !== 'lapsed') {
+    try { dismissed = sessionStorage.getItem(VB_DISMISSED) === ('grace'===state ? '1:'+days : '1'); } catch {}
+  }
+  if (dismissed) { document.body.classList.remove('banner-open'); return; }
+
+  const copy = {
+    grace:  ['ui.votebanner.grace_title', 'ui.votebanner.grace_body'],
+    lapsed: ['ui.votebanner.lapsed_title', 'ui.votebanner.lapsed_body'],
+    offer:  ['ui.votebanner.title', 'ui.votebanner.body'],
+  }[state];
+  $('vbTitle').textContent = t(copy[0], { n: days });
+  $('vbBody').textContent = t(copy[1], { n: days });
+  // Amber once a deadline is running, red once it has run out, accent for an offer.
+  bar.classList.toggle('warn', state === 'grace');
+  bar.classList.toggle('bad', state === 'lapsed');
+  $('vbDismiss').style.display = state === 'lapsed' ? 'none' : '';
+  VB_STATE = state; VB_DAYS = days;
+  document.body.classList.add('banner-open');
+}
+let VB_STATE = null, VB_DAYS = null;
+// Dismissal is keyed to the countdown, so tomorrow's "3 days left" is a new
+// message rather than one the user already waved away.
+function dismissVoteBanner(){
+  try { sessionStorage.setItem(VB_DISMISSED, VB_STATE==='grace' ? '1:'+VB_DAYS : '1'); } catch {}
+  document.body.classList.remove('banner-open');
+}
 const logout = guard(async () => { await api('/api/logout','POST'); location.reload(); });
 let WS_STARTED = false;
 function afterLogin() {
@@ -1623,6 +1691,7 @@ async function loadMe(){
   if(!S.server) return;
   const me = await api(`/api/servers/${S.server}/me`);
   S.tier = me.tier; S.isPolice = !!me.is_police; S.isMuted = !!me.is_muted;
+  setVoteBanner(me);
   $('newProposalBtn').style.display = me.tier==='citizen' ? 'block' : 'none';
   $('demNewBtn').style.display = me.tier==='citizen' ? 'block' : 'none';
   const d = S.serverDetail;
@@ -1634,6 +1703,10 @@ async function loadMe(){
     html += `<div style="margin-top:.6rem">${t('app.me.not_member')}</div><button class="full" style="margin-top:.6rem" data-act="join">${t('app.me.join_server',{name:esc(d.name)})}</button>`;
   } else if (me.tier==='citizen') {
     html += `<div style="margin-top:.6rem">${t('app.me.can_vote')}</div>`;
+    // A founding member's vote is real but conditional — say so where they come to
+    // read their standing, not only in the banner they may have dismissed.
+    if (me.confirm_days_left != null)
+      html += `<div class="sub" style="margin-top:.5rem;color:var(--warn)">${t('ui.votebanner.grace_title',{n:me.confirm_days_left})}</div>`;
     html += `<div class="sub" style="margin-top:.5rem">${t('app.me.contribution',{n:me.contribution})}</div>`;
   } else {
     const pct = Math.min(100, Math.round(100*me.contribution/Math.max(1,d.min_contribution)));
@@ -2160,8 +2233,9 @@ $('msgSearch')?.addEventListener('keydown', e=>{ if(e.key==='Enter'){ clearTimeo
 const ACTIONS = {
   submitAuth:     () => submitAuth(),
   toggleAuthMode: () => toggleAuthMode(),
-  resendVerify:   () => resendVerify(),
+  resendVerify: el => resendVerify(el),
   backToSignIn:   () => backToSignIn(),
+  dismissVoteBanner: () => dismissVoteBanner(),
   setModeChat:    () => setMode('chat'),
   setModeDms:     () => showFriends(),
   showFriends:    () => showFriends(),

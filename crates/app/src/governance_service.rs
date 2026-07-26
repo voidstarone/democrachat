@@ -63,7 +63,7 @@ impl GovernanceService {
         // Only a franchised citizen may propose.
         self.memberships
             .get(user.id, server.id).await?
-            .filter(|m| m.is_franchised())
+            .filter(|m| m.is_franchised(self.clock.now()))
             .ok_or(ProposeError::NotACitizen)?;
 
         // Surface + phase gates: the server must govern this kind, and its
@@ -118,7 +118,7 @@ impl GovernanceService {
         // Must be a franchised citizen of this server.
         self.memberships
             .get(voter_id, proposal.server_id).await?
-            .filter(|m| m.is_franchised())
+            .filter(|m| m.is_franchised(self.clock.now()))
             .ok_or(VoteError::NotACitizen)?;
 
         self.votes.upsert_vote(Vote::new(proposal.id, voter_id, is_aye)).await?;
@@ -168,7 +168,7 @@ impl GovernanceService {
             .ok_or_else(|| ProposeError::NoSuchServer(proposal.server_id.0.to_string()))?;
         self.memberships
             .get(user.id, server.id).await?
-            .filter(|m| m.is_franchised())
+            .filter(|m| m.is_franchised(self.clock.now()))
             .ok_or(ProposeError::NotACitizen)?;
         self.ensure_ballot_admissible(&server, &kind).await?;
 
@@ -199,7 +199,7 @@ impl GovernanceService {
         }
         self.memberships
             .get(user.id, proposal.server_id).await?
-            .filter(|m| m.is_franchised())
+            .filter(|m| m.is_franchised(self.clock.now()))
             .ok_or(VoteError::NotACitizen)?;
         let body = body.trim();
         if body.is_empty() {
@@ -268,7 +268,7 @@ impl GovernanceService {
         for v in self.votes.list_for_proposal(proposal.id).await.unwrap_or_default() {
             let weight = match self.memberships.get(v.voter, server.id).await.ok().flatten() {
                 // A voter who has since been sanctioned is dropped from the count.
-                Some(m) if m.is_franchised() => {
+                Some(m) if m.is_franchised(now) => {
                     if weighted {
                         server.vote_weighting.weight_of(&m, now)
                     } else {

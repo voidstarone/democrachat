@@ -80,14 +80,15 @@ fn non_empty_env(name: &str) -> Option<String> {
     std::env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
-/// The email-verification policy, from `DEMOCRACHAT_EMAIL_VERIFICATION`. Unset ⇒
-/// `Hard` (secure by default: new signups must confirm their email). An
-/// unrecognized value is a hard error rather than a silent fall-back.
+/// The email-verification policy, from `DEMOCRACHAT_EMAIL_VERIFICATION`: `hard`
+/// (confirm before you can log in), `soft` (log in freely, but no franchise until
+/// you confirm), or `off`. Unset ⇒ `Hard` (secure by default). An unrecognized
+/// value is a hard error rather than a silent fall-back.
 fn email_verification_from_env() -> app::EmailVerificationMode {
     match non_empty_env("DEMOCRACHAT_EMAIL_VERIFICATION") {
         None => app::EmailVerificationMode::Hard,
         Some(raw) => app::EmailVerificationMode::parse(&raw).unwrap_or_else(|| {
-            eprintln!("error: DEMOCRACHAT_EMAIL_VERIFICATION must be 'hard' or 'off'");
+            eprintln!("error: DEMOCRACHAT_EMAIL_VERIFICATION must be 'hard', 'soft', or 'off'");
             exit(2);
         }),
     }
@@ -152,18 +153,20 @@ struct EmailWiring {
 }
 
 /// Resolve email wiring and enforce readiness. Verification only operates under
-/// `serve`, so CLI commands skip the checks. If `serve` requests verification but
-/// the key / `SITE_ADDRESS` / SMTP settings aren't all present, a real deployment
-/// fails closed (an unverifiable hard gate would lock everyone out); a `--dev`
-/// instance instead downgrades to verification-off with a warning so the local demo
-/// still runs.
+/// `serve`, so CLI commands skip the checks. If `serve` requests verification —
+/// hard *or* soft, both of which have to actually send mail — but the key /
+/// `SITE_ADDRESS` / SMTP settings aren't all present, a real deployment fails
+/// closed: an unsendable hard gate locks everyone out, and an unsendable soft one
+/// is quieter but no kinder, permanently withholding the franchise from a server
+/// that can never confirm anyone. A `--dev` instance instead downgrades to
+/// verification-off with a warning so the local demo still runs.
 fn configure_email(is_serve: bool, is_dev: bool) -> EmailWiring {
     let mut mode = email_verification_from_env();
     let key = email_key_from_env();
     let sender = smtp_sender_from_env();
     let base_url = non_empty_env("DEMOCRACHAT_BASE_URL").unwrap_or_default();
 
-    if is_serve && mode.requires_verification() {
+    if is_serve && mode.issues_verification() {
         let ready = key.is_some() && sender.is_some() && !base_url.is_empty();
         if !ready {
             if is_dev {
@@ -175,8 +178,9 @@ fn configure_email(is_serve: bool, is_dev: bool) -> EmailWiring {
                 mode = app::EmailVerificationMode::Off;
             } else {
                 eprintln!(
-                    "error: DEMOCRACHAT_EMAIL_VERIFICATION=hard requires DEMOCRACHAT_EMAIL_KEY, \
-                     DEMOCRACHAT_BASE_URL, and DEMOCRACHAT_SMTP_HOST/USERNAME/PASSWORD/FROM to be set."
+                    "error: DEMOCRACHAT_EMAIL_VERIFICATION={} requires DEMOCRACHAT_EMAIL_KEY, \
+                     DEMOCRACHAT_BASE_URL, and DEMOCRACHAT_SMTP_HOST/USERNAME/PASSWORD/FROM to be set.",
+                    if mode.requires_verification() { "hard" } else { "soft" }
                 );
                 exit(2);
             }

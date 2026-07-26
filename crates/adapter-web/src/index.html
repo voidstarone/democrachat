@@ -577,6 +577,33 @@
   .toast.ok { border-left-color:var(--ok); }
   @keyframes toastIn { from { opacity:0; transform:translateX(12px); } }
 
+  /* The email-confirmation banner. Accent by default — being offered the vote is
+     good news — and `warn`/`bad` when there is a deadline running or a vote already
+     lost. Hidden by default; `body.banner-open` both reveals it and opens the grid
+     row it occupies, so the two can never disagree and leave a gap. */
+  #voteBanner { display:none; align-items:center; gap:.7rem; padding:.55rem 1.1rem;
+                background:var(--accent-soft); color:var(--accent-ink);
+                border-bottom:1px solid var(--line); z-index:4; }
+  /* A deadline is running: amber, and the countdown is the loudest thing in it. */
+  #voteBanner.warn { background:var(--warn-soft); color:var(--warn); }
+  /* The vote is already gone. Not decoration — this one must not be missable. */
+  #voteBanner.bad { background:var(--warn-soft); color:var(--bad); border-bottom-color:var(--bad); }
+  body.banner-open { grid-template-rows:auto auto 1fr; }
+  body.banner-open #voteBanner { display:flex; animation:vbIn .22s var(--ease) both; }
+  @keyframes vbIn { from { opacity:0; transform:translateY(-6px); } }
+  #voteBanner .vb-mark { flex:none; }
+  #voteBanner .vb-text { min-width:0; font-size:13px; line-height:1.4; }
+  #voteBanner .vb-text b { font-weight:650; }
+  #voteBanner .vb-text span { color:var(--muted); }
+  #voteBanner #vbResend { margin-left:auto; flex:none; }
+  #voteBanner .vb-x { border-color:transparent; color:var(--muted); font-size:15px; line-height:1; padding:.15rem .4rem; }
+  @media (prefers-reduced-motion: reduce) { body.banner-open #voteBanner { animation:none; } }
+  @media (max-width: 680px) {
+    #voteBanner { padding:.5rem .6rem; gap:.5rem; }
+    /* The second line is the explanation; the headline and the action survive. */
+    #voteBanner .vb-text span { display:none; }
+  }
+
   /* Login overlay */
   /* Menu (hamburger) button — only shown on phones. */
   .menuonly { display:none; }
@@ -727,6 +754,19 @@
     <button class="ghost sm" data-act="logout" data-t="ui.header.signout">sign out</button>
   </div>
 </header>
+<!-- Soft email verification. Three situations, three messages, filled in by
+     `setVoteBanner`: a founding member voting on trust with N days to confirm; one
+     who let that deadline pass and has lost the vote; and a member who would be
+     eligible but has never confirmed. -->
+<div id="voteBanner" role="status">
+  <svg class="vb-mark" id="vbMark" aria-hidden="true" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+  <div class="vb-text">
+    <b id="vbTitle"></b>
+    <span id="vbBody"></span>
+  </div>
+  <button class="sm" id="vbResend" data-act="resendVerify" data-t="ui.votebanner.resend">Send it again</button>
+  <button class="icon sm vb-x" id="vbDismiss" data-act="dismissVoteBanner" title="Dismiss" data-t-title="ui.votebanner.dismiss" aria-label="Dismiss">×</button>
+</div>
 <div id="navScrim" data-act="closeNav"></div>
 <div id="govScrim" data-act="closeGov"></div>
 

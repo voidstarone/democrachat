@@ -167,7 +167,7 @@ impl RoleService {
             .ok_or_else(|| RoleError::NoSuchUser(voter_handle.to_string()))?;
         self.memberships
             .get(user.id, server.id).await?
-            .filter(|m| m.is_franchised())
+            .filter(|m| m.is_franchised(self.clock.now()))
             .ok_or(RoleError::NotACitizen)?;
 
         let color = RoleColor::parse(color).ok_or(RoleError::BadColor)?;
@@ -247,7 +247,7 @@ impl RoleService {
         self.memberships
             .list_for_server(server).await.unwrap_or_default()
             .into_iter()
-            .filter(|m| m.is_franchised())
+            .filter(|m| m.is_franchised(self.clock.now()))
             .map(|m| m.user_id)
             .collect()
     }

@@ -36,7 +36,7 @@ impl RoleCriteria {
         if user.is_franchise_barred || member.is_sanctioned {
             return false;
         }
-        if self.requires_citizen && !member.is_franchised() {
+        if self.requires_citizen && !member.is_franchised(now) {
             return false;
         }
         user.account_age_days(now) >= self.min_account_age_days

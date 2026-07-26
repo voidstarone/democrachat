@@ -44,7 +44,7 @@ impl EmojiService {
             .ok_or_else(|| EmojiError::NoSuchUser(adder_handle.to_string()))?;
         self.memberships
             .get(user.id, server.id).await?
-            .filter(|m| m.is_franchised())
+            .filter(|m| m.is_franchised(self.clock.now()))
             .ok_or(EmojiError::NotACitizen)?;
 
         let name = normalize_emoji_name(name);
@@ -84,7 +84,7 @@ impl EmojiService {
             .ok_or_else(|| EmojiError::NoSuchUser(voter_handle.to_string()))?;
         self.memberships
             .get(user.id, server.id).await?
-            .filter(|m| m.is_franchised())
+            .filter(|m| m.is_franchised(self.clock.now()))
             .ok_or(EmojiError::NotACitizen)?;
 
         let emoji = self
@@ -112,7 +112,7 @@ impl EmojiService {
             .memberships
             .list_for_server(server.id).await.unwrap_or_default()
             .into_iter()
-            .filter(|m| m.is_franchised())
+            .filter(|m| m.is_franchised(self.clock.now()))
             .map(|m| m.user_id)
             .collect();
         let mut score: HashMap<EmojiId, i64> = HashMap::new();

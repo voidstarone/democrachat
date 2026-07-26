@@ -89,10 +89,27 @@ pub async fn register(
     st.persist();
 
     match reg.verification_token {
-        // Hard mode: email the link, do not start a session.
         Some(token) => {
             send_verification_email(&st, req.email.trim(), &token, &req.lang).await;
-            Ok(Json(json!({ "verify_required": true, "handle": reg.user.handle })).into_response())
+            if st.services.email_verification().requires_verification() {
+                // Hard mode: no session until the link is clicked.
+                return Ok(
+                    Json(json!({ "verify_required": true, "handle": reg.user.handle })).into_response()
+                );
+            }
+            // Soft mode: the account is usable right now, so log them straight in.
+            // `verify_pending` tells the SPA a link is in their inbox and that the
+            // vote — and only the vote — is waiting on it.
+            let cookie = session_cookie(&st, reg.user.id.0);
+            Ok((
+                [(header::SET_COOKIE, cookie)],
+                Json(json!({
+                    "handle": reg.user.handle,
+                    "is_new": true,
+                    "verify_pending": true,
+                })),
+            )
+                .into_response())
         }
         // Off mode: immediately usable — log in.
         None => {
@@ -489,6 +506,9 @@ pub async fn my_status(
         return Ok(Json(MeDto {
             tier: "guest".into(),
             is_eligible: false,
+            email_blocks_franchise: false,
+            confirm_days_left: None,
+            franchise_lapsed: false,
             unmet: vec!["sign in to participate".into()],
             contribution: 0,
             shares_history: None,
@@ -497,11 +517,16 @@ pub async fn my_status(
             declines_moderator: None,
         }));
     };
+    // Settle any vote held on trust first: a founding member who has since confirmed
+    // has their deadline cleared, and one who let it lapse is demoted, so the standing
+    // we are about to report matches what their ballots will actually do.
+    let reconciled = st.services.reconcile_trusted_franchise(&slug).await > 0;
     // Citizenship is automatic: sweep the server so any member (this viewer
     // included) who now meets the criteria is admitted before we report standing.
     // On an admission, persist and nudge every client so rosters and vote buttons
-    // update without a manual "become citizen" step.
-    if st.services.auto_enfranchise(&slug).await > 0 {
+    // update without a manual "become citizen" step. Running after the reconcile
+    // means someone who confirmed late is re-admitted in the same pass.
+    if st.services.auto_enfranchise(&slug).await > 0 || reconciled {
         st.persist();
         st.publish(json!({ "type": "server" }).to_string());
     }
@@ -509,6 +534,9 @@ pub async fn my_status(
         None => Ok(Json(MeDto {
             tier: "guest".into(),
             is_eligible: false,
+            email_blocks_franchise: false,
+            confirm_days_left: None,
+            franchise_lapsed: false,
             unmet: vec!["not a member — join to start".into()],
             contribution: 0,
             shares_history: None,
@@ -518,11 +546,19 @@ pub async fn my_status(
         })),
         Some(tier) => {
             let elig = st.services.eligibility(&me, &slug).await.map_err(bad)?;
+            let trust = st.services.trusted_franchise(&me, &slug).await;
             let (is_police, is_muted) =
                 st.services.mute().police_and_mute_status(&me, &slug).await.unwrap_or((false, false));
             Ok(Json(MeDto {
                 tier: tier.as_str().into(),
                 is_eligible: elig.is_eligible(),
+                confirm_days_left: trust.days_left,
+                franchise_lapsed: trust.lapsed,
+                // Soft verification's headline case: everything earned, nothing
+                // left but the click. Anything else outstanding and this is false —
+                // confirming alone wouldn't enfranchise them, so promising it would
+                // be a lie.
+                email_blocks_franchise: elig.unmet == [Unmet::EmailUnverified],
                 unmet: elig.unmet.iter().map(describe_unmet).collect(),
                 contribution: st.services.member_contribution(&me, &slug).await.unwrap_or(0),
                 shares_history: st.services.chat().history_sharing(&me, &slug).await,
@@ -1483,6 +1519,7 @@ fn describe_unmet(u: &Unmet) -> String {
         }
         Unmet::Sanctioned => "under an active sanction".into(),
         Unmet::Barred => "barred from the franchise".into(),
+        Unmet::EmailUnverified => "email address not confirmed yet".into(),
     }
 }
 

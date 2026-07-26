@@ -17,7 +17,7 @@ use crate::emoji_service::EmojiService;
 use crate::governance_service::GovernanceService;
 use crate::key_directory_service::KeyDirectoryService;
 use crate::mute_service::MuteService;
-use crate::outcome::EnfranchiseOutcome;
+use crate::outcome::{EnfranchiseOutcome, TrustedFranchise};
 use crate::role_service::RoleService;
 use crate::social_service::SocialService;
 use crate::tag_service::TagService;
@@ -140,6 +140,7 @@ impl Services {
         let channel_keys = ChannelKeyService {
             channel_keys: stores.channel_keys.clone(),
             channels: stores.channels.clone(),
+            clock: clock.clone(),
             memberships: stores.memberships.clone(),
             servers: stores.servers.clone(),
             users: stores.users.clone(),
@@ -189,6 +190,14 @@ impl Services {
     /// The deployment's email-verification policy, for the web layer's login gate.
     pub fn email_verification(&self) -> EmailVerificationMode {
         self.email_verification
+    }
+
+    /// The franchise half of that policy, handed to every
+    /// [`evaluate_eligibility`] call so an unconfirmed address is judged in the
+    /// one place allowed to conclude "eligible" — and never forgotten at a call
+    /// site.
+    fn franchise_email_rule(&self) -> domain::EmailFranchiseRule {
+        self.email_verification.franchise_rule()
     }
 
     /// Chat use-cases: channels, messages, threaded replies, reactions, and media.
@@ -316,7 +325,7 @@ impl Services {
         user.email_enc = email_enc;
 
         let verification_token =
-            if self.email_verification.requires_verification() && self.email_key.is_some() {
+            if self.email_verification.issues_verification() && self.email_key.is_some() {
                 user.email_verified = false;
                 let raw = crate::email::new_verification_token();
                 let expires_at = self.clock.now().0 + VERIFICATION_TTL_SECS;
@@ -362,7 +371,11 @@ impl Services {
         let Some(key) = self.email_key.as_ref() else {
             return Ok(None);
         };
-        if !self.email_verification.requires_verification() {
+        // Any mode that issues links must also re-issue them: under soft
+        // verification the first link often expires unused (nothing is blocked, so
+        // there is no urgency), and the member only comes looking for another once
+        // the franchise is in reach — a month or more later.
+        if !self.email_verification.issues_verification() {
             return Ok(None);
         }
         let Some(user) = self.users.find_by_handle(handle.trim()).await? else {
@@ -464,10 +477,19 @@ impl Services {
         server.is_private = is_private;
         self.servers.insert_server(server.clone()).await?;
 
-        // Founder joins as citizen #1.
+        // Founder joins as citizen #1 — the one seat that never runs through
+        // `evaluate_eligibility`, since there is no electorate yet to qualify
+        // against. Founding a server does not wait on an email either: an
+        // unconfirmed founder votes on trust, with the same deadline their founding
+        // cohort gets.
         let mut m = Membership::joined(founder.id, server.id, now);
         m.tier = Tier::Citizen;
         m.enfranchised_at = Some(now);
+        if self.franchise_email_rule() == domain::EmailFranchiseRule::MustBeConfirmed
+            && !founder.is_email_verified()
+        {
+            m.unconfirmed_franchise_until = Some(domain::confirmation_deadline(now));
+        }
         self.memberships.upsert(m).await?;
 
         // Every server starts with #general (somewhere to post from the first
@@ -672,9 +694,17 @@ impl Services {
         }
 
         let now = self.clock.now();
+        let phase = self.phase_of(server.id).await;
 
         // Layer 1 — earned franchise.
-        let eligibility = evaluate_eligibility(&user, &membership, &server.criteria, now);
+        let eligibility = evaluate_eligibility(
+            &user,
+            &membership,
+            &server.criteria,
+            phase,
+            self.franchise_email_rule(),
+            now,
+        );
         if !eligibility.is_eligible() {
             return Ok(EnfranchiseOutcome::NotEligible(eligibility.unmet));
         }
@@ -684,6 +714,11 @@ impl Services {
         // both claim the final slot; the domain rule rides along as `slots_open`.
         membership.tier = Tier::Citizen;
         membership.enfranchised_at = Some(now);
+        if !user.is_email_verified() {
+            // Eligible while unconfirmed means the founding waiver let them through;
+            // the vote is theirs on trust until the deadline.
+            membership.unconfirmed_franchise_until = Some(domain::confirmation_deadline(now));
+        }
         let window_start = Timestamp(now.0 - RATE_CAP_WINDOW_DAYS * Timestamp::SECONDS_PER_DAY);
         match self
             .memberships
@@ -695,6 +730,80 @@ impl Services {
                 Ok(EnfranchiseOutcome::RateCapped { admitted_this_window })
             }
         }
+    }
+
+    /// Read-only: where a member stands on a vote held on trust — how long they have
+    /// left to confirm, or whether they have already lost the vote by not doing so.
+    /// A member with a confirmed address has nothing outstanding by definition.
+    pub async fn trusted_franchise(&self, handle: &str, server_slug: &str) -> TrustedFranchise {
+        let Some(user) = self.users.find_by_handle(handle.trim()).await.ok().flatten() else {
+            return TrustedFranchise::default();
+        };
+        if user.is_email_verified() {
+            return TrustedFranchise::default();
+        }
+        let Some(server) = self.servers.find_by_slug(server_slug.trim()).await.ok().flatten() else {
+            return TrustedFranchise::default();
+        };
+        let Some(m) = self.memberships.get(user.id, server.id).await.ok().flatten() else {
+            return TrustedFranchise::default();
+        };
+        let now = self.clock.now();
+        TrustedFranchise {
+            days_left: m.days_to_confirm(now),
+            lapsed: m.trusted_franchise_lapsed(now),
+        }
+    }
+
+    /// A server's current [`Phase`], derived from its citizen count. Needed by every
+    /// eligibility check because the founding cohort (Seed) is excused the wait.
+    async fn phase_of(&self, server: domain::ServerId) -> Phase {
+        Phase::from_citizen_count(self.memberships.citizen_count(server).await.unwrap_or_default())
+    }
+
+    /// Reconcile votes held on trust: clear the deadline for anyone who has since
+    /// confirmed, and demote whoever let theirs run out.
+    ///
+    /// The demotion is bookkeeping, not enforcement —
+    /// [`Membership::is_franchised`] already stopped counting a lapsed vote the
+    /// instant it expired, in every path at once. What this adds is *visibility*:
+    /// the member's tier goes back to "member", so the UI can say plainly that the
+    /// vote is gone and how to get it back, rather than showing a citizen whose
+    /// ballots quietly don't count. Confirming later re-admits them on the ordinary
+    /// path — by then they have served the dwell the waiver excused, so
+    /// [`auto_enfranchise`](Self::auto_enfranchise) simply seats them again.
+    ///
+    /// Idempotent and cheap on a settled server, so hot read paths can sweep freely.
+    /// Returns how many memberships changed.
+    pub async fn reconcile_trusted_franchise(&self, server_slug: &str) -> u64 {
+        let Some(server) = self.servers.find_by_slug(server_slug.trim()).await.ok().flatten() else {
+            return 0;
+        };
+        let now = self.clock.now();
+        let mut changed = 0;
+        for mut m in self.memberships.list_for_server(server.id).await.unwrap_or_default() {
+            if m.unconfirmed_franchise_until.is_none() {
+                continue;
+            }
+            let Some(user) = self.users.get_user(m.user_id).await.ok().flatten() else {
+                continue;
+            };
+            if user.is_email_verified() {
+                // Confirmed in time: the deadline has done its job and goes away.
+                m.unconfirmed_franchise_until = None;
+            } else if m.trusted_franchise_lapsed(now) && m.is_citizen() {
+                // Out of time. The stale deadline stays on the record — it is what
+                // stops the founding waiver handing out a second grace.
+                m.tier = Tier::Member;
+                m.enfranchised_at = None;
+            } else {
+                continue;
+            }
+            if self.memberships.upsert(m).await.is_ok() {
+                changed += 1;
+            }
+        }
+        changed
     }
 
     /// Automatically admit every member who now meets the franchise criteria —
@@ -709,9 +818,14 @@ impl Services {
         };
         let now = self.clock.now();
         let window_start = Timestamp(now.0 - RATE_CAP_WINDOW_DAYS * Timestamp::SECONDS_PER_DAY);
+        // Read once, before anyone is seated: were the phase re-read per member, the
+        // fifth admission would find the server already chartered and be judged by
+        // criteria the four before it were excused.
+        let phase = self.phase_of(server.id).await;
 
-        // Collect the eligible non-citizens (a sanctioned member is barred).
-        let mut eligible: Vec<Membership> = Vec::new();
+        // Collect the eligible non-citizens (a sanctioned member is barred), each
+        // paired with whether they arrive with a confirmed address.
+        let mut eligible: Vec<(Membership, bool)> = Vec::new();
         for m in self.memberships.list_for_server(server.id).await.unwrap_or_default() {
             if m.is_citizen() || m.is_sanctioned {
                 continue;
@@ -719,18 +833,34 @@ impl Services {
             let Some(user) = self.users.get_user(m.user_id).await.ok().flatten() else {
                 continue;
             };
-            if evaluate_eligibility(&user, &m, &server.criteria, now).is_eligible() {
-                eligible.push(m);
+            if evaluate_eligibility(
+                &user,
+                &m,
+                &server.criteria,
+                phase,
+                self.franchise_email_rule(),
+                now,
+            )
+            .is_eligible()
+            {
+                // Remember whether this admission rests on trust: the seating step
+                // below needs it, and by then the user record is out of reach.
+                eligible.push((m, user.is_email_verified()));
             }
         }
         // Fair order: the earliest joiners qualified first, so they get the slots
         // first when the rate cap can't admit everyone at once.
-        eligible.sort_by_key(|m| m.joined_at.0);
+        eligible.sort_by_key(|(m, _)| m.joined_at.0);
 
         let mut admitted = 0;
-        for mut m in eligible {
+        for (mut m, confirmed) in eligible {
             m.tier = Tier::Citizen;
             m.enfranchised_at = Some(now);
+            // A founding member seated without a confirmed address votes on trust,
+            // and from here the clock is running (see `confirmation_deadline`).
+            if !confirmed {
+                m.unconfirmed_franchise_until = Some(domain::confirmation_deadline(now));
+            }
             match self
                 .memberships
                 .admit_within_cap(m, window_start, &enfranchisement_slots)
@@ -764,7 +894,14 @@ impl Services {
             .memberships
             .get(user.id, server.id).await?
             .ok_or_else(|| EnfranchiseError::NotAMember(handle.to_string()))?;
-        Ok(evaluate_eligibility(&user, &membership, &server.criteria, self.clock.now()))
+        Ok(evaluate_eligibility(
+            &user,
+            &membership,
+            &server.criteria,
+            self.phase_of(server.id).await,
+            self.franchise_email_rule(),
+            self.clock.now(),
+        ))
     }
 
     /// Read-only: every server plus its phase and citizen count, for a directory.

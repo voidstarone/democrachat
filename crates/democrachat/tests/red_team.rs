@@ -79,12 +79,19 @@ async fn citizen_count(f: &Fixture, slug: &str) -> u64 {
 // A. Capture by numbers — the franchise
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// A flood of freshly-registered members clears no franchise criterion, so not
-/// one of them can enfranchise — numbers alone buy nothing.
+/// A flood of freshly-registered members clears no franchise criterion, so past a
+/// server's founding window not one of them can enfranchise — numbers alone buy
+/// nothing.
 #[tokio::test]
-async fn a_flood_of_fresh_members_cannot_enfranchise() {
+async fn a_flood_of_fresh_members_cannot_enfranchise_an_established_server() {
     let f = fixture(1_000 * DAY);
     found(&f, "boss", "Town").await;
+    // Charter the server first: a *brand-new* one is in Seed, where its founding
+    // cohort is admitted on sight (see the bound pinned below). The invariant this
+    // test guards is about a server that is past that.
+    for i in 0..4 {
+        seat_citizen(&f, &format!("elder{i}"), "town").await;
+    }
     for i in 0..200 {
         register_and_join(&f, &format!("mob{i}"), "town").await;
     }
@@ -100,7 +107,36 @@ async fn a_flood_of_fresh_members_cannot_enfranchise() {
         }
     }
     assert_eq!(admitted, 0, "no fresh member is ever admitted");
-    assert_eq!(citizen_count(&f, "town").await, 1, "the founder remains the sole citizen");
+    assert_eq!(citizen_count(&f, "town").await, 5, "the electorate is exactly who was already in it");
+}
+
+/// The founding waiver is the one place fresh members *are* admitted on sight, so
+/// its bound is the thing worth pinning: it lasts only until the server leaves
+/// Seed, so a flood aimed at a day-old server takes the four remaining founding
+/// seats and no more. Whoever arrives fifth waits out the dwell like anyone else.
+#[tokio::test]
+async fn the_founding_waiver_admits_only_the_seed_window() {
+    let f = fixture(1_000 * DAY);
+    found(&f, "boss", "Town").await;
+    for i in 0..200 {
+        register_and_join(&f, &format!("mob{i}"), "town").await;
+    }
+    let mut admitted = 0;
+    for i in 0..200 {
+        match f.services.try_enfranchise(&format!("mob{i}"), "town").await.unwrap() {
+            EnfranchiseOutcome::Admitted => admitted += 1,
+            EnfranchiseOutcome::NotEligible(unmet) => {
+                assert!(unmet.contains(&Unmet::MembershipTooShort { need_days: 28, have_days: 0 }));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    assert_eq!(admitted, 4, "the founder plus four founding members fills Seed");
+    assert_eq!(
+        citizen_count(&f, "town").await,
+        u64::from(domain::Phase::CHARTERING_AT),
+        "and the window shuts the moment the server charters"
+    );
 }
 
 /// Even a flood of *fully qualified* members cannot swamp an established
@@ -250,11 +286,16 @@ async fn a_lone_citizen_cannot_pass_a_capture_ballot() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// There is no "admit my friend" path: `try_enfranchise` refuses an unqualified
-/// member even when the founder wants them in.
+/// member even when the founder wants them in. (On a server still in Seed the
+/// friend would be a founding member and admitted by rule — the point here is that
+/// no *override* exists once the ordinary criteria apply.)
 #[tokio::test]
 async fn there_is_no_founder_override_of_the_criteria() {
     let f = fixture(1_000 * DAY);
     found(&f, "boss", "Town").await;
+    for i in 0..4 {
+        seat_citizen(&f, &format!("elder{i}"), "town").await; // past Seed
+    }
     register_and_join(&f, "buddy", "town").await;
     match f.services.try_enfranchise("buddy", "town").await.unwrap() {
         EnfranchiseOutcome::NotEligible(_) => {}

@@ -57,9 +57,11 @@ pub use chat::parse_mentions::parse_mentions;
 pub use chat::reaction::{summarize_reactions, Reaction};
 
 pub use franchise::eligibility::Eligibility;
+pub use franchise::email_franchise_rule::EmailFranchiseRule;
 pub use franchise::enfranchisement_slots::enfranchisement_slots;
 pub use franchise::evaluate_eligibility::evaluate_eligibility;
 pub use franchise::franchise_criteria::FranchiseCriteria;
+pub use franchise::franchise_grace::{confirmation_deadline, UNCONFIRMED_FRANCHISE_GRACE_DAYS};
 pub use franchise::unmet::Unmet;
 
 pub use governance::ballot_kind::BallotKind;

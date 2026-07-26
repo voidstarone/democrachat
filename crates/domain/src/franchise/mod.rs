@@ -3,7 +3,9 @@
 //! *grow*).
 
 pub mod eligibility;
+pub mod email_franchise_rule;
 pub mod enfranchisement_slots;
 pub mod evaluate_eligibility;
 pub mod franchise_criteria;
+pub mod franchise_grace;
 pub mod unmet;

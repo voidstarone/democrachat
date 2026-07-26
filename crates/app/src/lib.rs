@@ -79,7 +79,7 @@ pub use mention_kind::MentionKind;
 pub use resolved_mention::ResolvedMention;
 pub use member_view::MemberView;
 
-pub use outcome::EnfranchiseOutcome;
+pub use outcome::{EnfranchiseOutcome, TrustedFranchise};
 
 pub use ports::block_store::BlockStore;
 pub use ports::channel_key_store::ChannelKeyStore;

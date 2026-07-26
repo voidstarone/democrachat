@@ -263,5 +263,6 @@ fn describe_unmet(u: &Unmet) -> String {
         }
         Unmet::Sanctioned => "under an active sanction".to_string(),
         Unmet::Barred => "permanently barred from the franchise".to_string(),
+        Unmet::EmailUnverified => "email address not confirmed yet".to_string(),
     }
 }
