@@ -73,6 +73,107 @@ fn data_key_from_env() -> Option<app::VaultKey> {
     }
 }
 
+/// A trimmed environment variable, or `None` when unset/empty.
+fn non_empty_env(name: &str) -> Option<String> {
+    std::env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+/// The email-verification policy, from `DEMOCRACHAT_EMAIL_VERIFICATION`. Unset ⇒
+/// `Hard` (secure by default: new signups must confirm their email). An
+/// unrecognized value is a hard error rather than a silent fall-back.
+fn email_verification_from_env() -> app::EmailVerificationMode {
+    match non_empty_env("DEMOCRACHAT_EMAIL_VERIFICATION") {
+        None => app::EmailVerificationMode::Hard,
+        Some(raw) => app::EmailVerificationMode::parse(&raw).unwrap_or_else(|| {
+            eprintln!("error: DEMOCRACHAT_EMAIL_VERIFICATION must be 'hard' or 'off'");
+            exit(2);
+        }),
+    }
+}
+
+/// The dedicated key emails are sealed under, from `DEMOCRACHAT_EMAIL_KEY` (64 hex
+/// chars). Unset ⇒ `None`: no address is stored (only valid with verification off).
+/// Set-but-invalid is a hard error.
+fn email_key_from_env() -> Option<app::VaultKey> {
+    let raw = non_empty_env("DEMOCRACHAT_EMAIL_KEY")?;
+    match app::VaultKey::from_hex(&raw) {
+        Ok(key) => Some(key),
+        Err(e) => {
+            eprintln!("error: DEMOCRACHAT_EMAIL_KEY is invalid: {e}");
+            exit(2);
+        }
+    }
+}
+
+/// Build the SMTP email sender from `DEMOCRACHAT_SMTP_*`. Returns `None` when the
+/// core settings are absent (host/user/pass/from); a present-but-unbuildable
+/// configuration (e.g. a malformed `FROM`) is a hard error.
+fn smtp_sender_from_env() -> Option<Arc<dyn app::EmailSender>> {
+    let host = non_empty_env("DEMOCRACHAT_SMTP_HOST")?;
+    let username = non_empty_env("DEMOCRACHAT_SMTP_USER")?;
+    let password = non_empty_env("DEMOCRACHAT_SMTP_PASS")?;
+    let from = non_empty_env("DEMOCRACHAT_SMTP_FROM")?;
+    let port = non_empty_env("DEMOCRACHAT_SMTP_PORT")
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(587);
+    let accept_invalid_certs = std::env::var_os("DEMOCRACHAT_SMTP_INSECURE_TLS").is_some();
+    match adapter_email_smtp::SmtpEmailSender::new(adapter_email_smtp::SmtpConfig {
+        host,
+        port,
+        username,
+        password,
+        from,
+        accept_invalid_certs,
+    }) {
+        Ok(sender) => Some(Arc::new(sender)),
+        Err(e) => {
+            eprintln!("error: DEMOCRACHAT_SMTP configuration is invalid: {e}");
+            exit(2);
+        }
+    }
+}
+
+/// Everything the email-verification feature needs, resolved from the environment.
+struct EmailWiring {
+    mode: app::EmailVerificationMode,
+    key: Option<app::VaultKey>,
+    sender: Option<Arc<dyn app::EmailSender>>,
+    site_address: String,
+}
+
+/// Resolve email wiring and enforce readiness. Verification only operates under
+/// `serve`, so CLI commands skip the checks. If `serve` requests verification but
+/// the key / `SITE_ADDRESS` / SMTP settings aren't all present, a real deployment
+/// fails closed (an unverifiable hard gate would lock everyone out); a `--dev`
+/// instance instead downgrades to verification-off with a warning so the local demo
+/// still runs.
+fn configure_email(is_serve: bool, is_dev: bool) -> EmailWiring {
+    let mut mode = email_verification_from_env();
+    let key = email_key_from_env();
+    let sender = smtp_sender_from_env();
+    let site_address = non_empty_env("SITE_ADDRESS").unwrap_or_default();
+
+    if is_serve && mode.requires_verification() {
+        let ready = key.is_some() && sender.is_some() && !site_address.is_empty();
+        if !ready {
+            if is_dev {
+                eprintln!(
+                    "warning: email verification requested but DEMOCRACHAT_EMAIL_KEY / SITE_ADDRESS \
+                     / DEMOCRACHAT_SMTP_* are not all set — running with verification OFF (dev)."
+                );
+                mode = app::EmailVerificationMode::Off;
+            } else {
+                eprintln!(
+                    "error: DEMOCRACHAT_EMAIL_VERIFICATION=hard requires DEMOCRACHAT_EMAIL_KEY, \
+                     SITE_ADDRESS, and DEMOCRACHAT_SMTP_HOST/USER/PASS/FROM to be set."
+                );
+                exit(2);
+            }
+        }
+    }
+    EmailWiring { mode, key, sender, site_address }
+}
+
 /// Read the persisted dataset as plaintext JSON, transparently unsealing it when a
 /// data key is configured. Returns `None` if there is no file yet.
 ///
@@ -161,10 +262,19 @@ fn main() {
             exit(2);
         }
     }
-    let services = Arc::new(Services::new(clock.clone(), stores));
+    // Email verification wiring (mode + at-rest key + SMTP sender + site host),
+    // resolved from the environment. Applied to the use-cases here so both the web
+    // signup and any future email-bearing path share one policy.
+    let is_serve = args.get(1).map(String::as_str) == Some("serve");
+    let is_dev = args.iter().any(|a| a == "--dev");
+    let email = configure_email(is_serve, is_dev);
+    let services =
+        Arc::new(Services::new(clock.clone(), stores).with_email_policy(email.mode, email.key));
 
-    if args.get(1).map(String::as_str) == Some("serve") {
-        run_serve(&args, services, clock, store, path, node, data_key);
+    if is_serve {
+        run_serve(
+            &args, services, clock, store, path, node, data_key, email.sender, email.site_address,
+        );
         return;
     }
 
@@ -174,6 +284,7 @@ fn main() {
     exit(code);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_serve(
     args: &[String],
     services: Arc<Services>,
@@ -182,6 +293,8 @@ fn run_serve(
     path: PathBuf,
     node: domain::NodeId,
     data_key: Option<app::VaultKey>,
+    email_sender: Option<Arc<dyn app::EmailSender>>,
+    site_address: String,
 ) {
     let is_dev = args.iter().any(|a| a == "--dev");
     let addr: SocketAddr = arg_value(args, "--addr")
@@ -252,6 +365,8 @@ fn run_serve(
             routers.dm,
             routers.block,
             routers.friend,
+            email_sender,
+            site_address,
         )
         .await
     });

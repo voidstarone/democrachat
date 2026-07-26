@@ -52,6 +52,8 @@ pub async fn serve(
     dm_router: Option<Arc<dyn app::DmRouter>>,
     block_router: Option<Arc<dyn app::BlockRouter>>,
     friend_router: Option<Arc<dyn app::FriendRouter>>,
+    email: Option<Arc<dyn app::EmailSender>>,
+    site_address: String,
 ) -> anyhow::Result<()> {
     let (events, _) = broadcast::channel(256);
     let state = AppState {
@@ -66,6 +68,8 @@ pub async fn serve(
         dm_router,
         block_router,
         friend_router,
+        email,
+        site_address,
     };
 
     let limiter = Arc::new(middleware::rate_limit::RateLimiter::new());
@@ -125,9 +129,13 @@ pub async fn serve(
             }),
         )
         .route("/ws", get(ws::ws_handler))
+        // The email-verification link target — opened in a browser from the signup
+        // email, so a bare path returning a redirect (not a JSON `/api/*` route).
+        .route("/verify", get(handlers::verify))
         .route("/api/config", get(handlers::config))
         .route("/api/login", post(handlers::login))
         .route("/api/register", post(handlers::register))
+        .route("/api/resend", post(handlers::resend))
         .route("/api/logout", post(handlers::logout))
         .route("/api/servers", get(handlers::list_servers).post(handlers::found_server))
         .route("/api/servers/public", get(handlers::list_public_servers))

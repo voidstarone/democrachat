@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use app::{
     BlockStore, ChannelKeyStore, ChannelStore, Clock, DmStore, EmojiStore, EmojiVoteStore,
     FriendStore, KeyDirectoryStore, MembershipStore, MessageStore, ProposalStore, ReactionStore,
-    RoleStore, RuleStore, ServerStore, Stores, UserStore, VoteStore,
+    RoleStore, RuleStore, ServerStore, Stores, UserStore, VerificationTokenStore, VoteStore,
 };
 use domain::{
     compose_id, Block, Channel, ChannelId, ChannelKeyGrant, DmId, DmMessage, Emoji, EmojiId,
@@ -114,6 +114,10 @@ struct Inner {
     /// expiry`. Persisted in the snapshot so a captured command can't be replayed
     /// against this node after a restart. Self-prunes once entries pass expiry.
     nonces: HashMap<(u16, String), i64>,
+    /// Pending email-verification tokens: `token digest → (account, expiry)`. Only
+    /// the SHA-256 digest of the emailed token is stored (never the token). Persisted
+    /// so a link still works across a restart; self-prunes once entries pass expiry.
+    verification_tokens: HashMap<String, (UserId, i64)>,
 }
 
 impl Inner {
@@ -347,6 +351,7 @@ impl MemoryStore {
             channel_keys: self.clone(),
             invites: self.clone(),
             media: self.clone(),
+            verification_tokens: self.clone(),
         }
     }
 
@@ -376,6 +381,11 @@ impl MemoryStore {
             user_keys: inner.user_keys.values().cloned().collect(),
             channel_grants: inner.channel_grants.values().cloned().collect(),
             nonces: inner.nonces.iter().map(|((n, nc), e)| (*n, nc.clone(), *e)).collect(),
+            verification_tokens: inner
+                .verification_tokens
+                .iter()
+                .map(|(h, (u, e))| (h.clone(), *u, *e))
+                .collect(),
             next_user: inner.next_user,
             next_server: inner.next_server,
             next_channel: inner.next_channel,
@@ -452,6 +462,9 @@ impl MemoryStore {
         for (node, nonce, expiry) in snap.nonces {
             inner.nonces.insert((node, nonce), expiry);
         }
+        for (hash, user_id, expiry) in snap.verification_tokens {
+            inner.verification_tokens.insert(hash, (user_id, expiry));
+        }
         Ok(Self(Mutex::new(inner)))
     }
 
@@ -465,6 +478,22 @@ impl MemoryStore {
         let mut inner = self.0.lock().unwrap();
         inner.nonces.retain(|_, expiry| *expiry > now);
         inner.nonces.insert((node, nonce.to_string()), expiry_at).is_none()
+    }
+}
+
+impl VerificationTokenStore for MemoryStore {
+    fn add(&self, token_hash: String, user_id: UserId, expires_at: i64) {
+        let mut inner = self.0.lock().unwrap();
+        inner.verification_tokens.insert(token_hash, (user_id, expires_at));
+    }
+    fn take(&self, token_hash: &str, now: i64) -> Option<UserId> {
+        let mut inner = self.0.lock().unwrap();
+        // Prune expired entries first so the map stays bounded (like the nonces).
+        inner.verification_tokens.retain(|_, (_, expiry)| *expiry > now);
+        inner
+            .verification_tokens
+            .remove(token_hash)
+            .map(|(user_id, _)| user_id)
     }
 }
 
@@ -509,6 +538,9 @@ struct Snapshot {
     /// Durable anti-replay nonces: `(node, nonce, expiry)`.
     #[serde(default)]
     nonces: Vec<(u16, String, i64)>,
+    /// Pending email-verification tokens: `(token digest, account, expiry)`.
+    #[serde(default)]
+    verification_tokens: Vec<(String, UserId, i64)>,
     next_user: u64,
     next_server: u64,
     #[serde(default)]

@@ -11,6 +11,12 @@ pub enum RegisterError {
     /// The chosen password failed the length policy.
     #[error("{0}")]
     WeakPassword(String),
+    /// The supplied email failed the format policy ([`domain::validate_email`]).
+    #[error("{0}")]
+    InvalidEmail(String),
+    /// The email is already registered to another account.
+    #[error("email is already registered")]
+    EmailTaken,
     /// Argon2 hashing failed (should be effectively impossible).
     #[error("could not secure the password")]
     HashFailed,

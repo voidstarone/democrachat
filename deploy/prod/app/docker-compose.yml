@@ -50,6 +50,26 @@ services:
       DEMOCRACHAT_DATA_KEK: ${DEMOCRACHAT_DATA_KEK:-}
       # Node identity — leave 0 (single box). A federated node would set 1–65535.
       DEMOCRACHAT_NODE_ID: ${DEMOCRACHAT_NODE_ID:-0}
+      # Public host, used to build the verification link https://SITE_ADDRESS/verify.
+      SITE_ADDRESS: ${SITE_ADDRESS:?set SITE_ADDRESS (the public host, e.g. chat.example.com)}
+      # ---- Email verification (signup) ----
+      # hard (default) requires the key + SMTP settings below; the app fails closed
+      # without them. Set to off to disable verification.
+      DEMOCRACHAT_EMAIL_VERIFICATION: ${DEMOCRACHAT_EMAIL_VERIFICATION:-hard}
+      # Dedicated key: addresses are encrypted at rest under this (never plaintext).
+      DEMOCRACHAT_EMAIL_KEY: ${DEMOCRACHAT_EMAIL_KEY:-}
+      # SMTP submission relay. Point HOST at wherever Postfix runs: host.docker.internal
+      # if it's on THIS box, else its LAN address (e.g. the mail Pi's 192.168.x.x).
+      DEMOCRACHAT_SMTP_HOST: ${DEMOCRACHAT_SMTP_HOST:-host.docker.internal}
+      DEMOCRACHAT_SMTP_PORT: ${DEMOCRACHAT_SMTP_PORT:-587}
+      DEMOCRACHAT_SMTP_USER: ${DEMOCRACHAT_SMTP_USER:-}
+      DEMOCRACHAT_SMTP_PASS: ${DEMOCRACHAT_SMTP_PASS:-}
+      DEMOCRACHAT_SMTP_FROM: ${DEMOCRACHAT_SMTP_FROM:-}
+      # 1 if the relay's submission cert name differs from DEMOCRACHAT_SMTP_HOST.
+      DEMOCRACHAT_SMTP_INSECURE_TLS: ${DEMOCRACHAT_SMTP_INSECURE_TLS:-}
+    # Reach a Postfix running on THIS host (harmless if HOST is a LAN address instead).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       # Durable state on host paths you choose (an external drive, ext4). The DB
       # snapshot and the media blobs are separate tiers; media is the large one.

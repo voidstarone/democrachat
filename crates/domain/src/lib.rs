@@ -84,9 +84,12 @@ pub use emoji_ranking::emoji_standing::EmojiStanding;
 pub use emoji_ranking::normalize_emoji_name::normalize_emoji_name;
 pub use emoji_ranking::rank_emojis::rank_emojis;
 
+pub use credentials::email_error::EmailError;
+pub use credentials::max_email_len::MAX_EMAIL_LEN;
 pub use credentials::max_password_len::MAX_PASSWORD_LEN;
 pub use credentials::min_password_len::MIN_PASSWORD_LEN;
 pub use credentials::password_error::PasswordError;
+pub use credentials::validate_email::validate_email;
 pub use credentials::validate_password::validate_password;
 
 pub use server::server::Server;

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use app::{BlockRouter, DmRouter, FriendRouter, Services, SessionSigner, VoteRouter};
+use app::{BlockRouter, DmRouter, EmailSender, FriendRouter, Services, SessionSigner, VoteRouter};
 use tokio::sync::broadcast;
 
 /// A live event pushed to connected clients, already JSON-encoded.
@@ -43,6 +43,13 @@ pub struct AppState {
     /// synchronously (a friendship is a two-user record and gates friends-only DMs on
     /// the sender's home). `None` on single-box, where it applies through `Services`.
     pub friend_router: Option<Arc<dyn FriendRouter>>,
+    /// Delivers signup verification emails. `None` when email verification is off
+    /// (no sender configured); the composition root fails closed if verification is
+    /// required but this is unset.
+    pub email: Option<Arc<dyn EmailSender>>,
+    /// The public site host (from `SITE_ADDRESS`), used to build the verification
+    /// link `https://{site_address}/verify?token=…`.
+    pub site_address: String,
 }
 
 impl AppState {

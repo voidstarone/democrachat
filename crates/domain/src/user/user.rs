@@ -31,6 +31,22 @@ pub struct User {
     /// loadable.
     #[serde(default)]
     pub password_hash: String,
+    /// The account's email address **encrypted at rest** — an opaque ChaCha20-
+    /// Poly1305 sealed blob produced by the `app` layer under the node's dedicated
+    /// email key, or empty for seed/CLI accounts that never had one. Like
+    /// [`password_hash`](Self::password_hash), the domain never decrypts or
+    /// interprets it; a plaintext email is *never* stored here. Format validation
+    /// happens on the plaintext in the `app` layer ([`crate::validate_email`])
+    /// before sealing. `#[serde(default)]` keeps pre-email datasets loadable.
+    #[serde(default)]
+    pub email_enc: String,
+    /// Whether the account's [`email`](Self::email) has been confirmed via a
+    /// verification link. New web signups start `false` and flip to `true` when the
+    /// emailed token is spent; seed/CLI and `off`-mode accounts are created already
+    /// `true`. `#[serde(default)]` keeps pre-email datasets loadable (they read as
+    /// unverified, which is harmless on an instance with no real accounts).
+    #[serde(default)]
+    pub email_verified: bool,
 }
 
 impl User {
@@ -42,7 +58,20 @@ impl User {
             is_franchise_barred: false,
             dm_policy: DmPolicy::Everyone,
             password_hash: String::new(),
+            email_enc: String::new(),
+            email_verified: false,
         }
+    }
+
+    /// Whether this account has a (sealed) email on file.
+    pub fn has_email(&self) -> bool {
+        !self.email_enc.is_empty()
+    }
+
+    /// Whether this account's email has been verified (or verification is not
+    /// required for it, e.g. seed/CLI accounts created already-verified).
+    pub fn is_email_verified(&self) -> bool {
+        self.email_verified
     }
 
     /// Whether this account has a password set (and so can authenticate).

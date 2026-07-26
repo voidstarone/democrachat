@@ -9,12 +9,20 @@
 # resolves the exact same bytes even if the tag is re-pushed. The digests are the
 # multi-arch manifest-list digests, so amd64 and arm64 (Raspberry Pi) both build.
 # To refresh after an intentional base bump:
-#   docker pull rust:1.83-bookworm
-#   docker image inspect rust:1.83-bookworm --format '{{index .RepoDigests 0}}'
+#   docker pull rust:1.97-bookworm
+#   docker image inspect rust:1.97-bookworm --format '{{index .RepoDigests 0}}'
 # and paste the new digest below (keep the human-readable tag alongside it).
 
 # ---- builder ----
-FROM rust:1.83-bookworm@sha256:a45bf1f5d9af0a23b26703b3500d70af1abff7f984a7abef5a104b42c02a292b AS builder
+# Rust 1.97: the locked dependency graph now includes crates that require the
+# 2024 edition (base64ct, clap 4.6, …), which needs a toolchain newer than the
+# former 1.83 pin.
+FROM rust:1.97-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa AS builder
+# protobuf-compiler: the etcd control-plane adapter (etcd-client) compiles .proto
+# files in its build script and needs `protoc` present at build time.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends protobuf-compiler \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
 # --locked: fail if Cargo.lock is stale, so the built graph is exactly the audited one.
