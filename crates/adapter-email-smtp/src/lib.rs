@@ -20,7 +20,7 @@ pub struct SmtpConfig {
     pub port: u16,
     pub username: String,
     pub password: String,
-    /// The `From` header/envelope, e.g. `democrachat <no-reply@ratbum.com>`.
+    /// The `From` header/envelope, e.g. `democrachat <no-reply@example.com>`.
     pub from: String,
     /// Accept a TLS certificate that doesn't match the host (name mismatch) or
     /// isn't in the trust store. Needed for an internal hop whose submission cert
