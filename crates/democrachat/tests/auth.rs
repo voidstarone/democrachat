@@ -19,7 +19,7 @@ fn services() -> Services {
 #[test]
 fn register_then_authenticate_succeeds() {
     let s = services();
-    s.register_with_password("alice", GOOD_PW).unwrap();
+    s.register_with_password("alice", "alice@example.com", GOOD_PW).unwrap();
     let user = s.authenticate("alice", GOOD_PW).expect("correct password authenticates");
     assert_eq!(user.handle, "alice");
     assert!(user.has_password());
@@ -28,7 +28,7 @@ fn register_then_authenticate_succeeds() {
 #[test]
 fn wrong_password_does_not_authenticate() {
     let s = services();
-    s.register_with_password("alice", GOOD_PW).unwrap();
+    s.register_with_password("alice", "alice@example.com", GOOD_PW).unwrap();
     assert!(s.authenticate("alice", "wrong wrong wrong!").is_none());
 }
 
@@ -41,7 +41,7 @@ fn unknown_handle_does_not_authenticate() {
 #[test]
 fn short_password_is_rejected() {
     let s = services();
-    match s.register_with_password("alice", "short") {
+    match s.register_with_password("alice", "alice@example.com", "short") {
         Err(RegisterError::WeakPassword(_)) => {}
         other => panic!("expected WeakPassword, got {other:?}"),
     }
@@ -71,7 +71,7 @@ fn set_password_makes_a_seed_account_loginable() {
 #[test]
 fn the_stored_hash_is_not_the_plaintext() {
     let s = services();
-    s.register_with_password("alice", GOOD_PW).unwrap();
+    s.register_with_password("alice", "alice@example.com", GOOD_PW).unwrap();
     let user = s.find_user("alice").unwrap();
     assert_ne!(user.password_hash, GOOD_PW);
     assert!(user.password_hash.starts_with("$argon2")); // PHC Argon2 string
@@ -80,8 +80,8 @@ fn the_stored_hash_is_not_the_plaintext() {
 #[test]
 fn a_duplicate_handle_is_rejected() {
     let s = services();
-    s.register_with_password("alice", GOOD_PW).unwrap();
-    match s.register_with_password("alice", GOOD_PW) {
+    s.register_with_password("alice", "alice@example.com", GOOD_PW).unwrap();
+    match s.register_with_password("alice", "alice@example.com", GOOD_PW) {
         Err(RegisterError::HandleTaken(_)) => {}
         other => panic!("expected HandleTaken, got {other:?}"),
     }

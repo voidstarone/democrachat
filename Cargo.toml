@@ -18,6 +18,7 @@ members = [
     "crates/adapter-control-etcd",
     "crates/adapter-store-memory",
     "crates/adapter-media-fs",
+    "crates/adapter-email-smtp",
     "crates/adapter-federation",
     "crates/adapter-cli",
     "crates/adapter-web",
@@ -38,6 +39,7 @@ federation = { path = "crates/federation" }
 adapter-control-etcd = { path = "crates/adapter-control-etcd" }
 adapter-store-memory = { path = "crates/adapter-store-memory" }
 adapter-media-fs = { path = "crates/adapter-media-fs" }
+adapter-email-smtp = { path = "crates/adapter-email-smtp" }
 adapter-federation = { path = "crates/adapter-federation" }
 adapter-cli = { path = "crates/adapter-cli" }
 adapter-web = { path = "crates/adapter-web" }
@@ -83,6 +85,10 @@ etcd-client = { version = "0.14", features = ["tls"] }
 # falls back to the system OpenSSL; `tracing` for the background puller's logs.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tracing = "0.1"
+# Transactional email (signup verification): async SMTP over STARTTLS. rustls only
+# (default-features off) so email delivery holds the same no-OpenSSL policy as the
+# federation transport above.
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "hostname", "tokio1", "tokio1-rustls-tls"] }
 
 [profile.release]
 opt-level = 3

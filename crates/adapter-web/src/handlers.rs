@@ -1,9 +1,9 @@
 //! HTTP handlers over the use-cases. Each mutation persists and, where a client
 //! view is affected, broadcasts a realtime event.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Redirect};
 use axum::Json;
 use domain::{Tier, Unmet};
 use serde_json::json;
@@ -41,26 +41,97 @@ pub async fn login(
         .services
         .authenticate(&req.handle, &req.password)
         .ok_or((StatusCode::UNAUTHORIZED, "err.invalid_credentials".to_string()))?;
+    // In hard mode, an account with an unverified email cannot log in. This is a
+    // distinct 403 (not the opaque 401 above) so the client can prompt to verify /
+    // resend — it only reveals status for a *correct* credential pair, so it is not
+    // an existence oracle for wrong guesses.
+    if st.services.email_verification().requires_verification() && !user.is_email_verified() {
+        return Err((StatusCode::FORBIDDEN, "err.email_unverified".to_string()));
+    }
     let cookie = session_cookie(&st, user.id.0);
     Ok(([(header::SET_COOKIE, cookie)], Json(json!({ "handle": user.handle }))).into_response())
 }
 
-/// Register a new account (handle + password), then log it straight in.
+/// Register a new account (handle + email + password). In hard mode the account is
+/// created unverified, a verification email is sent, and the response asks the user
+/// to check their inbox (no session is started). With verification off, the account
+/// logs straight in, as before.
 pub async fn register(
     State(st): State<AppState>,
     Json(req): Json<CredentialsReq>,
 ) -> Result<axum::response::Response, (StatusCode, String)> {
-    let user = st
+    let reg = st
         .services
-        .register_with_password(&req.handle, &req.password)
+        .register_with_password(&req.handle, &req.email, &req.password)
         .map_err(bad)?;
     st.persist();
-    let cookie = session_cookie(&st, user.id.0);
-    Ok((
-        [(header::SET_COOKIE, cookie)],
-        Json(json!({ "handle": user.handle, "is_new": true })),
-    )
-        .into_response())
+
+    match reg.verification_token {
+        // Hard mode: email the link, do not start a session.
+        Some(token) => {
+            send_verification_email(&st, req.email.trim(), &token).await;
+            Ok(Json(json!({ "verify_required": true, "handle": reg.user.handle })).into_response())
+        }
+        // Off mode: immediately usable — log in.
+        None => {
+            let cookie = session_cookie(&st, reg.user.id.0);
+            Ok((
+                [(header::SET_COOKIE, cookie)],
+                Json(json!({ "handle": reg.user.handle, "is_new": true })),
+            )
+                .into_response())
+        }
+    }
+}
+
+/// Verify an email from the link in the signup email. Consumes the single-use
+/// token, marks the account verified, and redirects back into the app with a flag
+/// the SPA turns into a toast. Unknown/used/expired tokens redirect with an error
+/// flag rather than leaking which case occurred.
+pub async fn verify(State(st): State<AppState>, Query(q): Query<VerifyQuery>) -> Redirect {
+    match st.services.verify_email(&q.token) {
+        Some(_) => {
+            st.persist();
+            Redirect::to("/?verified=1")
+        }
+        None => Redirect::to("/?verify_error=1"),
+    }
+}
+
+/// Re-send a verification email for an unverified account. Always returns the same
+/// opaque `ok` response regardless of whether the handle exists / is already
+/// verified, so it is not an account-existence oracle.
+pub async fn resend(
+    State(st): State<AppState>,
+    Json(req): Json<ResendReq>,
+) -> Result<axum::response::Response, (StatusCode, String)> {
+    if let Some(target) = st.services.issue_resend(&req.handle) {
+        st.persist();
+        send_verification_email(&st, &target.email, &target.token).await;
+    }
+    Ok(Json(json!({ "ok": true })).into_response())
+}
+
+/// Build and send the verification email. Failures are logged, not surfaced: the
+/// token is already stored, so the user can retry via resend; and never revealing
+/// send success/failure keeps `resend` from leaking account existence.
+async fn send_verification_email(st: &AppState, to: &str, token: &str) {
+    let Some(sender) = &st.email else {
+        eprintln!("warning: email verification required but no SMTP sender is configured");
+        return;
+    };
+    let base = st.site_address.trim().trim_end_matches('/');
+    let link = format!("https://{base}/verify?token={token}");
+    let subject = "Confirm your democrachat email";
+    let body = format!(
+        "Welcome to democrachat!\n\n\
+         Confirm your email address to activate your account:\n\n\
+         {link}\n\n\
+         This link expires in 24 hours. If you didn't create an account, you can ignore this email."
+    );
+    if let Err(e) = sender.send(to, subject, &body).await {
+        eprintln!("warning: could not send verification email to {to}: {e}");
+    }
 }
 
 /// Clear the session cookie.

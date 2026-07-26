@@ -32,6 +32,25 @@ services:
       # Cookies get the Secure flag (served behind Caddy TLS).
       DEMOCRACHAT_SECURE_COOKIES: "1"
       DEMOCRACHAT_DATA: /data/democrachat.json
+      # The app reads SITE_ADDRESS to build the verification link.
+      SITE_ADDRESS: ${SITE_ADDRESS:?set SITE_ADDRESS (e.g. chat.example.com) in .env}
+      # Email verification. Defaults to hard; hard mode requires the key + SMTP
+      # settings below (the app fails closed otherwise, with a clear message).
+      DEMOCRACHAT_EMAIL_VERIFICATION: ${DEMOCRACHAT_EMAIL_VERIFICATION:-hard}
+      # Dedicated key: email addresses are encrypted at rest under this (never plaintext).
+      DEMOCRACHAT_EMAIL_KEY: ${DEMOCRACHAT_EMAIL_KEY:-}
+      # SMTP submission relay for verification email (the host's Postfix by default).
+      DEMOCRACHAT_SMTP_HOST: ${DEMOCRACHAT_SMTP_HOST:-host.docker.internal}
+      DEMOCRACHAT_SMTP_PORT: ${DEMOCRACHAT_SMTP_PORT:-587}
+      DEMOCRACHAT_SMTP_USER: ${DEMOCRACHAT_SMTP_USER:-}
+      DEMOCRACHAT_SMTP_PASS: ${DEMOCRACHAT_SMTP_PASS:-}
+      DEMOCRACHAT_SMTP_FROM: ${DEMOCRACHAT_SMTP_FROM:-}
+      # Set to 1 if the relay's submission cert name differs from the host above
+      # (the pi's Postfix cert CN is its own hostname, not host.docker.internal).
+      DEMOCRACHAT_SMTP_INSECURE_TLS: ${DEMOCRACHAT_SMTP_INSECURE_TLS:-}
+    # Reach the host's Postfix (587) from inside the container.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - data:/data
     # ---- kernel-level hardening (beyond democratos's compose) ----

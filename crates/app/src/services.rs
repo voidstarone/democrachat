@@ -12,12 +12,34 @@ use domain::{
 
 use crate::outcome::EnfranchiseOutcome;
 use crate::{
-    BlockStore, ChannelKeyStore, ChannelStore, Clock, DmStore, EnfranchiseError, EmojiStore,
-    EmojiVoteStore, FoundError, FriendStore, InviteError, InviteStore, JoinError, KeyDirectoryStore,
-    MembershipStore,
-    MediaStore, MessageStore, ProposalStore, ReactionStore, RegisterError, RoleStore, RuleStore,
-    ServerStore, UserStore, VoteStore,
+    BlockStore, ChannelKeyStore, ChannelStore, Clock, DmStore, EmailVerificationMode,
+    EnfranchiseError, EmojiStore, EmojiVoteStore, FoundError, FriendStore, InviteError, InviteStore,
+    JoinError, KeyDirectoryStore, MembershipStore, MediaStore, MessageStore, ProposalStore,
+    ReactionStore, RegisterError, RoleStore, RuleStore, ServerStore, UserStore, VaultKey,
+    VerificationTokenStore, VoteStore,
 };
+
+/// How long an emailed verification token stays valid (24h, in seconds).
+const VERIFICATION_TTL_SECS: i64 = 24 * 60 * 60;
+
+/// The result of a successful web registration.
+#[derive(Debug)]
+pub struct Registration {
+    /// The newly-created account.
+    pub user: User,
+    /// The raw verification token to email, when the deployment requires
+    /// verification (and an email key is configured). `None` when verification is
+    /// off — the account is already usable and no email need be sent.
+    pub verification_token: Option<String>,
+}
+
+/// What the web layer needs to re-send a verification email: the decrypted address
+/// and a freshly-issued raw token.
+#[derive(Debug)]
+pub struct ResendTarget {
+    pub email: String,
+    pub token: String,
+}
 
 /// The trailing window the enfranchisement rate cap measures admissions over.
 const RATE_CAP_WINDOW_DAYS: i64 = 30;
@@ -46,6 +68,7 @@ pub struct Stores {
     pub channel_keys: Arc<dyn ChannelKeyStore>,
     pub invites: Arc<dyn InviteStore>,
     pub media: Arc<dyn MediaStore>,
+    pub verification_tokens: Arc<dyn VerificationTokenStore>,
 }
 
 #[derive(Clone)]
@@ -70,6 +93,13 @@ pub struct Services {
     pub(crate) channel_keys: Arc<dyn ChannelKeyStore>,
     pub(crate) invites: Arc<dyn InviteStore>,
     pub(crate) media: Arc<dyn MediaStore>,
+    pub(crate) verification_tokens: Arc<dyn VerificationTokenStore>,
+    /// Verification policy (default [`EmailVerificationMode::Off`]); set by the
+    /// composition root via [`with_email_policy`](Self::with_email_policy).
+    pub(crate) email_verification: EmailVerificationMode,
+    /// The dedicated key emails are sealed under, or `None` when no address is
+    /// collected/stored (off mode / CLI / tests).
+    pub(crate) email_key: Option<VaultKey>,
 }
 
 impl Services {
@@ -95,7 +125,26 @@ impl Services {
             channel_keys: stores.channel_keys,
             invites: stores.invites,
             media: stores.media,
+            verification_tokens: stores.verification_tokens,
+            email_verification: EmailVerificationMode::Off,
+            email_key: None,
         }
+    }
+
+    /// Configure the email-verification policy. The composition root calls this
+    /// with the mode resolved from `DEMOCRACHAT_EMAIL_VERIFICATION` and the key
+    /// from `DEMOCRACHAT_EMAIL_KEY`. Left at the default (`Off`, no key),
+    /// registration stores no email and every account is immediately usable —
+    /// which is exactly what the CLI and the test fixtures want.
+    pub fn with_email_policy(mut self, mode: EmailVerificationMode, key: Option<VaultKey>) -> Self {
+        self.email_verification = mode;
+        self.email_key = key;
+        self
+    }
+
+    /// The deployment's email-verification policy, for the web layer's login gate.
+    pub fn email_verification(&self) -> EmailVerificationMode {
+        self.email_verification
     }
 
     /// Register a new platform account **without** a password. For seeding, the
@@ -111,33 +160,122 @@ impl Services {
         if self.users.find_by_handle(handle).is_some() {
             return Err(RegisterError::HandleTaken(handle.to_string()));
         }
-        let user = User::new(self.users.next_user_id(), handle, self.clock.now());
+        let mut user = User::new(self.users.next_user_id(), handle, self.clock.now());
+        // Seed/CLI accounts carry no email and are exempt from the verification
+        // gate, so they remain usable even in hard mode.
+        user.email_verified = true;
         self.users.insert_user(user.clone());
         Ok(user)
     }
 
-    /// Register a new account with a password. The password is length-validated by
-    /// the domain and hashed with Argon2id before storage; the plaintext never
-    /// persists. This is the only registration path the web signup uses.
+    /// Register a new account with a password + email. The password is
+    /// length-validated and Argon2id-hashed; the email is format-validated, then —
+    /// when an email key is configured — stored **only encrypted** (never
+    /// plaintext) after a decrypt-and-compare uniqueness check. This is the web
+    /// signup path.
+    ///
+    /// In hard mode the account is created **unverified** and a raw verification
+    /// token is returned in [`Registration::verification_token`] for the web layer
+    /// to email; in off mode (or with no key) the account is created already
+    /// verified and no token is issued.
     pub fn register_with_password(
         &self,
         handle: &str,
+        email: &str,
         password: &str,
-    ) -> Result<User, RegisterError> {
+    ) -> Result<Registration, RegisterError> {
         let handle = handle.trim();
         if handle.is_empty() {
             return Err(RegisterError::EmptyHandle);
         }
         domain::validate_password(password)
             .map_err(|e| RegisterError::WeakPassword(e.to_string()))?;
+        domain::validate_email(email)
+            .map_err(|e| RegisterError::InvalidEmail(e.to_string()))?;
         if self.users.find_by_handle(handle).is_some() {
             return Err(RegisterError::HandleTaken(handle.to_string()));
         }
+
+        // Emails are persisted only as ciphertext. With a key configured, enforce
+        // uniqueness by decrypting each stored address and comparing (no
+        // deterministic index is stored). With no key (off mode / CLI), the
+        // address is simply not persisted — never in plaintext.
+        let email_enc = if let Some(key) = &self.email_key {
+            let normalized = crate::email::normalize_email(email);
+            let clash = self
+                .users
+                .list_all()
+                .into_iter()
+                .filter(|u| u.has_email())
+                .any(|u| {
+                    crate::email::open_email(key, &u.email_enc)
+                        .map(|e| crate::email::normalize_email(&e) == normalized)
+                        .unwrap_or(false)
+                });
+            if clash {
+                return Err(RegisterError::EmailTaken);
+            }
+            crate::email::seal_email(key, email.trim())
+        } else {
+            String::new()
+        };
+
         let hash = crate::hash_password(password).map_err(|_| RegisterError::HashFailed)?;
         let mut user = User::new(self.users.next_user_id(), handle, self.clock.now());
         user.password_hash = hash;
+        user.email_enc = email_enc;
+
+        let verification_token =
+            if self.email_verification.requires_verification() && self.email_key.is_some() {
+                user.email_verified = false;
+                let raw = crate::email::new_verification_token();
+                let expires_at = self.clock.now().0 + VERIFICATION_TTL_SECS;
+                self.verification_tokens
+                    .add(crate::email::hash_token(&raw), user.id, expires_at);
+                Some(raw)
+            } else {
+                user.email_verified = true;
+                None
+            };
+
         self.users.insert_user(user.clone());
-        Ok(user)
+        Ok(Registration { user, verification_token })
+    }
+
+    /// Consume a verification token, marking its account's email verified. Returns
+    /// the updated account, or `None` if the token is unknown, already used, or
+    /// expired. Single-use.
+    pub fn verify_email(&self, raw_token: &str) -> Option<User> {
+        let now = self.clock.now().0;
+        let user_id = self
+            .verification_tokens
+            .take(&crate::email::hash_token(raw_token), now)?;
+        let mut user = self.users.get_user(user_id)?;
+        user.email_verified = true;
+        self.users.update_user(user.clone());
+        Some(user)
+    }
+
+    /// Re-issue a verification token for an as-yet-unverified account, returning the
+    /// decrypted address and raw token for the web layer to email. `None` for every
+    /// "nothing to do" case (verification off / no key, unknown handle, already
+    /// verified, or no email on file) — the web layer maps them all to one opaque
+    /// response so this is not an account-existence oracle.
+    pub fn issue_resend(&self, handle: &str) -> Option<ResendTarget> {
+        let key = self.email_key.as_ref()?;
+        if !self.email_verification.requires_verification() {
+            return None;
+        }
+        let user = self.users.find_by_handle(handle.trim())?;
+        if user.email_verified || !user.has_email() {
+            return None;
+        }
+        let email = crate::email::open_email(key, &user.email_enc).ok()?;
+        let raw = crate::email::new_verification_token();
+        let expires_at = self.clock.now().0 + VERIFICATION_TTL_SECS;
+        self.verification_tokens
+            .add(crate::email::hash_token(&raw), user.id, expires_at);
+        Some(ResendTarget { email, token: raw })
     }
 
     /// Set (or replace) an account's password. Used to give seed/CLI accounts a
