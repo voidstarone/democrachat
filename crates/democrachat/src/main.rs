@@ -75,6 +75,116 @@ fn data_key_from_env() -> Option<app::VaultKey> {
     }
 }
 
+/// A trimmed environment variable, or `None` when unset/empty.
+fn non_empty_env(name: &str) -> Option<String> {
+    std::env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+/// The email-verification policy, from `DEMOCRACHAT_EMAIL_VERIFICATION`. Unset ⇒
+/// `Hard` (secure by default: new signups must confirm their email). An
+/// unrecognized value is a hard error rather than a silent fall-back.
+fn email_verification_from_env() -> app::EmailVerificationMode {
+    match non_empty_env("DEMOCRACHAT_EMAIL_VERIFICATION") {
+        None => app::EmailVerificationMode::Hard,
+        Some(raw) => app::EmailVerificationMode::parse(&raw).unwrap_or_else(|| {
+            eprintln!("error: DEMOCRACHAT_EMAIL_VERIFICATION must be 'hard' or 'off'");
+            exit(2);
+        }),
+    }
+}
+
+/// The dedicated key emails are sealed under, from `DEMOCRACHAT_EMAIL_KEY` (64 hex
+/// chars). Unset ⇒ `None`: no address is stored (only valid with verification off).
+/// Set-but-invalid is a hard error.
+fn email_key_from_env() -> Option<app::VaultKey> {
+    let raw = non_empty_env("DEMOCRACHAT_EMAIL_KEY")?;
+    match app::VaultKey::from_hex(&raw) {
+        Ok(key) => Some(key),
+        Err(e) => {
+            eprintln!("error: DEMOCRACHAT_EMAIL_KEY is invalid: {e}");
+            exit(2);
+        }
+    }
+}
+
+/// Build the SMTP email sender from `DEMOCRACHAT_SMTP_*`. Returns `None` when the
+/// core settings are absent (host/user/pass/from); a present-but-unbuildable
+/// configuration (e.g. a malformed `FROM`) is a hard error.
+fn smtp_sender_from_env() -> Option<Arc<dyn app::EmailSender>> {
+    let host = non_empty_env("DEMOCRACHAT_SMTP_HOST")?;
+    let username = non_empty_env("DEMOCRACHAT_SMTP_USERNAME")?;
+    let password = non_empty_env("DEMOCRACHAT_SMTP_PASSWORD")?;
+    let from = non_empty_env("DEMOCRACHAT_SMTP_FROM")?;
+    let port = non_empty_env("DEMOCRACHAT_SMTP_PORT")
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(587);
+    // STARTTLS defaults on (submission norm); set DEMOCRACHAT_SMTP_STARTTLS=false
+    // for a plaintext hop (trusted LAN / local test relay only).
+    let starttls = non_empty_env("DEMOCRACHAT_SMTP_STARTTLS")
+        .map(|v| !matches!(v.to_ascii_lowercase().as_str(), "false" | "0" | "no" | "off"))
+        .unwrap_or(true);
+    let accept_invalid_certs = std::env::var_os("DEMOCRACHAT_SMTP_INSECURE_TLS").is_some();
+    match adapter_email_smtp::SmtpEmailSender::new(adapter_email_smtp::SmtpConfig {
+        host,
+        port,
+        username,
+        password,
+        from,
+        starttls,
+        accept_invalid_certs,
+    }) {
+        Ok(sender) => Some(Arc::new(sender)),
+        Err(e) => {
+            eprintln!("error: DEMOCRACHAT_SMTP configuration is invalid: {e}");
+            exit(2);
+        }
+    }
+}
+
+/// Everything the email-verification feature needs, resolved from the environment.
+struct EmailWiring {
+    mode: app::EmailVerificationMode,
+    key: Option<app::VaultKey>,
+    sender: Option<Arc<dyn app::EmailSender>>,
+    /// Public base URL (`DEMOCRACHAT_BASE_URL`, e.g. `https://chat.example.com`) the
+    /// verification link is built from.
+    base_url: String,
+}
+
+/// Resolve email wiring and enforce readiness. Verification only operates under
+/// `serve`, so CLI commands skip the checks. If `serve` requests verification but
+/// the key / `SITE_ADDRESS` / SMTP settings aren't all present, a real deployment
+/// fails closed (an unverifiable hard gate would lock everyone out); a `--dev`
+/// instance instead downgrades to verification-off with a warning so the local demo
+/// still runs.
+fn configure_email(is_serve: bool, is_dev: bool) -> EmailWiring {
+    let mut mode = email_verification_from_env();
+    let key = email_key_from_env();
+    let sender = smtp_sender_from_env();
+    let base_url = non_empty_env("DEMOCRACHAT_BASE_URL").unwrap_or_default();
+
+    if is_serve && mode.requires_verification() {
+        let ready = key.is_some() && sender.is_some() && !base_url.is_empty();
+        if !ready {
+            if is_dev {
+                eprintln!(
+                    "warning: email verification requested but DEMOCRACHAT_EMAIL_KEY / \
+                     DEMOCRACHAT_BASE_URL / DEMOCRACHAT_SMTP_* are not all set — running with \
+                     verification OFF (dev)."
+                );
+                mode = app::EmailVerificationMode::Off;
+            } else {
+                eprintln!(
+                    "error: DEMOCRACHAT_EMAIL_VERIFICATION=hard requires DEMOCRACHAT_EMAIL_KEY, \
+                     DEMOCRACHAT_BASE_URL, and DEMOCRACHAT_SMTP_HOST/USERNAME/PASSWORD/FROM to be set."
+                );
+                exit(2);
+            }
+        }
+    }
+    EmailWiring { mode, key, sender, base_url }
+}
+
 /// Read the persisted dataset as plaintext JSON, transparently unsealing it when a
 /// data key is configured. Returns `None` if there is no file yet.
 ///
@@ -175,7 +285,13 @@ fn main() {
     // Re-encode uploaded images (strip metadata/exploits, HEIC/HEIF → JPEG). Only
     // production wires the real codec; tests keep the identity transcoder.
     stores.image = Arc::new(adapter_image::ReencodingTranscoder::new());
-    let services = Arc::new(Services::new(clock.clone(), stores));
+    // Email verification wiring (mode + at-rest key + SMTP sender + site host),
+    // resolved from the environment and applied to the use-cases here.
+    let is_serve = args.get(1).map(String::as_str) == Some("serve");
+    let is_dev_cli = args.iter().any(|a| a == "--dev" || a == "--demo");
+    let email = configure_email(is_serve, is_dev_cli);
+    let services =
+        Arc::new(Services::new(clock.clone(), stores).with_email_policy(email.mode, email.key));
 
     // Backfill floor channels for any server persisted before channels were
     // auto-provisioned (older datasets have servers with no channels, and none had
@@ -186,8 +302,10 @@ fn main() {
         .expect("backfill runtime")
         .block_on(services.backfill_default_channels());
 
-    if args.get(1).map(String::as_str) == Some("serve") {
-        run_serve(&args, services, clock, store, path, node, data_key);
+    if is_serve {
+        run_serve(
+            &args, services, clock, store, path, node, data_key, email.sender, email.base_url,
+        );
         return;
     }
 
@@ -197,6 +315,7 @@ fn main() {
     exit(code);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_serve(
     args: &[String],
     services: Arc<Services>,
@@ -205,6 +324,8 @@ fn run_serve(
     path: PathBuf,
     node: domain::NodeId,
     data_key: Option<app::VaultKey>,
+    email_sender: Option<Arc<dyn app::EmailSender>>,
+    base_url: String,
 ) {
     // `--demo` builds the rich testbed world (every channel & content kind) instead
     // of the minimal welcome seed, and implies dev tooling (clock control, known
@@ -283,6 +404,8 @@ fn run_serve(
             signer,
             advance_secs: advance,
             save: save_hook,
+            email: email_sender,
+            base_url,
         };
         adapter_web::serve(services, config, routers).await
     });
@@ -342,6 +465,8 @@ fn serve_postgres(args: &[String], database_url: String) {
         .unwrap_or(16);
 
     let clock = Arc::new(FixedClock::new(SystemClock.now()));
+    // Email verification wiring, resolved + validated before we enter the runtime.
+    let email = configure_email(true, is_dev);
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let served = rt.block_on(async move {
         let store = match adapter_store_postgres::PgStore::connect(&database_url, max_connections).await {
@@ -352,7 +477,9 @@ fn serve_postgres(args: &[String], database_url: String) {
             }
         };
         let stores = store.as_stores(media, image);
-        let services = Arc::new(Services::new(clock.clone(), stores));
+        let services = Arc::new(
+            Services::new(clock.clone(), stores).with_email_policy(email.mode, email.key),
+        );
         services.backfill_default_channels().await;
 
         if is_dev {
@@ -379,6 +506,8 @@ fn serve_postgres(args: &[String], database_url: String) {
             signer,
             advance_secs: advance,
             save: save_hook.clone(),
+            email: email.sender,
+            base_url: email.base_url,
         };
         // Bring federation up over the Postgres store if this node is configured for
         // it; a no-op on the default single-box deployment. The outbox producer +

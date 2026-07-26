@@ -60,6 +60,10 @@ pub struct WebConfig {
     pub signer: Arc<SessionSigner>,
     pub advance_secs: Arc<dyn Fn(i64) + Send + Sync>,
     pub save: Arc<dyn Fn() + Send + Sync>,
+    /// SMTP sender for signup verification email; `None` when verification is off.
+    pub email: Option<Arc<dyn app::EmailSender>>,
+    /// Public base URL for the verification link (`DEMOCRACHAT_BASE_URL`).
+    pub base_url: String,
 }
 
 /// Serve the web app until the process is stopped.
@@ -68,7 +72,8 @@ pub async fn serve(
     config: WebConfig,
     routers: Routers,
 ) -> anyhow::Result<()> {
-    let WebConfig { addr, is_dev, secure_cookies, signer, advance_secs, save } = config;
+    let WebConfig { addr, is_dev, secure_cookies, signer, advance_secs, save, email, base_url } =
+        config;
     let (events, _) = broadcast::channel(256);
     let state = AppState {
         services,
@@ -83,6 +88,8 @@ pub async fn serve(
         dm_router: routers.dm,
         block_router: routers.block,
         friend_router: routers.friend,
+        email,
+        base_url,
     };
 
     let limiter = Arc::new(middleware::rate_limit::RateLimiter::new());
@@ -142,9 +149,13 @@ pub async fn serve(
             }),
         )
         .route("/ws", get(ws::ws_handler))
+        // The email-verification link target — opened in a browser from the signup
+        // email, so a bare path returning a redirect (not a JSON `/api/*` route).
+        .route("/verify", get(handlers::verify))
         .route("/api/config", get(handlers::config))
         .route("/api/login", post(handlers::login))
         .route("/api/register", post(handlers::register))
+        .route("/api/resend", post(handlers::resend))
         .route("/api/logout", post(handlers::logout))
         .route("/api/servers", get(handlers::list_servers).post(handlers::found_server))
         .route("/api/servers/public", get(handlers::list_public_servers))

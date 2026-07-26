@@ -84,7 +84,7 @@ impl Default for RateLimiter {
 
 /// Which bucket a POST path falls into.
 fn bucket_for(path: &str) -> Bucket {
-    if path == "/api/login" || path == "/api/register" {
+    if path == "/api/login" || path == "/api/register" || path == "/api/resend" {
         Bucket::Auth
     } else {
         Bucket::Write
@@ -128,6 +128,7 @@ mod tests {
     fn auth_paths_map_to_the_auth_bucket() {
         assert_eq!(bucket_for("/api/login"), Bucket::Auth);
         assert_eq!(bucket_for("/api/register"), Bucket::Auth);
+        assert_eq!(bucket_for("/api/resend"), Bucket::Auth);
         assert_eq!(bucket_for("/api/servers"), Bucket::Write);
         assert_eq!(bucket_for("/api/messages/1/react"), Bucket::Write);
     }

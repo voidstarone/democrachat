@@ -278,6 +278,13 @@ let AUTH_MODE = 'login'; // or 'register'
 async function boot() {
   applyLang();
   applyThemeButton();
+  // Surface the outcome of an email-verification link (GET /verify redirects here
+  // with a hash), then strip it so a refresh doesn't repeat the toast.
+  if (location.hash === '#verified' || location.hash === '#verify_failed') {
+    const ok = location.hash === '#verified';
+    toast(ok ? t('app.toast.email_verified') : t('app.toast.verify_failed'), ok ? '' : 'err');
+    history.replaceState(null, '', location.pathname + location.search);
+  }
   $('settingsBtn').innerHTML = icon('gear', 17);
   const cfg = await api('/api/config'); S.isDev = cfg.is_dev;
   S.ice = cfg.ice_servers || [{ urls: 'stun:stun.l.google.com:19302' }];
@@ -297,19 +304,55 @@ function toggleAuthMode(){
   $('authSub').textContent = reg ? t('app.auth.sub_register') : t('app.auth.sub_login');
   $('authSwitchText').textContent = reg ? t('app.auth.have_account') : t('app.auth.new_here');
   $('authSwitch').textContent = reg ? t('app.auth.sign_in') : t('app.auth.create_account_link');
+  $('emailInput').style.display = reg ? '' : 'none';
   $('passwordInput').setAttribute('autocomplete', reg ? 'new-password' : 'current-password');
+  $('verifyNotice').style.display = 'none';
+}
+// Finish a successful auth: recover/set up this device's encryption keys (while we
+// still hold the password — it never leaves the browser) and enter the app.
+async function completeLogin(handle, password){
+  S.me = handle;
+  try { await ensureIdentity(password); } catch(e){ toast(t('app.toast.enc_setup_failed',{err:e.message||e}),'err'); }
+  $('passwordInput').value=''; afterLogin();
 }
 const submitAuth = guard(async () => {
   const handle = $('handleInput').value.trim();
   const password = $('passwordInput').value;
   if (!handle || !password) { toast(t('app.toast.enter_handle_pw'),'err'); return; }
-  const path = AUTH_MODE==='register' ? '/api/register' : '/api/login';
-  const r = await api(path,'POST',{handle, password});
-  S.me = r.handle;
-  // Set up (or recover) this device's encryption keys while we still hold the
-  // password — it never leaves the browser.
-  try { await ensureIdentity(password); } catch(e){ toast(t('app.toast.enc_setup_failed',{err:e.message||e}),'err'); }
-  $('passwordInput').value=''; afterLogin();
+  if (AUTH_MODE==='register') {
+    const email = $('emailInput').value.trim();
+    if (!email) { toast(t('app.toast.enter_email'),'err'); return; }
+    const r = await api('/api/register','POST',{handle, password, email});
+    if (r && r.verify_required) {
+      // Hard mode: account created but not logged in until the emailed link is clicked.
+      S.pendingVerifyHandle = handle;
+      $('passwordInput').value='';
+      $('verifyNotice').style.display='block';
+      toast(t('app.toast.check_email'));
+      return;
+    }
+    await completeLogin(r.handle, password); // verification off — logged straight in
+    return;
+  }
+  try {
+    const r = await api('/api/login','POST',{handle, password});
+    await completeLogin(r.handle, password);
+  } catch(e) {
+    // An unverified account can't log in yet — offer to resend the link.
+    if ((e.message||'') === t('err.email_unverified')) {
+      S.pendingVerifyHandle = handle;
+      $('verifyNotice').style.display='block';
+    }
+    throw e; // let guard surface the message as a toast
+  }
+});
+// Re-send the verification email for the handle in the field (or the one we just
+// signed up / tried to log in with). Always an opaque success.
+const resendVerify = guard(async () => {
+  const handle = ($('handleInput').value.trim()) || S.pendingVerifyHandle;
+  if (!handle) { toast(t('app.toast.enter_handle_pw'),'err'); return; }
+  await api('/api/resend','POST',{handle});
+  toast(t('app.toast.resent'));
 });
 const logout = guard(async () => { await api('/api/logout','POST'); location.reload(); });
 let WS_STARTED = false;
@@ -2039,7 +2082,7 @@ function connectWS(){
 }
 
 function esc(s){ return (s+'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-['handleInput','passwordInput'].forEach(id=>$(id)?.addEventListener('keydown', e=>{ if(e.key==='Enter') submitAuth(); }));
+['handleInput','emailInput','passwordInput'].forEach(id=>$(id)?.addEventListener('keydown', e=>{ if(e.key==='Enter') submitAuth(); }));
 $('dmInput').addEventListener('keydown', e=>{ if(e.key==='Enter') sendDm(); });
 // Message search: debounce typing, run immediately on Enter, clear on Escape.
 $('msgSearch')?.addEventListener('input', ()=>{ clearTimeout(SEARCH_TIMER); SEARCH_TIMER=setTimeout(runSearch, 260); });
@@ -2053,6 +2096,7 @@ $('msgSearch')?.addEventListener('keydown', e=>{ if(e.key==='Enter'){ clearTimeo
 const ACTIONS = {
   submitAuth:     () => submitAuth(),
   toggleAuthMode: () => toggleAuthMode(),
+  resendVerify:   () => resendVerify(),
   setModeChat:    () => setMode('chat'),
   setModeDms:     () => showFriends(),
   showFriends:    () => showFriends(),

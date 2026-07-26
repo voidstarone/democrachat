@@ -19,4 +19,5 @@ mod role_color_vote;
 mod rule;
 mod server;
 mod user;
+mod verification_token;
 mod vote;

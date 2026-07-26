@@ -652,11 +652,16 @@
     <div class="title"><svg class="i" aria-hidden="true" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> democrachat</div>
     <div class="sub" id="authSub" data-t="ui.auth.tagline" style="margin-top:.4rem">a chat that governs itself — sign in</div>
     <input id="handleInput" placeholder="handle" data-t-ph="ui.auth.handle_ph" autocomplete="username" autofocus />
+    <input id="emailInput" type="email" placeholder="email" data-t-ph="ui.auth.email_ph" autocomplete="email" style="margin-top:.6rem; display:none" />
     <input id="passwordInput" type="password" placeholder="password (min 16 chars)" data-t-ph="ui.auth.password_ph" autocomplete="current-password" style="margin-top:.6rem" />
     <button class="full" style="margin-top:1rem" data-act="submitAuth"><span id="authBtnLabel" data-t="ui.auth.signin_btn">Sign in</span></button>
     <div class="sub" style="margin-top:.8rem">
       <span id="authSwitchText" data-t="ui.auth.switch_prompt">New here?</span>
       <a href="#" id="authSwitch" data-act="toggleAuthMode" data-t="ui.auth.switch_link">Create an account</a>
+    </div>
+    <div class="sub" id="verifyNotice" style="margin-top:.8rem; display:none">
+      <span data-t="ui.auth.verify_notice">Check your email to confirm your account.</span>
+      <a href="#" data-act="resendVerify" data-t="ui.auth.resend_link">Resend link</a>
     </div>
   </div>
 </div>

@@ -193,4 +193,12 @@ CREATE TABLE IF NOT EXISTS fed_nonces (
   expiry_at BIGINT NOT NULL,
   PRIMARY KEY (node, nonce)
 );
+
+-- Pending email-verification tokens. Only the SHA-256 digest of the emailed
+-- token is stored; node-local (never federated), self-pruned on access.
+CREATE TABLE IF NOT EXISTS verification_tokens (
+  token_hash TEXT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  expires_at BIGINT NOT NULL
+);
 "#;

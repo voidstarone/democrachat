@@ -80,6 +80,7 @@ impl PgStore {
             keys: self.clone(),
             channel_keys: self.clone(),
             invites: self.clone(),
+            verification_tokens: self.clone(),
             media,
             image,
         }

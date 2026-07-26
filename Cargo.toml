@@ -20,6 +20,7 @@ members = [
     "crates/adapter-media-fs",
     "crates/adapter-image",
     "crates/adapter-store-postgres",
+    "crates/adapter-email-smtp",
     "crates/adapter-federation",
     "crates/adapter-cli",
     "crates/adapter-web",
@@ -42,6 +43,7 @@ adapter-store-memory = { path = "crates/adapter-store-memory" }
 adapter-media-fs = { path = "crates/adapter-media-fs" }
 adapter-image = { path = "crates/adapter-image" }
 adapter-store-postgres = { path = "crates/adapter-store-postgres" }
+adapter-email-smtp = { path = "crates/adapter-email-smtp" }
 adapter-federation = { path = "crates/adapter-federation" }
 adapter-cli = { path = "crates/adapter-cli" }
 adapter-web = { path = "crates/adapter-web" }
@@ -99,6 +101,10 @@ tracing = "0.1"
 # queries only (no compile-time macros), so the crate builds with no live DB;
 # `tls-rustls` keeps it off the system OpenSSL, `json` maps the JSONB row payloads.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "json"] }
+# Transactional email (signup verification): async SMTP over STARTTLS. rustls only
+# (default-features off) so email delivery holds the same no-OpenSSL policy as the
+# federation transport and sqlx above.
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "hostname", "tokio1", "tokio1-rustls-tls"] }
 
 [profile.release]
 opt-level = 3

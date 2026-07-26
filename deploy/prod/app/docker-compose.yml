@@ -50,6 +50,25 @@ services:
       DEMOCRACHAT_DATA_KEK: ${DEMOCRACHAT_DATA_KEK:-}
       # Node identity — leave 0 (single box). A federated node would set 1–65535.
       DEMOCRACHAT_NODE_ID: ${DEMOCRACHAT_NODE_ID:-0}
+      # Public base URL the verification link is built from (usually the edge's
+      # https://SITE_ADDRESS).
+      DEMOCRACHAT_BASE_URL: https://${SITE_ADDRESS:?set SITE_ADDRESS (the public host, e.g. chat.example.com)}
+      # ---- Email verification (signup) ----
+      # hard (default) requires the key + SMTP settings below; the app fails closed
+      # without them. Set to off to disable verification.
+      DEMOCRACHAT_EMAIL_VERIFICATION: ${DEMOCRACHAT_EMAIL_VERIFICATION:-hard}
+      # Dedicated key: addresses are encrypted at rest under this (never plaintext).
+      DEMOCRACHAT_EMAIL_KEY: ${DEMOCRACHAT_EMAIL_KEY:-}
+      # SMTP submission relay. HOST is the mail host's address on the LAN (the app
+      # host and the mail/Postfix host may be different boxes).
+      DEMOCRACHAT_SMTP_HOST: ${DEMOCRACHAT_SMTP_HOST:-}
+      DEMOCRACHAT_SMTP_PORT: ${DEMOCRACHAT_SMTP_PORT:-587}
+      DEMOCRACHAT_SMTP_STARTTLS: ${DEMOCRACHAT_SMTP_STARTTLS:-true}
+      DEMOCRACHAT_SMTP_USERNAME: ${DEMOCRACHAT_SMTP_USERNAME:-}
+      DEMOCRACHAT_SMTP_PASSWORD: ${DEMOCRACHAT_SMTP_PASSWORD:-}
+      DEMOCRACHAT_SMTP_FROM: ${DEMOCRACHAT_SMTP_FROM:-}
+      # 1 if the relay's submission TLS cert name doesn't match DEMOCRACHAT_SMTP_HOST.
+      DEMOCRACHAT_SMTP_INSECURE_TLS: ${DEMOCRACHAT_SMTP_INSECURE_TLS:-}
     volumes:
       # Durable state on host paths you choose (an external drive, ext4). The DB
       # snapshot and the media blobs are separate tiers; media is the large one.

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use app::{BlockRouter, DmRouter, FriendRouter, Services, SessionSigner, VoteRouter};
+use app::{BlockRouter, DmRouter, EmailSender, FriendRouter, Services, SessionSigner, VoteRouter};
 use tokio::sync::broadcast;
 
 use crate::signal::SignalHub;
@@ -47,6 +47,13 @@ pub struct AppState {
     /// synchronously (a friendship is a two-user record and gates friends-only DMs on
     /// the sender's home). `None` on single-box, where it applies through `Services`.
     pub friend_router: Option<Arc<dyn FriendRouter>>,
+    /// Delivers signup verification emails. `None` when email verification is off
+    /// (no sender configured); the composition root fails closed if verification is
+    /// required but this is unset.
+    pub email: Option<Arc<dyn EmailSender>>,
+    /// The public base URL (from `DEMOCRACHAT_BASE_URL`, e.g. `https://chat.example.com`),
+    /// used to build the verification link `{base_url}/verify?token=…`.
+    pub base_url: String,
 }
 
 impl AppState {

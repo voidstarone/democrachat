@@ -16,6 +16,7 @@ adapter-store-memory = { workspace = true }
 adapter-media-fs = { workspace = true }
 adapter-image = { workspace = true }
 adapter-store-postgres = { workspace = true }
+adapter-email-smtp = { workspace = true }
 adapter-federation = { workspace = true }
 adapter-control-etcd = { workspace = true }
 adapter-cli = { workspace = true }

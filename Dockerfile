@@ -17,14 +17,14 @@
 # Debian *Trixie* (not Bookworm): the HEIC/HEIF→JPEG transcoder (adapter-image)
 # links libheif via libheif-sys 4.x, which needs libheif ≥ 1.19. Bookworm apt
 # ships only 1.15; Trixie ships 1.19.8, matching the pinned libheif-sys.
-# NOTE: the base digests below must be re-pinned for Trixie (the Bookworm digests
-# are left as placeholders) — run the refresh procedure at the top of this file:
-#   docker pull rust:1.83-trixie && docker image inspect … --format '{{index .RepoDigests 0}}'
-FROM rust:1.83-trixie AS builder
+# Rust 1.97: the locked dependency graph includes crates that require the 2024
+# edition (base64ct, clap 4.6, …), which needs a toolchain newer than 1.83.
+FROM rust:1.97-trixie@sha256:1bcff4befb740599103a2c7cb51058e14479b2e35e3a34a3f0dc4ede09927488 AS builder
 WORKDIR /src
-# libheif headers (+ pkg-config) to link the transcoder at build time.
+# libheif headers (+ pkg-config) to link the transcoder at build time; protobuf
+# compiler for etcd-client's build script (it compiles .proto files with `protoc`).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libheif-dev pkg-config \
+ && apt-get install -y --no-install-recommends libheif-dev pkg-config protobuf-compiler \
  && rm -rf /var/lib/apt/lists/*
 COPY . .
 # --locked: fail if Cargo.lock is stale, so the built graph is exactly the audited one.

@@ -12,7 +12,7 @@ use app::{
     BlockStore, CapAdmission, ChannelKeyStore, ChannelStore, Clock, DmStore, EmojiStore,
     EmojiVoteStore, FriendStore, KeyDirectoryStore, MembershipStore, MessageStore, ProposalStore,
     ReactionStore, RoleColorVoteStore, RoleStore, RuleStore, ServerStore, StoreError, Stores,
-    UserStore, VoteStore,
+    UserStore, VerificationTokenStore, VoteStore,
 };
 use domain::{
     compose_id, Block, Channel, ChannelId, ChannelKeyGrant, DmId, DmMessage, Emoji, EmojiId,
@@ -116,6 +116,10 @@ struct Inner {
     /// expiry`. Persisted in the snapshot so a captured command can't be replayed
     /// against this node after a restart. Self-prunes once entries pass expiry.
     nonces: HashMap<(u16, String), i64>,
+    /// Pending email-verification tokens: `token digest → (account, expiry)`. Only
+    /// the SHA-256 digest of the emailed token is stored (never the token). Persisted
+    /// so a link still works across a restart; self-prunes once entries pass expiry.
+    verification_tokens: HashMap<String, (UserId, i64)>,
 }
 
 impl Inner {
@@ -343,6 +347,7 @@ impl MemoryStore {
             keys: self.clone(),
             channel_keys: self.clone(),
             invites: self.clone(),
+            verification_tokens: self.clone(),
             media: self.clone(),
             // No codec by default — the composition root overrides this with the
             // re-encoding adapter; tests and codec-free drivers keep the identity.
@@ -376,6 +381,11 @@ impl MemoryStore {
             user_keys: inner.user_keys.values().cloned().collect(),
             channel_grants: inner.channel_grants.values().cloned().collect(),
             nonces: inner.nonces.iter().map(|((n, nc), e)| (*n, nc.clone(), *e)).collect(),
+            verification_tokens: inner
+                .verification_tokens
+                .iter()
+                .map(|(h, (u, e))| (h.clone(), u.0, *e))
+                .collect(),
             outbox: inner.outbox.clone(),
             next_outbox: inner.next_outbox,
             cursors: inner.cursors.iter().map(|(n, c)| (n.0, *c)).collect(),
@@ -458,6 +468,9 @@ impl MemoryStore {
         for (node, nonce, expiry) in snap.nonces {
             inner.nonces.insert((node, nonce), expiry);
         }
+        for (hash, user_id, expiry) in snap.verification_tokens {
+            inner.verification_tokens.insert(hash, (UserId(user_id), expiry));
+        }
         Ok(Self(Mutex::new(inner)))
     }
 
@@ -471,6 +484,32 @@ impl MemoryStore {
         let mut inner = self.0.lock().unwrap();
         inner.nonces.retain(|_, expiry| *expiry > now);
         inner.nonces.insert((node, nonce.to_string()), expiry_at).is_none()
+    }
+}
+
+#[async_trait]
+impl VerificationTokenStore for MemoryStore {
+    async fn add(
+        &self,
+        token_hash: String,
+        user_id: UserId,
+        expires_at: i64,
+    ) -> Result<(), StoreError> {
+        Ok({
+            let mut inner = self.0.lock().unwrap();
+            inner.verification_tokens.insert(token_hash, (user_id, expires_at));
+        })
+    }
+    async fn take(&self, token_hash: &str, now: i64) -> Result<Option<UserId>, StoreError> {
+        Ok({
+            let mut inner = self.0.lock().unwrap();
+            // Prune expired entries first so the map stays bounded (like the nonces).
+            inner.verification_tokens.retain(|_, (_, expiry)| *expiry > now);
+            inner
+                .verification_tokens
+                .remove(token_hash)
+                .map(|(user_id, _)| user_id)
+        })
     }
 }
 
@@ -515,6 +554,9 @@ struct Snapshot {
     /// Durable anti-replay nonces: `(node, nonce, expiry)`.
     #[serde(default)]
     nonces: Vec<(u16, String, i64)>,
+    /// Pending email-verification tokens: `(token digest, account id, expiry)`.
+    #[serde(default)]
+    verification_tokens: Vec<(String, u64, i64)>,
     /// The change-capture outbox and its high-water `seq`. Persisted so a peer's
     /// replay cursor never runs ahead of the seqs this node mints: without it a
     /// restart would reset `next_outbox` to 0 and re-mint seq 1,2,3…, which every

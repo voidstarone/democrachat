@@ -11,6 +11,23 @@ use serde::{Deserialize, Serialize};
 pub struct CredentialsReq {
     pub handle: String,
     pub password: String,
+    /// The email address, required for registration and ignored for login.
+    /// `#[serde(default)]` so a login body (`{handle, password}`) still
+    /// deserializes without it.
+    #[serde(default)]
+    pub email: String,
+}
+
+/// Query for the email-verification link (`GET /verify?token=…`).
+#[derive(Deserialize)]
+pub struct VerifyQuery {
+    pub token: String,
+}
+
+/// Request a fresh verification email for an unverified account.
+#[derive(Deserialize)]
+pub struct ResendReq {
+    pub handle: String,
 }
 
 #[derive(Deserialize)]

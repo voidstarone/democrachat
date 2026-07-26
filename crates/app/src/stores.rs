@@ -6,7 +6,7 @@ use crate::{
     BlockStore, ChannelKeyStore, ChannelStore, DmStore, EmojiStore, EmojiVoteStore, FriendStore,
     ImageTranscoder, InviteStore, KeyDirectoryStore, MediaStore, MembershipStore, MessageStore,
     ProposalStore, ReactionStore, RoleColorVoteStore, RoleStore, RuleStore, ServerStore, UserStore,
-    VoteStore,
+    VerificationTokenStore, VoteStore,
 };
 
 /// The driven ports the use-cases persist through. Bundled into one struct so
@@ -33,6 +33,7 @@ pub struct Stores {
     pub keys: Arc<dyn KeyDirectoryStore>,
     pub channel_keys: Arc<dyn ChannelKeyStore>,
     pub invites: Arc<dyn InviteStore>,
+    pub verification_tokens: Arc<dyn VerificationTokenStore>,
     pub media: Arc<dyn MediaStore>,
     /// Normalizes uploaded images (re-encode, HEIC→JPEG). Not a persistence port —
     /// a stateless transform — but wired the same way so the codec stays out of

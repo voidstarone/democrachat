@@ -19,7 +19,7 @@ fn services() -> Services {
 #[tokio::test]
 async fn register_then_authenticate_succeeds() {
     let s = services();
-    s.register_with_password("alice", GOOD_PW).await.unwrap();
+    s.register_with_password("alice", "alice@example.com", GOOD_PW).await.unwrap();
     let user = s.authenticate("alice", GOOD_PW).await.expect("correct password authenticates");
     assert_eq!(user.handle, "alice");
     assert!(user.has_password());
@@ -28,7 +28,7 @@ async fn register_then_authenticate_succeeds() {
 #[tokio::test]
 async fn wrong_password_does_not_authenticate() {
     let s = services();
-    s.register_with_password("alice", GOOD_PW).await.unwrap();
+    s.register_with_password("alice", "alice@example.com", GOOD_PW).await.unwrap();
     assert!(s.authenticate("alice", "wrong wrong wrong!").await.is_none());
 }
 
@@ -41,7 +41,7 @@ async fn unknown_handle_does_not_authenticate() {
 #[tokio::test]
 async fn short_password_is_rejected() {
     let s = services();
-    match s.register_with_password("alice", "short").await {
+    match s.register_with_password("alice", "alice@example.com", "short").await {
         Err(RegisterError::WeakPassword(_)) => {}
         other => panic!("expected WeakPassword, got {other:?}"),
     }
@@ -71,7 +71,7 @@ async fn set_password_makes_a_seed_account_loginable() {
 #[tokio::test]
 async fn the_stored_hash_is_not_the_plaintext() {
     let s = services();
-    s.register_with_password("alice", GOOD_PW).await.unwrap();
+    s.register_with_password("alice", "alice@example.com", GOOD_PW).await.unwrap();
     let user = s.find_user("alice").await.unwrap();
     assert_ne!(user.password_hash, GOOD_PW);
     assert!(user.password_hash.starts_with("$argon2")); // PHC Argon2 string
@@ -80,8 +80,8 @@ async fn the_stored_hash_is_not_the_plaintext() {
 #[tokio::test]
 async fn a_duplicate_handle_is_rejected() {
     let s = services();
-    s.register_with_password("alice", GOOD_PW).await.unwrap();
-    match s.register_with_password("alice", GOOD_PW).await {
+    s.register_with_password("alice", "alice@example.com", GOOD_PW).await.unwrap();
+    match s.register_with_password("alice", "alice@example.com", GOOD_PW).await {
         Err(RegisterError::HandleTaken(_)) => {}
         other => panic!("expected HandleTaken, got {other:?}"),
     }
