@@ -80,6 +80,54 @@ fn non_empty_env(name: &str) -> Option<String> {
     std::env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
+/// How long a founding member's vote stands before it must be backed by a confirmed
+/// email address, from `DEMOCRACHAT_FRANCHISE_GRACE_DAYS`. Unset ⇒ 28 days (the
+/// platform's default membership dwell, the wait the founding cohort is excused).
+/// `0` keeps the head start but seats nobody unconfirmed. A negative or unparseable
+/// value is a hard error rather than a silently substituted default — an operator
+/// who fat-fingers their identity policy should be told, not guessed at.
+fn founding_grace_days_from_env() -> i64 {
+    match non_empty_env("DEMOCRACHAT_FRANCHISE_GRACE_DAYS") {
+        None => domain::DEFAULT_UNCONFIRMED_FRANCHISE_GRACE_DAYS,
+        Some(raw) => match raw.parse::<i64>() {
+            Ok(days) if days >= 0 => days,
+            _ => {
+                eprintln!(
+                    "error: DEMOCRACHAT_FRANCHISE_GRACE_DAYS must be a whole number of days \
+                     (0 or more), got '{raw}'"
+                );
+                exit(2);
+            }
+        },
+    }
+}
+
+/// Where this deployment's bootstrap phases begin, from `DEMOCRACHAT_CHARTERING_AT`
+/// and `DEMOCRACHAT_SOVEREIGN_AT`. Unset ⇒ the platform defaults (5 and 25).
+///
+/// Worth knowing before changing `CHARTERING_AT`: it moves two things at once — how
+/// many members a server's founding cohort can hold (Seed members are enfranchised
+/// on arrival) and when constitutional amendments unlock. The domain rejects
+/// combinations that would make a lone founder a chartered electorate.
+fn phase_thresholds_from_env() -> domain::PhaseThresholds {
+    let read = |name: &str, default: u64| match non_empty_env(name) {
+        None => default,
+        Some(raw) => match raw.parse::<u64>() {
+            Ok(n) => n,
+            Err(_) => {
+                eprintln!("error: {name} must be a whole number of citizens, got '{raw}'");
+                exit(2);
+            }
+        },
+    };
+    let chartering = read("DEMOCRACHAT_CHARTERING_AT", domain::PhaseThresholds::DEFAULT_CHARTERING_AT);
+    let sovereign = read("DEMOCRACHAT_SOVEREIGN_AT", domain::PhaseThresholds::DEFAULT_SOVEREIGN_AT);
+    domain::PhaseThresholds::new(chartering, sovereign).unwrap_or_else(|e| {
+        eprintln!("error: DEMOCRACHAT_CHARTERING_AT / DEMOCRACHAT_SOVEREIGN_AT: {e}");
+        exit(2);
+    })
+}
+
 /// The email-verification policy, from `DEMOCRACHAT_EMAIL_VERIFICATION`: `hard`
 /// (confirm before you can log in), `soft` (log in freely, but no franchise until
 /// you confirm), or `off`. Unset ⇒ `Hard` (secure by default). An unrecognized
@@ -295,7 +343,12 @@ fn main() {
     let is_dev_cli = args.iter().any(|a| a == "--dev" || a == "--demo");
     let email = configure_email(is_serve, is_dev_cli);
     let services =
-        Arc::new(Services::new(clock.clone(), stores).with_email_policy(email.mode, email.key));
+        Arc::new(
+            Services::new(clock.clone(), stores)
+                .with_email_policy(email.mode, email.key)
+                .with_founding_grace_days(founding_grace_days_from_env())
+                .with_phase_thresholds(phase_thresholds_from_env()),
+        );
 
     // Backfill floor channels for any server persisted before channels were
     // auto-provisioned (older datasets have servers with no channels, and none had
@@ -482,7 +535,10 @@ fn serve_postgres(args: &[String], database_url: String) {
         };
         let stores = store.as_stores(media, image);
         let services = Arc::new(
-            Services::new(clock.clone(), stores).with_email_policy(email.mode, email.key),
+            Services::new(clock.clone(), stores)
+                .with_email_policy(email.mode, email.key)
+                .with_founding_grace_days(founding_grace_days_from_env())
+                .with_phase_thresholds(phase_thresholds_from_env()),
         );
         services.backfill_default_channels().await;
 

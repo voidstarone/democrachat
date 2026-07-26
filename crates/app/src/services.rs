@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use domain::{
     enfranchisement_slots, evaluate_eligibility, slugify, Eligibility, Invite, Server, Membership,
-    Phase, Tier, Timestamp, User,
+    Phase, PhaseThresholds, Tier, Timestamp, User,
 };
 
 use crate::CapAdmission;
@@ -72,6 +72,13 @@ pub struct Services {
     /// The dedicated key emails are sealed under, or `None` when no address is
     /// collected/stored (off mode / CLI / tests).
     pub(crate) email_key: Option<VaultKey>,
+    /// How many days a founding member's vote stands before it must be backed by a
+    /// confirmed address. Operator policy; see
+    /// [`with_founding_grace_days`](Self::with_founding_grace_days).
+    pub(crate) founding_grace_days: i64,
+    /// Where this deployment's bootstrap phases begin. Operator policy; see
+    /// [`with_phase_thresholds`](Self::with_phase_thresholds).
+    pub(crate) phase_thresholds: PhaseThresholds,
     chat: ChatService,
     governance: GovernanceService,
     social: SocialService,
@@ -88,6 +95,7 @@ impl Services {
         let chat = ChatService {
             channels: stores.channels.clone(),
             clock: clock.clone(),
+            phase_thresholds: PhaseThresholds::platform_default(),
             image: stores.image.clone(),
             media: stores.media.clone(),
             memberships: stores.memberships.clone(),
@@ -99,6 +107,7 @@ impl Services {
         let governance = GovernanceService {
             channels: stores.channels.clone(),
             clock: clock.clone(),
+            phase_thresholds: PhaseThresholds::platform_default(),
             emojis: stores.emojis.clone(),
             memberships: stores.memberships.clone(),
             proposals: stores.proposals.clone(),
@@ -164,6 +173,8 @@ impl Services {
             verification_tokens: stores.verification_tokens,
             email_verification: EmailVerificationMode::Off,
             email_key: None,
+            founding_grace_days: domain::DEFAULT_UNCONFIRMED_FRANCHISE_GRACE_DAYS,
+            phase_thresholds: PhaseThresholds::platform_default(),
             chat,
             governance,
             social,
@@ -187,6 +198,26 @@ impl Services {
         self
     }
 
+    /// Set how long a founding member's vote stands before it must be backed by a
+    /// confirmed email address (`DEMOCRACHAT_FRANCHISE_GRACE_DAYS`). `0` keeps the
+    /// founding head start but seats nobody unconfirmed. Only meaningful in a mode
+    /// that asks for confirmation at all.
+    pub fn with_founding_grace_days(mut self, days: i64) -> Self {
+        self.founding_grace_days = days.max(0);
+        self
+    }
+
+    /// Set where this deployment's bootstrap phases begin
+    /// (`DEMOCRACHAT_CHARTERING_AT` / `DEMOCRACHAT_SOVEREIGN_AT`). Propagated to the
+    /// sub-services that judge phase themselves, so a configured deployment cannot
+    /// end up with one service still using the platform default.
+    pub fn with_phase_thresholds(mut self, thresholds: PhaseThresholds) -> Self {
+        self.phase_thresholds = thresholds;
+        self.chat.phase_thresholds = thresholds;
+        self.governance.phase_thresholds = thresholds;
+        self
+    }
+
     /// The deployment's email-verification policy, for the web layer's login gate.
     pub fn email_verification(&self) -> EmailVerificationMode {
         self.email_verification
@@ -197,7 +228,7 @@ impl Services {
     /// one place allowed to conclude "eligible" — and never forgotten at a call
     /// site.
     fn franchise_email_rule(&self) -> domain::EmailFranchiseRule {
-        self.email_verification.franchise_rule()
+        self.email_verification.franchise_rule(self.founding_grace_days)
     }
 
     /// Chat use-cases: channels, messages, threaded replies, reactions, and media.
@@ -483,13 +514,19 @@ impl Services {
         // unconfirmed founder votes on trust, with the same deadline their founding
         // cohort gets.
         let mut m = Membership::joined(founder.id, server.id, now);
-        m.tier = Tier::Citizen;
-        m.enfranchised_at = Some(now);
-        if self.franchise_email_rule() == domain::EmailFranchiseRule::MustBeConfirmed
-            && !founder.is_email_verified()
-        {
-            m.unconfirmed_franchise_until = Some(domain::confirmation_deadline(now));
+        let rule = self.franchise_email_rule();
+        let needs_trust = rule.requires_confirmation() && !founder.is_email_verified();
+        if !needs_trust || rule.extends_founding_trust() {
+            m.tier = Tier::Citizen;
+            m.enfranchised_at = Some(now);
+            if needs_trust {
+                m.unconfirmed_franchise_until =
+                    Some(domain::confirmation_deadline(now, rule.founding_grace_days()));
+            }
         }
+        // With a grace of zero an unconfirmed founder joins as a plain member and is
+        // seated the moment they confirm — the automatic sweep sees a Seed member
+        // whose only bar has just cleared.
         self.memberships.upsert(m).await?;
 
         // Every server starts with #general (somewhere to post from the first
@@ -717,7 +754,8 @@ impl Services {
         if !user.is_email_verified() {
             // Eligible while unconfirmed means the founding waiver let them through;
             // the vote is theirs on trust until the deadline.
-            membership.unconfirmed_franchise_until = Some(domain::confirmation_deadline(now));
+            membership.unconfirmed_franchise_until =
+                Some(domain::confirmation_deadline(now, self.founding_grace_days));
         }
         let window_start = Timestamp(now.0 - RATE_CAP_WINDOW_DAYS * Timestamp::SECONDS_PER_DAY);
         match self
@@ -758,7 +796,10 @@ impl Services {
     /// A server's current [`Phase`], derived from its citizen count. Needed by every
     /// eligibility check because the founding cohort (Seed) is excused the wait.
     async fn phase_of(&self, server: domain::ServerId) -> Phase {
-        Phase::from_citizen_count(self.memberships.citizen_count(server).await.unwrap_or_default())
+        Phase::from_citizen_count(
+            self.memberships.citizen_count(server).await.unwrap_or_default(),
+            self.phase_thresholds,
+        )
     }
 
     /// Reconcile votes held on trust: clear the deadline for anyone who has since
@@ -859,7 +900,8 @@ impl Services {
             // A founding member seated without a confirmed address votes on trust,
             // and from here the clock is running (see `confirmation_deadline`).
             if !confirmed {
-                m.unconfirmed_franchise_until = Some(domain::confirmation_deadline(now));
+                m.unconfirmed_franchise_until =
+                    Some(domain::confirmation_deadline(now, self.founding_grace_days));
             }
             match self
                 .memberships
@@ -909,7 +951,7 @@ impl Services {
         let mut out = Vec::new();
         for g in self.servers.list_all().await.unwrap_or_default() {
             let citizens = self.memberships.citizen_count(g.id).await.unwrap_or_default();
-            let phase = Phase::from_citizen_count(citizens);
+            let phase = Phase::from_citizen_count(citizens, self.phase_thresholds);
             out.push((g, phase, citizens));
         }
         out
@@ -976,7 +1018,7 @@ impl Services {
     pub async fn server_snapshot(&self, server_slug: &str) -> Option<(Server, Phase, u64)> {
         let server = self.servers.find_by_slug(server_slug.trim()).await.ok().flatten()?;
         let citizens = self.memberships.citizen_count(server.id).await.unwrap_or_default();
-        Some((server.clone(), Phase::from_citizen_count(citizens), citizens))
+        Some((server.clone(), Phase::from_citizen_count(citizens, self.phase_thresholds), citizens))
     }
 
     /// Dev/testing helper: set a member's endorsement-weighted contribution

@@ -2,30 +2,39 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The bootstrap phase of a server, derived purely from its citizen count.
+use crate::PhaseThresholds;
+
+/// The bootstrap phase of a server, derived purely from its citizen count and the
+/// deployment's [`PhaseThresholds`].
 ///
 /// Small servers are where capture is easiest and percentage-math is weakest, so
 /// new servers run on "training wheels" until self-governance is meaningful. In
 /// **Seed** the founder may provisionally set the server up (channels, emojis,
-/// rules) to bootstrap it; from **Chartering** on, those changes become ballots.
+/// rules) to bootstrap it, and whoever joins is enfranchised on arrival; from
+/// **Chartering** on, those changes become ballots and newcomers earn the franchise
+/// the ordinary way.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Phase {
-    /// 1–4 citizens. No constitutional amendments; founder may provision.
+    /// Below the chartering threshold (1–4 citizens by default). No constitutional
+    /// amendments; founder may provision; the founding cohort votes on arrival.
     Seed,
-    /// 5–24 citizens. Amendments allowed but under stricter thresholds.
+    /// Chartering up to the sovereign threshold (5–24 by default). Amendments
+    /// allowed but under stricter thresholds.
     Chartering,
-    /// 25+ citizens. Full self-governance; percentage math now works naturally.
+    /// At or above the sovereign threshold (25+ by default). Full self-governance;
+    /// percentage math now works naturally.
     Sovereign,
 }
 
 impl Phase {
-    pub const CHARTERING_AT: u64 = 5;
-    pub const SOVEREIGN_AT: u64 = 25;
-
-    pub fn from_citizen_count(citizens: u64) -> Phase {
-        if citizens >= Self::SOVEREIGN_AT {
+    /// Which phase `citizens` puts a server in, under this deployment's thresholds.
+    /// Takes them explicitly rather than reading a global so a call site cannot
+    /// quietly judge a server by the platform default while the operator has
+    /// configured something else.
+    pub fn from_citizen_count(citizens: u64, thresholds: PhaseThresholds) -> Phase {
+        if citizens >= thresholds.sovereign_at {
             Phase::Sovereign
-        } else if citizens >= Self::CHARTERING_AT {
+        } else if citizens >= thresholds.chartering_at {
             Phase::Chartering
         } else {
             Phase::Seed
@@ -54,12 +63,27 @@ mod tests {
 
     #[test]
     fn phase_boundaries() {
-        assert_eq!(Phase::from_citizen_count(0), Phase::Seed);
-        assert_eq!(Phase::from_citizen_count(4), Phase::Seed);
-        assert_eq!(Phase::from_citizen_count(5), Phase::Chartering);
-        assert_eq!(Phase::from_citizen_count(24), Phase::Chartering);
-        assert_eq!(Phase::from_citizen_count(25), Phase::Sovereign);
-        assert_eq!(Phase::from_citizen_count(10_000), Phase::Sovereign);
+        let d = PhaseThresholds::platform_default();
+        assert_eq!(Phase::from_citizen_count(0, d), Phase::Seed);
+        assert_eq!(Phase::from_citizen_count(4, d), Phase::Seed);
+        assert_eq!(Phase::from_citizen_count(5, d), Phase::Chartering);
+        assert_eq!(Phase::from_citizen_count(24, d), Phase::Chartering);
+        assert_eq!(Phase::from_citizen_count(25, d), Phase::Sovereign);
+        assert_eq!(Phase::from_citizen_count(10_000, d), Phase::Sovereign);
+    }
+
+    /// A host's thresholds move the boundaries wholesale.
+    #[test]
+    fn configured_thresholds_move_the_boundaries() {
+        let tight = PhaseThresholds::new(2, 10).unwrap();
+        assert_eq!(Phase::from_citizen_count(1, tight), Phase::Seed, "the founder alone");
+        assert_eq!(Phase::from_citizen_count(2, tight), Phase::Chartering);
+        assert_eq!(Phase::from_citizen_count(10, tight), Phase::Sovereign);
+
+        // Equal thresholds skip Chartering: Seed straight to Sovereign.
+        let skip = PhaseThresholds::new(8, 8).unwrap();
+        assert_eq!(Phase::from_citizen_count(7, skip), Phase::Seed);
+        assert_eq!(Phase::from_citizen_count(8, skip), Phase::Sovereign);
     }
 
     #[test]

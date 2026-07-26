@@ -60,13 +60,14 @@ impl EmailVerificationMode {
     }
 
     /// How [`evaluate_eligibility`](domain::evaluate_eligibility) should treat an
-    /// unconfirmed address. Soft enforces it at the ballot box; hard enforces it
-    /// at the door, so by the time anyone is evaluated they are confirmed anyway —
-    /// asking in both keeps the rule true rather than merely unreachable.
-    pub fn franchise_rule(&self) -> EmailFranchiseRule {
+    /// unconfirmed address, given the operator's founding grace. Soft enforces it at
+    /// the ballot box; hard enforces it at the door, so by the time anyone is
+    /// evaluated they are confirmed anyway — asking in both keeps the rule true
+    /// rather than merely unreachable.
+    pub fn franchise_rule(&self, founding_grace_days: i64) -> EmailFranchiseRule {
         match self {
             Self::Off => EmailFranchiseRule::Ignored,
-            Self::Soft | Self::Hard => EmailFranchiseRule::MustBeConfirmed,
+            Self::Soft | Self::Hard => EmailFranchiseRule::MustBeConfirmed { founding_grace_days },
         }
     }
 }
@@ -97,17 +98,20 @@ mod tests {
         let soft = EmailVerificationMode::Soft;
         assert!(!soft.requires_verification(), "soft must not block sign-in");
         assert!(soft.issues_verification(), "soft still emails a link");
-        assert_eq!(soft.franchise_rule(), EmailFranchiseRule::MustBeConfirmed);
+        assert_eq!(
+            soft.franchise_rule(28),
+            EmailFranchiseRule::MustBeConfirmed { founding_grace_days: 28 }
+        );
     }
 
     #[test]
     fn off_asks_for_nothing_and_hard_asks_at_the_door() {
         assert!(!EmailVerificationMode::Off.issues_verification());
-        assert_eq!(EmailVerificationMode::Off.franchise_rule(), EmailFranchiseRule::Ignored);
+        assert_eq!(EmailVerificationMode::Off.franchise_rule(28), EmailFranchiseRule::Ignored);
         assert!(EmailVerificationMode::Hard.issues_verification());
         assert_eq!(
-            EmailVerificationMode::Hard.franchise_rule(),
-            EmailFranchiseRule::MustBeConfirmed
+            EmailVerificationMode::Hard.franchise_rule(28),
+            EmailFranchiseRule::MustBeConfirmed { founding_grace_days: 28 }
         );
     }
 }

@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use domain::{Channel, ChannelKind, MediaKind, Message, Phase, Reaction};
+use domain::{Channel, ChannelKind, MediaKind, Message, Phase, PhaseThresholds, Reaction};
 
 use crate::{
     ChannelError, ChannelStore, Clock, ImageTranscoder, MediaStore, MembershipStore, MessageError,
@@ -22,6 +22,9 @@ use crate::{
 pub struct ChatService {
     pub(crate) channels: Arc<dyn ChannelStore>,
     pub(crate) clock: Arc<dyn Clock>,
+    /// Where this deployment's bootstrap phases begin. Set by
+    /// [`Services::with_phase_thresholds`]; defaults to the platform thresholds.
+    pub(crate) phase_thresholds: PhaseThresholds,
     pub(crate) image: Arc<dyn ImageTranscoder>,
     pub(crate) media: Arc<dyn MediaStore>,
     pub(crate) memberships: Arc<dyn MembershipStore>,
@@ -110,7 +113,7 @@ impl ChatService {
             .ok_or_else(|| ChannelError::NoSuchServer(server_slug.to_string()))?;
 
         let citizens = self.memberships.citizen_count(server.id).await?;
-        let phase = Phase::from_citizen_count(citizens);
+        let phase = Phase::from_citizen_count(citizens, self.phase_thresholds);
         if !(phase.founder_may_provision() && user.id == server.founder_id) {
             return Err(ChannelError::NotProvisionable);
         }

@@ -72,6 +72,12 @@ server runs on training wheels, derived purely from its citizen count:
 | Phase | Citizens | Governance |
 |---|---|---|
 | **Seed** | 1–4 | Founder is Citizen #1 and may **provisionally** set the server up (rules, emojis, channels). No constitutional amendments. Whoever joins is enfranchised at once — the founding cohort. |
+
+The counts are the platform defaults. An operator sets their own with
+`DEMOCRACHAT_CHARTERING_AT` / `DEMOCRACHAT_SOVEREIGN_AT`; the chartering threshold
+is doubly load-bearing, since it bounds the founding cohort *and* decides when
+amendments unlock. Under soft email verification, `DEMOCRACHAT_FRANCHISE_GRACE_DAYS`
+sets how long a founding member's unconfirmed vote stands (`0` = confirm first).
 | **Chartering** | 5–24 | Amendments may be proposed under **stricter** thresholds; provisioning becomes ballots. |
 | **Sovereign** | 25+ | Full self-governance; percentage math works naturally. |
 

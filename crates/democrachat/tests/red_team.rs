@@ -134,7 +134,7 @@ async fn the_founding_waiver_admits_only_the_seed_window() {
     assert_eq!(admitted, 4, "the founder plus four founding members fills Seed");
     assert_eq!(
         citizen_count(&f, "town").await,
-        u64::from(domain::Phase::CHARTERING_AT),
+        domain::PhaseThresholds::DEFAULT_CHARTERING_AT,
         "and the window shuts the moment the server charters"
     );
 }

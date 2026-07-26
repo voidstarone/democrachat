@@ -57,8 +57,16 @@ services:
       # hard (default) requires the key + SMTP settings below; the app fails closed
       # without them. Set to off to disable verification.
       DEMOCRACHAT_EMAIL_VERIFICATION: ${DEMOCRACHAT_EMAIL_VERIFICATION:-hard}
+      # Days a founding member's vote stands before it needs a confirmed address
+      # (soft mode). 0 = confirm first, then vote.
+      DEMOCRACHAT_FRANCHISE_GRACE_DAYS: ${DEMOCRACHAT_FRANCHISE_GRACE_DAYS:-28}
       # Dedicated key: addresses are encrypted at rest under this (never plaintext).
       DEMOCRACHAT_EMAIL_KEY: ${DEMOCRACHAT_EMAIL_KEY:-}
+      # ---- Bootstrap phases ----
+      # Citizens needed to leave Seed / reach Sovereign. CHARTERING_AT bounds a
+      # server's founding cohort and decides when amendments unlock; must be >= 2.
+      DEMOCRACHAT_CHARTERING_AT: ${DEMOCRACHAT_CHARTERING_AT:-5}
+      DEMOCRACHAT_SOVEREIGN_AT: ${DEMOCRACHAT_SOVEREIGN_AT:-25}
       # SMTP submission relay. HOST is the mail host's address on the LAN (the app
       # host and the mail/Postfix host may be different boxes).
       DEMOCRACHAT_SMTP_HOST: ${DEMOCRACHAT_SMTP_HOST:-}

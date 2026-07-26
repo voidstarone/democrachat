@@ -18,11 +18,11 @@ use crate::{
 /// While a server is still in [`Phase::Seed`] its members are its founders, and a
 /// founder does not wait: the time bars (account age, membership dwell) are waived,
 /// so anyone who joins a brand-new server is enfranchised at once. The window shuts
-/// by itself at five citizens, when the server enters
-/// [`Chartering`](Phase::Chartering) and the ordinary criteria resume — so the
-/// waiver can seat at most the handful of people who were actually there at the
-/// start. What is *never* waived: a sanction, a franchise bar, or a contribution
-/// bar the server has voted for itself.
+/// by itself when the server reaches the deployment's chartering threshold (five
+/// citizens by default — see [`PhaseThresholds`](crate::PhaseThresholds)) and the
+/// ordinary criteria resume, so the waiver can seat at most the handful of people
+/// who were actually there at the start. What is *never* waived: a sanction, a
+/// franchise bar, or a contribution bar the server has voted for itself.
 pub fn evaluate_eligibility(
     user: &User,
     membership: &Membership,
@@ -77,12 +77,15 @@ pub fn evaluate_eligibility(
     // only entry the member can clear on the spot.
     //
     // The founding cohort is trusted to confirm *afterwards* — seated now, with a
-    // deadline (see `UNCONFIRMED_FRANCHISE_GRACE_DAYS`). That trust is extended
-    // once: a member carrying a deadline already has had it, so once theirs lapses
-    // they must confirm like anyone else. Otherwise a founder could ride out one
-    // grace, lose the vote, and be handed another by the same waiver.
-    if email_rule == EmailFranchiseRule::MustBeConfirmed && !user.is_email_verified() {
-        let trust_available = founding && membership.unconfirmed_franchise_until.is_none();
+    // deadline — where the operator's rule offers such trust at all (a grace of zero
+    // excuses the wait but not the address). That trust is extended once: a member
+    // carrying a deadline already has had it, so once theirs lapses they must confirm
+    // like anyone else. Otherwise a founder could ride out one grace, lose the vote,
+    // and be handed another by the same waiver.
+    if email_rule.requires_confirmation() && !user.is_email_verified() {
+        let trust_available = founding
+            && email_rule.extends_founding_trust()
+            && membership.unconfirmed_franchise_until.is_none();
         if !trust_available {
             unmet.push(Unmet::EmailUnverified);
         }
@@ -97,6 +100,9 @@ mod tests {
     use crate::{ServerId, UserId};
 
     const DAY: i64 = Timestamp::SECONDS_PER_DAY;
+    /// The default policy: confirmation required, founding cohort trusted 28 days.
+    const MUST_CONFIRM: EmailFranchiseRule =
+        EmailFranchiseRule::MustBeConfirmed { founding_grace_days: 28 };
 
     fn user_aged(days: i64, now: Timestamp) -> User {
         User::new(UserId(1), "alice", Timestamp(now.0 - days * DAY))
@@ -196,7 +202,7 @@ mod tests {
             &member_aged(30, 0, now),
             &FranchiseCriteria::platform_default(),
             Phase::Chartering,
-            EmailFranchiseRule::MustBeConfirmed,
+            MUST_CONFIRM,
             now,
         );
         assert!(!e.is_eligible());
@@ -211,7 +217,7 @@ mod tests {
             &member_aged(30, 0, now),
             &FranchiseCriteria::platform_default(),
             Phase::Chartering,
-            EmailFranchiseRule::MustBeConfirmed,
+            MUST_CONFIRM,
             now,
         );
         assert!(e.is_eligible(), "expected eligible, got {:?}", e.unmet);
@@ -243,7 +249,7 @@ mod tests {
             &member_aged(27, 0, now), // a day short of the dwell
             &FranchiseCriteria::platform_default(),
             Phase::Chartering,
-            EmailFranchiseRule::MustBeConfirmed,
+            MUST_CONFIRM,
             now,
         );
         assert_eq!(e.unmet.len(), 2);
@@ -260,7 +266,7 @@ mod tests {
             &member_aged(30, 0, now),
             &FranchiseCriteria::platform_default(),
             Phase::Chartering,
-            EmailFranchiseRule::MustBeConfirmed,
+            MUST_CONFIRM,
             now,
         );
         assert_eq!(e.unmet, vec![Unmet::Barred]);
@@ -277,7 +283,7 @@ mod tests {
             &member_aged(0, 0, now),
             &FranchiseCriteria::platform_default(),
             Phase::Seed,
-            EmailFranchiseRule::MustBeConfirmed,
+            MUST_CONFIRM,
             now,
         );
         assert!(e.is_eligible(), "expected eligible, got {:?}", e.unmet);
@@ -324,7 +330,7 @@ mod tests {
             &spent,
             &FranchiseCriteria::platform_default(),
             Phase::Seed,
-            EmailFranchiseRule::MustBeConfirmed,
+            MUST_CONFIRM,
             now,
         );
         assert_eq!(e.unmet, vec![Unmet::EmailUnverified]);
@@ -335,7 +341,35 @@ mod tests {
             &spent,
             &FranchiseCriteria::platform_default(),
             Phase::Seed,
-            EmailFranchiseRule::MustBeConfirmed,
+            MUST_CONFIRM,
+            now,
+        );
+        assert!(e.is_eligible(), "expected eligible, got {:?}", e.unmet);
+    }
+
+    /// The strict setting: a host may keep the founding head start (no dwell) while
+    /// refusing to seat anyone unconfirmed, by setting the grace to zero.
+    #[test]
+    fn a_grace_of_zero_excuses_the_wait_but_not_the_address() {
+        let now = Timestamp(100 * DAY);
+        let strict = EmailFranchiseRule::MustBeConfirmed { founding_grace_days: 0 };
+        // Unconfirmed founding member: the dwell is waived, the address is not.
+        let e = evaluate_eligibility(
+            &user_aged(0, now),
+            &member_aged(0, 0, now),
+            &FranchiseCriteria::platform_default(),
+            Phase::Seed,
+            strict,
+            now,
+        );
+        assert_eq!(e.unmet, vec![Unmet::EmailUnverified]);
+        // Confirmed founding member: seated on day one, as always.
+        let e = evaluate_eligibility(
+            &confirmed(user_aged(0, now)),
+            &member_aged(0, 0, now),
+            &FranchiseCriteria::platform_default(),
+            Phase::Seed,
+            strict,
             now,
         );
         assert!(e.is_eligible(), "expected eligible, got {:?}", e.unmet);
@@ -351,7 +385,7 @@ mod tests {
             &member_aged(0, 0, now),
             &FranchiseCriteria::platform_default(),
             Phase::Chartering,
-            EmailFranchiseRule::MustBeConfirmed,
+            MUST_CONFIRM,
             now,
         );
         assert_eq!(e.unmet, vec![Unmet::MembershipTooShort { need_days: 28, have_days: 0 }]);

@@ -10,8 +10,8 @@
 use std::sync::Arc;
 
 use domain::{
-    Channel, DiscussionPost, Emoji, Phase, Proposal, ProposalId, ProposalKind, ProposalStatus, Role,
-    Rule, Server, ServerId, Tally, Timestamp, Vote,
+    Channel, DiscussionPost, Emoji, Phase, PhaseThresholds, Proposal, ProposalId, ProposalKind,
+    ProposalStatus, Role, Rule, Server, ServerId, Tally, Timestamp, Vote,
 };
 
 use crate::{
@@ -24,6 +24,9 @@ use crate::{
 pub struct GovernanceService {
     pub(crate) channels: Arc<dyn ChannelStore>,
     pub(crate) clock: Arc<dyn Clock>,
+    /// Where this deployment's bootstrap phases begin. Set by
+    /// [`Services::with_phase_thresholds`]; defaults to the platform thresholds.
+    pub(crate) phase_thresholds: PhaseThresholds,
     pub(crate) emojis: Arc<dyn EmojiStore>,
     pub(crate) memberships: Arc<dyn MembershipStore>,
     pub(crate) proposals: Arc<dyn ProposalStore>,
@@ -133,7 +136,7 @@ impl GovernanceService {
             return Err(ProposeError::NotGoverned);
         }
         let citizens = self.memberships.citizen_count(server.id).await?;
-        let phase = Phase::from_citizen_count(citizens);
+        let phase = Phase::from_citizen_count(citizens, self.phase_thresholds);
         if domain::threshold_for(kind.decision_class(), phase).is_none() {
             return Err(ProposeError::NotAllowedInPhase);
         }
@@ -236,7 +239,7 @@ impl GovernanceService {
         };
         let now = self.clock.now();
         let citizens = self.memberships.citizen_count(server.id).await.unwrap_or_default();
-        let phase = Phase::from_citizen_count(citizens);
+        let phase = Phase::from_citizen_count(citizens, self.phase_thresholds);
 
         let mut did_change = false;
         for mut p in self.proposals.list_for_server(server.id).await.unwrap_or_default() {
