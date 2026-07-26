@@ -22,8 +22,16 @@
   "ui.auth.switch_prompt": "New here?",
   "ui.auth.switch_link": "Create an account",
   "ui.auth.email_ph": "email",
-  "ui.auth.verify_notice": "Check your email to confirm your account.",
-  "ui.auth.resend_link": "Resend link",
+  "ui.verify.title": "Check your inbox",
+  "ui.verify.lede": "A confirmation link is on its way to {email}. Open it to finish setting up {handle}.",
+  "ui.verify.lede_noaddr": "{handle} isn't confirmed yet. Open the link from the email we sent when you signed up — or send yourself a fresh one below.",
+  "ui.verify.step_open": "Open the email from democrachat.",
+  "ui.verify.step_click": "Click the confirmation link inside it.",
+  "ui.verify.step_return": "Come back here and sign in.",
+  "ui.verify.note": "The link works for 24 hours. Nothing yet? Give it a minute, then look in spam or junk.",
+  "ui.verify.resend_btn": "Send it again",
+  "ui.verify.resend_in": "Send it again in {s}s",
+  "ui.verify.back": "Back to sign in",
   "ui.nav.menu_title": "Menu",
   "ui.rail.toggle_title": "Members & search",
   "ui.rail.close_title": "Close panel",
@@ -100,7 +108,6 @@
   "app.auth.create_account_link": "Create an account",
   "app.toast.enter_handle_pw": "Enter a handle and password",
   "app.toast.enter_email": "Enter your email address",
-  "app.toast.check_email": "Check your email to confirm your account.",
   "app.toast.resent": "If that account needs it, a new link is on its way.",
   "app.toast.email_verified": "Email confirmed — you can sign in now.",
   "app.toast.verify_failed": "That confirmation link is invalid or has expired.",
@@ -426,5 +433,8 @@
   "app.toast.history_shared": "Newcomers can now see your past messages",
   "app.toast.history_hidden": "Your past messages are now hidden from newcomers",
   "app.toast.mod_declined": "You’ll no longer be made a moderator",
-  "app.toast.mod_accepted": "You can be a moderator again when you qualify"
+  "app.toast.mod_accepted": "You can be a moderator again when you qualify",
+
+  "email.verify.subject": "Confirm your democrachat email",
+  "email.verify.body": "Welcome to democrachat!\n\nConfirm your email address to activate your account:\n\n{link}\n\nThis link expires in 24 hours. If you didn't create an account, you can ignore this email."
 }

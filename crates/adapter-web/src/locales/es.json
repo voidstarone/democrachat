@@ -22,8 +22,16 @@
   "ui.auth.switch_prompt": "¿Nuevo por aquí?",
   "ui.auth.switch_link": "Crear una cuenta",
   "ui.auth.email_ph": "correo",
-  "ui.auth.verify_notice": "Revisa tu correo para confirmar tu cuenta.",
-  "ui.auth.resend_link": "Reenviar enlace",
+  "ui.verify.title": "Revisa tu correo",
+  "ui.verify.lede": "Un enlace de confirmación va camino a {email}. Ábrelo para terminar de activar {handle}.",
+  "ui.verify.lede_noaddr": "{handle} aún no está confirmada. Abre el enlace del correo que te enviamos al registrarte, o pide uno nuevo aquí abajo.",
+  "ui.verify.step_open": "Abre el correo de democrachat.",
+  "ui.verify.step_click": "Haz clic en el enlace de confirmación.",
+  "ui.verify.step_return": "Vuelve aquí e inicia sesión.",
+  "ui.verify.note": "El enlace funciona durante 24 horas. ¿No llega? Espera un minuto y mira en spam o correo no deseado.",
+  "ui.verify.resend_btn": "Enviar de nuevo",
+  "ui.verify.resend_in": "Enviar de nuevo en {s} s",
+  "ui.verify.back": "Volver a iniciar sesión",
   "ui.nav.menu_title": "Menú",
   "ui.rail.toggle_title": "Miembros y búsqueda",
   "ui.rail.close_title": "Cerrar panel",
@@ -100,7 +108,6 @@
   "app.auth.create_account_link": "Crear una cuenta",
   "app.toast.enter_handle_pw": "Introduce un usuario y una contraseña",
   "app.toast.enter_email": "Introduce tu dirección de correo",
-  "app.toast.check_email": "Revisa tu correo para confirmar tu cuenta.",
   "app.toast.resent": "Si esa cuenta lo necesita, un nuevo enlace está en camino.",
   "app.toast.email_verified": "Correo confirmado: ya puedes iniciar sesión.",
   "app.toast.verify_failed": "Ese enlace de confirmación no es válido o ha caducado.",
@@ -426,5 +433,8 @@
   "app.toast.history_shared": "Ahora los recién llegados pueden ver tus mensajes anteriores",
   "app.toast.history_hidden": "Tus mensajes anteriores ahora están ocultos para los recién llegados",
   "app.toast.mod_declined": "Ya no se te hará moderador",
-  "app.toast.mod_accepted": "Podrás ser moderador de nuevo cuando califiques"
+  "app.toast.mod_accepted": "Podrás ser moderador de nuevo cuando califiques",
+
+  "email.verify.subject": "Confirma tu correo de democrachat",
+  "email.verify.body": "¡Te damos la bienvenida a democrachat!\n\nConfirma tu dirección de correo para activar tu cuenta:\n\n{link}\n\nEste enlace caduca en 24 horas. Si no creaste ninguna cuenta, puedes ignorar este mensaje."
 }

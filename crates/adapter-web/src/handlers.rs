@@ -7,6 +7,8 @@ use axum::response::{IntoResponse, Redirect};
 use axum::Json;
 use domain::Unmet;
 use serde_json::json;
+use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use crate::auth::{clear_session_cookie, require_actor, session_cookie};
 use crate::dto::*;
@@ -89,7 +91,7 @@ pub async fn register(
     match reg.verification_token {
         // Hard mode: email the link, do not start a session.
         Some(token) => {
-            send_verification_email(&st, req.email.trim(), &token).await;
+            send_verification_email(&st, req.email.trim(), &token, &req.lang).await;
             Ok(Json(json!({ "verify_required": true, "handle": reg.user.handle })).into_response())
         }
         // Off mode: immediately usable — log in.
@@ -127,31 +129,47 @@ pub async fn resend(
 ) -> Result<axum::response::Response, (StatusCode, String)> {
     if let Ok(Some(target)) = st.services.issue_resend(&req.handle).await {
         st.persist();
-        send_verification_email(&st, &target.email, &target.token).await;
+        send_verification_email(&st, &target.email, &target.token, &req.lang).await;
     }
     Ok(Json(json!({ "ok": true })).into_response())
 }
 
-/// Build and send the verification email. Failures are logged, not surfaced: the
-/// token is already stored, so the user can retry via resend; and never revealing
-/// send success/failure keeps `resend` from leaking account existence.
-async fn send_verification_email(st: &AppState, to: &str, token: &str) {
+/// Build and send the verification email, in `lang` — the locale the SPA was
+/// showing when the account was created (or when the resend was asked for), so the
+/// mail matches the language the person actually signed up in. Failures are logged,
+/// not surfaced: the token is already stored, so the user can retry via resend; and
+/// never revealing send success/failure keeps `resend` from leaking account
+/// existence.
+async fn send_verification_email(st: &AppState, to: &str, token: &str, lang: &str) {
     let Some(sender) = &st.email else {
         eprintln!("warning: email verification required but no SMTP sender is configured");
         return;
     };
     let base = st.base_url.trim().trim_end_matches('/');
     let link = format!("{base}/verify?token={token}");
-    let subject = "Confirm your democrachat email";
-    let body = format!(
-        "Welcome to democrachat!\n\n\
-         Confirm your email address to activate your account:\n\n\
-         {link}\n\n\
-         This link expires in 24 hours. If you didn't create an account, you can ignore this email."
-    );
-    if let Err(e) = sender.send(to, subject, &body).await {
+    let subject = tr(lang, "email.verify.subject");
+    let body = tr(lang, "email.verify.body").replace("{link}", &link);
+    if let Err(e) = sender.send(to, &subject, &body).await {
         eprintln!("warning: could not send verification email to {to}: {e}");
     }
+}
+
+/// Translate a catalog key server-side, out of the very same message catalogs the
+/// SPA ships — so email copy lives with the UI copy and reaches translators the
+/// same way. Lookup falls back requested locale → English → the key itself, so an
+/// unknown or missing locale degrades to English rather than to nothing.
+fn tr(lang: &str, key: &str) -> String {
+    static CATALOGS: OnceLock<HashMap<&'static str, HashMap<String, String>>> = OnceLock::new();
+    let catalogs = CATALOGS.get_or_init(|| {
+        [("en", crate::LOCALE_EN), ("es", crate::LOCALE_ES)]
+            .into_iter()
+            .filter_map(|(code, raw)| {
+                serde_json::from_str::<HashMap<String, String>>(raw).ok().map(|map| (code, map))
+            })
+            .collect()
+    });
+    let lookup = |code: &str| catalogs.get(code).and_then(|m| m.get(key));
+    lookup(lang).or_else(|| lookup("en")).cloned().unwrap_or_else(|| key.to_string())
 }
 
 /// Clear the session cookie.
@@ -1465,5 +1483,43 @@ fn describe_unmet(u: &Unmet) -> String {
         }
         Unmet::Sanctioned => "under an active sanction".into(),
         Unmet::Barred => "barred from the franchise".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tr;
+
+    /// The verification email is written in the locale the sign-up happened in.
+    #[test]
+    fn email_copy_resolves_per_locale() {
+        let en = tr("en", "email.verify.subject");
+        let es = tr("es", "email.verify.subject");
+        assert_ne!(en, es, "the Spanish subject must actually be translated");
+        assert!(es.contains("Confirma"), "unexpected Spanish subject: {es}");
+    }
+
+    /// A locale we don't ship (or a blank one from an older client) reads English
+    /// rather than leaking a bare catalog key into someone's inbox.
+    #[test]
+    fn an_unknown_locale_falls_back_to_english() {
+        let en = tr("en", "email.verify.subject");
+        assert_eq!(tr("de", "email.verify.subject"), en);
+        assert_eq!(tr("", "email.verify.subject"), en);
+    }
+
+    #[test]
+    fn an_unknown_key_resolves_to_itself() {
+        assert_eq!(tr("en", "email.nope"), "email.nope");
+    }
+
+    /// Every locale's body must keep the `{link}` placeholder — a translation that
+    /// drops it would mail out a confirmation with nothing to click.
+    #[test]
+    fn every_locale_keeps_the_link_placeholder() {
+        for lang in ["en", "es"] {
+            let body = tr(lang, "email.verify.body");
+            assert!(body.contains("{link}"), "{lang} body lost its {{link}}: {body}");
+        }
     }
 }

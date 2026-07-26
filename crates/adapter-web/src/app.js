@@ -279,10 +279,15 @@ async function boot() {
   applyLang();
   applyThemeButton();
   // Surface the outcome of an email-verification link (GET /verify redirects here
-  // with a hash), then strip it so a refresh doesn't repeat the toast.
+  // with a hash) as a banner on the sign-in card — this is the first thing the
+  // user sees on landing, so it outlives a toast — then strip the hash so a
+  // refresh doesn't repeat it.
   if (location.hash === '#verified' || location.hash === '#verify_failed') {
     const ok = location.hash === '#verified';
-    toast(ok ? t('app.toast.email_verified') : t('app.toast.verify_failed'), ok ? '' : 'err');
+    const flash = $('authFlash');
+    flash.textContent = ok ? t('app.toast.email_verified') : t('app.toast.verify_failed');
+    flash.classList.toggle('bad', !ok);
+    flash.style.display = '';
     history.replaceState(null, '', location.pathname + location.search);
   }
   $('settingsBtn').innerHTML = icon('gear', 17);
@@ -306,7 +311,6 @@ function toggleAuthMode(){
   $('authSwitch').textContent = reg ? t('app.auth.sign_in') : t('app.auth.create_account_link');
   $('emailInput').style.display = reg ? '' : 'none';
   $('passwordInput').setAttribute('autocomplete', reg ? 'new-password' : 'current-password');
-  $('verifyNotice').style.display = 'none';
 }
 // Finish a successful auth: recover/set up this device's encryption keys (while we
 // still hold the password — it never leaves the browser) and enter the app.
@@ -322,13 +326,13 @@ const submitAuth = guard(async () => {
   if (AUTH_MODE==='register') {
     const email = $('emailInput').value.trim();
     if (!email) { toast(t('app.toast.enter_email'),'err'); return; }
-    const r = await api('/api/register','POST',{handle, password, email});
+    // `lang` rides along so the verification email is written in the language
+    // this sign-up is happening in, not always English.
+    const r = await api('/api/register','POST',{handle, password, email, lang: LANG});
     if (r && r.verify_required) {
       // Hard mode: account created but not logged in until the emailed link is clicked.
-      S.pendingVerifyHandle = handle;
       $('passwordInput').value='';
-      $('verifyNotice').style.display='block';
-      toast(t('app.toast.check_email'));
+      showVerifyPane(handle, email, true);
       return;
     }
     await completeLogin(r.handle, password); // verification off — logged straight in
@@ -338,21 +342,81 @@ const submitAuth = guard(async () => {
     const r = await api('/api/login','POST',{handle, password});
     await completeLogin(r.handle, password);
   } catch(e) {
-    // An unverified account can't log in yet — offer to resend the link.
+    // An unverified account can't log in yet. The pane explains why and offers a
+    // fresh link, which says it better than the raw error toast would.
     if ((e.message||'') === t('err.email_unverified')) {
-      S.pendingVerifyHandle = handle;
-      $('verifyNotice').style.display='block';
+      $('passwordInput').value='';
+      showVerifyPane(handle, '', false);
+      return;
     }
     throw e; // let guard surface the message as a toast
   }
 });
-// Re-send the verification email for the handle in the field (or the one we just
-// signed up / tried to log in with). Always an opaque success.
+
+/* ── "Check your inbox" ──────────────────────────────────────────────
+   Signing up with verification on doesn't log anyone in — it sends a link. That
+   pause deserves the whole card, not a footnote: it names the address we wrote
+   to, spells out the three steps that follow, and keeps the two ways forward
+   (send it again, or go back and sign in) in reach. */
+const RESEND_COOLDOWN = 45; // seconds — a just-sent mail is still in flight
+let RESEND_TICK = null;
+// `email` is what we typed into the form; on the unverified-login path we don't
+// know it, so the copy falls back to the handle. `justSent` starts the cooldown.
+function showVerifyPane(handle, email, justSent){
+  if (S.pendingVerifyHandle !== handle) S.pendingVerifyEmail = ''; // don't carry one account's address onto another
+  S.pendingVerifyHandle = handle;
+  if (email) S.pendingVerifyEmail = email;
+  const addr = S.pendingVerifyEmail;
+  const who = `<b>@${esc(handle)}</b>`;
+  $('verifyLede').innerHTML = addr
+    ? t('ui.verify.lede', { email: `<b>${esc(addr)}</b>`, handle: who })
+    : t('ui.verify.lede_noaddr', { handle: who });
+  $('authFlash').style.display = 'none';
+  $('authPane').style.display = 'none';
+  $('verifyPane').style.display = '';
+  $('verifyPane').focus(); // move keyboard + screen-reader focus onto the new state
+  startResendCooldown(justSent ? RESEND_COOLDOWN : 0);
+}
+function hideVerifyPane(){
+  clearInterval(RESEND_TICK); RESEND_TICK = null;
+  $('verifyPane').style.display = 'none';
+  $('authPane').style.display = '';
+}
+// Count the resend button down instead of letting it be tapped into a mail storm.
+function startResendCooldown(secs){
+  const btn = $('resendBtn');
+  clearInterval(RESEND_TICK); RESEND_TICK = null;
+  let left = secs;
+  const paint = () => {
+    if (left <= 0) {
+      clearInterval(RESEND_TICK); RESEND_TICK = null;
+      btn.disabled = false; btn.textContent = t('ui.verify.resend_btn');
+      return;
+    }
+    btn.disabled = true; btn.textContent = t('ui.verify.resend_in', { s: left });
+    left--;
+  };
+  paint();
+  if (secs > 0) RESEND_TICK = setInterval(paint, 1000);
+}
+// Back to the sign-in form, with the handle we were waiting on already filled.
+function backToSignIn(){
+  hideVerifyPane();
+  if (AUTH_MODE === 'register') toggleAuthMode();
+  $('handleInput').value = S.pendingVerifyHandle || $('handleInput').value;
+  $('passwordInput').focus();
+}
+// Re-send the verification email for the account this pane is about (falling back
+// to the handle in the form). Always an opaque success.
 const resendVerify = guard(async () => {
-  const handle = ($('handleInput').value.trim()) || S.pendingVerifyHandle;
+  const handle = S.pendingVerifyHandle || $('handleInput').value.trim();
   if (!handle) { toast(t('app.toast.enter_handle_pw'),'err'); return; }
-  await api('/api/resend','POST',{handle});
+  const btn = $('resendBtn');
+  btn.disabled = true; // no double-taps while the request is in flight
+  try { await api('/api/resend','POST',{handle, lang: LANG}); }
+  catch(e) { btn.disabled = false; throw e; }
   toast(t('app.toast.resent'));
+  startResendCooldown(RESEND_COOLDOWN);
 });
 const logout = guard(async () => { await api('/api/logout','POST'); location.reload(); });
 let WS_STARTED = false;
@@ -2097,6 +2161,7 @@ const ACTIONS = {
   submitAuth:     () => submitAuth(),
   toggleAuthMode: () => toggleAuthMode(),
   resendVerify:   () => resendVerify(),
+  backToSignIn:   () => backToSignIn(),
   setModeChat:    () => setMode('chat'),
   setModeDms:     () => showFriends(),
   showFriends:    () => showFriends(),

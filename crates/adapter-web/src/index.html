@@ -639,18 +639,50 @@
   }
 
   #overlay { position:fixed; inset:0; background:rgba(20,32,27,.55); backdrop-filter:blur(2px);
-             display:flex; align-items:center; justify-content:center; z-index:20; }
+             display:flex; align-items:center; justify-content:center; z-index:20; padding:1.1rem; overflow-y:auto; }
   #overlay .box { background:var(--surface); border:1px solid var(--line); box-shadow:var(--shadow-lg);
-                  padding:2.2rem; border-radius:18px; width:340px; text-align:center; }
+                  padding:2.2rem; border-radius:18px; width:340px; max-width:100%; text-align:center; }
+  #overlay .box:focus { outline:none; }
   #overlay .title { font-family:var(--display); font-size:1.6rem; color:var(--accent-ink); }
   #overlay input { text-align:center; margin:1.1rem 0; }
+  /* Outcome of a verification link, shown above the sign-in form on return. */
+  #authFlash { margin-top:.9rem; padding:.55rem .7rem; border-radius:10px; font-size:12.5px; line-height:1.45;
+               background:var(--accent-soft); color:var(--accent-ink); border:1px solid var(--line); }
+  #authFlash.bad { background:var(--warn-soft); color:var(--warn); }
+
+  /* "Check your inbox" — after a sign-up that needs confirmation, this pane
+     replaces the auth form outright: what we sent, where it went, what to do
+     next, and the two ways forward (resend, or go back and sign in). */
+  #overlay #verifyPane { width:392px; animation:vpIn .3s var(--ease) both; }
+  @keyframes vpIn { from { opacity:0; transform:translateY(10px) scale(.985); } }
+  .vmark { position:relative; width:74px; height:74px; margin:0 auto; border-radius:50%;
+           background:var(--accent-soft); color:var(--accent-ink); display:grid; place-items:center; }
+  /* One soft ring, breathing outward — the email is in flight. */
+  .vmark::after { content:""; position:absolute; inset:-1px; border-radius:50%; border:1px solid var(--accent);
+                  animation:vpRing 2.8s var(--ease) infinite; }
+  @keyframes vpRing { 0% { transform:scale(1); opacity:.5; } 70%,100% { transform:scale(1.34); opacity:0; } }
+  .vtitle { font-size:1.5rem; color:var(--accent-ink); margin-top:1rem; }
+  .vlede { color:var(--muted); font-size:13.5px; line-height:1.6; margin:.5rem 0 0; }
+  .vlede b { color:var(--ink); font-weight:600; overflow-wrap:anywhere; }
+  .vsteps { counter-reset:vstep; list-style:none; margin:1.25rem 0 0; padding:.85rem .95rem; text-align:left;
+            background:var(--surface2); border:1px solid var(--line); border-radius:12px; display:grid; gap:.6rem; }
+  .vsteps li { display:flex; gap:.6rem; align-items:flex-start; font-size:13px; line-height:1.45; }
+  .vsteps li::before { counter-increment:vstep; content:counter(vstep); flex:none; width:19px; height:19px; margin-top:.5px;
+                       border-radius:50%; background:var(--accent); color:#fff; font-size:11px; font-weight:700;
+                       display:grid; place-items:center; }
+  .vnote { margin-top:.9rem; font-size:12px; color:var(--muted); line-height:1.5; }
+  #resendBtn { margin-top:1.1rem; }
+  .vfoot { margin-top:.9rem; display:flex; gap:.55rem; justify-content:center; font-size:12px; color:var(--muted); }
+  @media (prefers-reduced-motion: reduce) { #verifyPane, .vmark::after { animation:none; } }
+  @media (max-width: 680px) { #overlay #verifyPane { width:100%; max-width:392px; } }
 </style>
 </head>
 <body>
 <div id="overlay">
-  <div class="box">
+  <div class="box" id="authPane">
     <div class="title"><svg class="i" aria-hidden="true" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> democrachat</div>
     <div class="sub" id="authSub" data-t="ui.auth.tagline" style="margin-top:.4rem">a chat that governs itself — sign in</div>
+    <div id="authFlash" style="display:none" role="status"></div>
     <input id="handleInput" placeholder="handle" data-t-ph="ui.auth.handle_ph" autocomplete="username" autofocus />
     <input id="emailInput" type="email" placeholder="email" data-t-ph="ui.auth.email_ph" autocomplete="email" style="margin-top:.6rem; display:none" />
     <input id="passwordInput" type="password" placeholder="password (min 16 chars)" data-t-ph="ui.auth.password_ph" autocomplete="current-password" style="margin-top:.6rem" />
@@ -659,9 +691,22 @@
       <span id="authSwitchText" data-t="ui.auth.switch_prompt">New here?</span>
       <a href="#" id="authSwitch" data-act="toggleAuthMode" data-t="ui.auth.switch_link">Create an account</a>
     </div>
-    <div class="sub" id="verifyNotice" style="margin-top:.8rem; display:none">
-      <span data-t="ui.auth.verify_notice">Check your email to confirm your account.</span>
-      <a href="#" data-act="resendVerify" data-t="ui.auth.resend_link">Resend link</a>
+  </div>
+
+  <!-- Post-sign-up state: takes over the modal until the emailed link is used. -->
+  <div class="box" id="verifyPane" style="display:none" role="status" aria-live="polite" tabindex="-1">
+    <div class="vmark"><svg aria-hidden="true" viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4.5" width="19" height="15" rx="2.5"/><path d="M3 7l8.1 5.4a2 2 0 0 0 2.2 0L21 7"/></svg></div>
+    <h2 class="vtitle" data-t="ui.verify.title">Check your inbox</h2>
+    <p class="vlede" id="verifyLede"></p>
+    <ol class="vsteps">
+      <li data-t="ui.verify.step_open">Open the email from democrachat.</li>
+      <li data-t="ui.verify.step_click">Click the confirmation link inside it.</li>
+      <li data-t="ui.verify.step_return">Come back here and sign in.</li>
+    </ol>
+    <div class="vnote" data-t="ui.verify.note">The link works for 24 hours. Nothing yet? Give it a minute, then look in spam or junk.</div>
+    <button class="full" id="resendBtn" data-act="resendVerify">Send it again</button>
+    <div class="vfoot">
+      <a href="#" data-act="backToSignIn" data-t="ui.verify.back">Back to sign in</a>
     </div>
   </div>
 </div>

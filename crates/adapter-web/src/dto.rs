@@ -16,6 +16,11 @@ pub struct CredentialsReq {
     /// deserializes without it.
     #[serde(default)]
     pub email: String,
+    /// The locale the SPA is displaying (`en`, `es`, …), so the verification
+    /// email arrives in the language the person signed up in. Absent or unknown
+    /// falls back to English.
+    #[serde(default)]
+    pub lang: String,
 }
 
 /// Query for the email-verification link (`GET /verify?token=…`).
@@ -28,6 +33,9 @@ pub struct VerifyQuery {
 #[derive(Deserialize)]
 pub struct ResendReq {
     pub handle: String,
+    /// See [`CredentialsReq::lang`].
+    #[serde(default)]
+    pub lang: String,
 }
 
 #[derive(Deserialize)]
